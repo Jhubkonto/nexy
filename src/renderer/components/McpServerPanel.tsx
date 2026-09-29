@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Plug, X, RefreshCw, Settings, Trash2, Plus, ChevronLeft, ChevronDown, ChevronRight, Search, Wrench, ClipboardPaste, ExternalLink, CheckCircle2, AlertCircle, Loader2, Globe2, ShieldCheck, Users, Library, SlidersHorizontal, Database, FileText, TerminalSquare, Eye, LockKeyhole } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
 import { Button, ModalShell } from './ui/primitives'
-import { isApiError, type AgentConfig, type McpRegistrySearchResult, type McpRegistryServer, type McpTool } from '@shared/types'
+import { isApiError, type AgentConfig, type McpRegistrySearchResult, type McpRegistryServer, type McpSandboxProfile, type McpSandboxRuntimeStatus, type McpTool } from '@shared/types'
+import { DEFAULT_MCP_SANDBOX_PROFILE, normalizeMcpSandboxProfile } from '@shared/mcp-sandbox'
 import {
   MCP_CATALOG,
   MCP_CATEGORY_LABELS,
@@ -27,6 +28,7 @@ interface McpServerConfig {
   env: Record<string, string>
   cwd?: string
   imageResponses?: 'allow' | 'omit'
+  sandboxProfile?: McpSandboxProfile
   enabled: boolean
 }
 
@@ -34,6 +36,7 @@ interface McpServerStatus extends McpServerConfig {
   status: 'connecting' | 'connected' | 'error' | 'disconnected'
   error?: string
   toolCount: number
+  sandbox?: McpSandboxRuntimeStatus
 }
 
 type PanelView = 'gallery' | 'tools' | 'access' | 'form' | 'json' | 'registry' | 'assign'
@@ -95,6 +98,10 @@ function friendlyToolName(name: string): string {
 
 function isSensitiveEnvKey(key: string): boolean {
   return /(?:PASSWORD|PASSWD|TOKEN|API[_-]?KEY|SECRET|PRIVATE[_-]?KEY|CREDENTIAL)/i.test(key)
+}
+
+function sandboxProfileFor(server: McpServerConfig): McpSandboxProfile {
+  return normalizeMcpSandboxProfile(server.sandboxProfile ?? DEFAULT_MCP_SANDBOX_PROFILE)
 }
 
 function getToolPresentation(tool: McpTool): {
@@ -418,6 +425,7 @@ export function McpServerPanel() {
         env: editingServer.env,
         cwd: editingServer.cwd,
         imageResponses: editingServer.imageResponses,
+        sandboxProfile: sandboxProfileFor(editingServer),
       })
       if (result.ok) {
         setTest({ status: 'ok', toolCount: result.tools?.length ?? 0 })
@@ -1206,7 +1214,7 @@ export function McpServerPanel() {
 
           <div>
             <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-              {guidedEnv.length > 0 ? 'Other environment variables' : 'Environment Variables'}
+          {guidedEnv.length > 0 ? 'Other environment variables' : 'Environment Variables'}
             </label>
             <EnvEditor
               env={Object.fromEntries(
@@ -1221,6 +1229,55 @@ export function McpServerPanel() {
                 setEditingServer({ ...editingServer, env: { ...preserved, ...env } })
               }}
             />
+          </div>
+
+          <div className="space-y-2 rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/20">
+            <div className="flex items-start gap-2">
+              <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+              <div>
+                <p className="text-xs font-bold text-gray-700 dark:text-gray-200">OS sandbox profile</p>
+                <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">The server is always launched through Nexy’s signed helper. These permissions affect the server process, not tool approval.</p>
+              </div>
+            </div>
+            {(() => {
+              const profile = sandboxProfileFor(editingServer)
+              return (
+                <>
+                  <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                    <input
+                      type="checkbox"
+                      checked={profile.network === 'allowed'}
+                      onChange={(event) => setEditingServer({ ...editingServer, sandboxProfile: { ...profile, network: event.target.checked ? 'allowed' : 'blocked' } })}
+                    />
+                    Allow network access
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                    <input
+                      type="checkbox"
+                      checked={profile.childProcesses === 'allowed'}
+                      onChange={(event) => setEditingServer({ ...editingServer, sandboxProfile: { ...profile, childProcesses: event.target.checked ? 'allowed' : 'blocked', maxProcesses: event.target.checked ? 8 : 1 } })}
+                    />
+                    Allow child processes
+                  </label>
+                  <label className="block text-xs text-gray-700 dark:text-gray-300">
+                    Additional read/write folders
+                    <input
+                      value={profile.filesystem.filter((grant) => grant.access === 'read-write').map((grant) => grant.path).join(', ')}
+                      onChange={(event) => setEditingServer({
+                        ...editingServer,
+                        sandboxProfile: {
+                          ...profile,
+                          filesystem: event.target.value.split(',').map((path) => path.trim()).filter(Boolean).map((path) => ({ path, access: 'read-write' as const })),
+                        },
+                      })}
+                      placeholder="Optional absolute paths, comma-separated"
+                      className="mt-1 w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-xs dark:border-gray-600 dark:bg-gray-800"
+                    />
+                  </label>
+                  <p className="text-[10px] text-gray-500 dark:text-gray-400">Memory is capped at 512 MiB. The working directory is writable; additional folders are opened only when listed above.</p>
+                </>
+              )
+            })()}
           </div>
 
           {/* Advanced disclosure — raw launch command. Open by default for custom servers. */}
@@ -1378,6 +1435,7 @@ export function McpServerPanel() {
                           <h4 className="truncate text-xs font-bold text-nexy-text">{server.name}</h4>
                           <span className="rounded-full border border-nexy-border bg-nexy-recessed px-1.5 py-0.5 text-[10px] font-bold text-nexy-muted">{statusLabel}</span>
                           <span className="text-[10px] text-nexy-muted">{server.toolCount} tool{server.toolCount !== 1 ? 's' : ''}</span>
+                          <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 dark:text-emerald-300"><ShieldCheck className="h-3 w-3" /> {server.sandbox?.status === 'unavailable' ? 'Sandbox unavailable' : 'Sandboxed'}</span>
                           {assignedAgentCount > 0 && <span className="text-[10px] text-nexy-muted">· {assignedAgentCount} agent{assignedAgentCount === 1 ? '' : 's'}</span>}
                         </div>
                         {server.error ? <p className="mt-1 truncate text-[11px] text-nexy-error">{server.error}</p> : <p className="mt-1 text-[11px] text-nexy-muted">Ready to use in a chat or assign to an agent.</p>}
@@ -1392,7 +1450,7 @@ export function McpServerPanel() {
                     <button type="button" onClick={() => setExpandedServerDetails((previous) => { const next = new Set(previous); if (next.has(server.id)) next.delete(server.id); else next.add(server.id); return next })} className="flex w-full items-center gap-1 border-t-2 border-nexy-border bg-nexy-surface px-3 py-2 text-left text-[10px] font-bold text-nexy-muted hover:bg-nexy-recessed" aria-expanded={detailsOpen}>
                       {detailsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />} Technical details
                     </button>
-                    {detailsOpen && <div className="space-y-1 border-t-2 border-nexy-border bg-nexy-recessed px-3 py-2 text-[10px] text-nexy-muted"><p className="break-all font-mono">{server.command} {server.args.join(' ')}</p>{server.cwd && <p>Working directory: {server.cwd}</p>}</div>}
+                    {detailsOpen && <div className="space-y-1 border-t-2 border-nexy-border bg-nexy-recessed px-3 py-2 text-[10px] text-nexy-muted"><p className="break-all font-mono">{server.command} {server.args.join(' ')}</p>{server.cwd && <p>Working directory: {server.cwd}</p>}<p>Sandbox: {server.sandbox?.status ?? 'pending'}{server.sandbox?.backend ? ` · ${server.sandbox.backend}` : ''}</p>{server.sandbox?.diagnostics && <p className="break-words text-nexy-error">{server.sandbox.diagnostics}</p>}</div>}
                   </article>
                 )
               })}

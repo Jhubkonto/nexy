@@ -5,7 +5,10 @@ const { mockIpcMain, mockDb, mockOverrideRows, mockAgentRows, mockTrustRows } = 
   const handlers = new Map<string, (...args: unknown[]) => unknown>()
   const serverRows: { id: string; config_json: string; config_encrypted: number; enabled: number }[] = []
   const overrideRows = new Map<string, { enabled: number; approval: string }>()
-  const agentRows = [{ id: 'agent-1', config_json: JSON.stringify({ name: 'Research Agent', mcpServers: [] }) }]
+  const agentRows = [
+    { id: 'agent-1', config_json: JSON.stringify({ name: 'Research Agent', mcpServers: [] }) },
+    { id: 'agent1', config_json: JSON.stringify({ name: 'Approval Agent', mcpServers: [] }) },
+  ]
   const trustRows = new Map<string, string>()
 
   const mockIpcMain = {
@@ -57,6 +60,10 @@ const { mockIpcMain, mockDb, mockOverrideRows, mockAgentRows, mockTrustRows } = 
         if (sql.includes('agent_mcp_tool_overrides')) {
           const key = `${args[0]}:${args[1]}:${args[2]}`
           return overrideRows.get(key)
+        }
+        if (sql.includes('agent_mcp_server_trust')) {
+          const trust = trustRows.get(`${args[0]}:${args[1]}`)
+          return trust ? { trust } : undefined
         }
         if (sql.includes('SELECT config_json FROM agents')) {
           return agentRows.find((agent) => agent.id === args[0])
@@ -120,7 +127,7 @@ vi.mock('../database', () => ({
 }))
 
 /* ── Import & Register ─────────────────────────────────────── */
-import { registerMcpHandlers, disconnectServer, shutdownMcpServers, servers, callMcpTool } from '../mcp'
+import { registerMcpHandlers, disconnectServer, shutdownMcpServers, servers, callMcpTool, getMcpServersForCompanion, buildMcpProcessEnv, getMcpServerConfigsForCli } from '../mcp'
 import { safeStorage } from 'electron'
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import type { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -161,6 +168,7 @@ function injectConnectedServer(id: string, name: string, client: ReturnType<type
 beforeEach(() => {
   mockDb._serverRows.length = 0
   mockAgentRows[0].config_json = JSON.stringify({ name: 'Research Agent', mcpServers: [] })
+  mockAgentRows[1].config_json = JSON.stringify({ name: 'Approval Agent', mcpServers: [] })
   mockTrustRows.clear()
   mockOverrideRows.clear()
   servers.clear()
@@ -296,6 +304,10 @@ describe('MCP — Tool Approval', () => {
     const id = `test-server-${Math.random().toString(36).slice(2)}`
     const client = makeMockClient()
     injectConnectedServer(id, 'ApprovalServer', client)
+    const agent = mockAgentRows.find((row) => row.id === 'agent1')!
+    const config = JSON.parse(agent.config_json) as { mcpServers: string[] }
+    config.mcpServers.push(id)
+    agent.config_json = JSON.stringify(config)
     return { id, client }
   }
 
@@ -373,17 +385,42 @@ describe('MCP — Tool Approval', () => {
     expect(client.callTool).not.toHaveBeenCalled()
   })
 
-  it('defaults to always-ask when called without agentId', async () => {
+  it('rejects direct calls without an agentId', async () => {
     const { id: serverId } = addTestServer()
-    await invokeHandler('mcp:call-tool', serverId, 'testTool', {})
-    expect(mockRequestApproval).toHaveBeenCalled()
+    const r = await invokeHandler('mcp:call-tool', serverId, 'testTool', {})
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('agent identity')
+  })
+
+  it('rejects direct calls without an assigned agent', async () => {
+    const { id: serverId, client } = addTestServer()
+    const r = await invokeHandler('mcp:call-tool', serverId, 'testTool', {}, 'agent-1')
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('not assigned')
+    expect(client.callTool).not.toHaveBeenCalled()
+  })
+
+  it('rejects direct calls for tools that were not discovered from the server', async () => {
+    const { id: serverId, client } = addTestServer()
+    const r = await invokeHandler('mcp:call-tool', serverId, 'forgedTool', {}, 'agent1')
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('not available')
+    expect(client.callTool).not.toHaveBeenCalled()
+  })
+
+  it('requires an agent identity for direct IPC calls', async () => {
+    const { id: serverId, client } = addTestServer()
+    const r = await invokeHandler('mcp:call-tool', serverId, 'testTool', {})
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('agent identity')
+    expect(client.callTool).not.toHaveBeenCalled()
   })
 
   it('fails closed when always-ask but webContents is destroyed', async () => {
     const { id: serverId, client } = addTestServer()
     fakeSender.isDestroyed.mockReturnValue(true)
 
-    const r = await invokeHandler('mcp:call-tool', serverId, 'testTool', {})
+    const r = await invokeHandler('mcp:call-tool', serverId, 'testTool', {}, 'agent1')
     expect(r.success).toBe(false)
     expect(r.error).toContain('no UI is available')
     expect(mockRequestApproval).not.toHaveBeenCalled()
@@ -436,6 +473,10 @@ describe('MCP — Image extraction', () => {
     const id = `img-server-${Math.random().toString(36).slice(2)}`
     const client = makeMockClient()
     injectConnectedServer(id, 'ImgServer', client)
+    const agent = mockAgentRows.find((row) => row.id === 'agent1')!
+    const config = JSON.parse(agent.config_json) as { mcpServers: string[] }
+    config.mcpServers.push(id)
+    agent.config_json = JSON.stringify(config)
     mockOverrideRows.set(`agent1:${id}:testTool`, { enabled: 1, approval: 'auto' })
     return { id, client }
   }
@@ -515,6 +556,10 @@ describe('MCP — fullAutoApprove bypass', () => {
     const id = `faa-server-${Math.random().toString(36).slice(2)}`
     const client = makeMockClient()
     injectConnectedServer(id, 'FaaServer', client)
+    const agent = mockAgentRows.find((row) => row.id === 'agent1')!
+    const config = JSON.parse(agent.config_json) as { mcpServers: string[] }
+    config.mcpServers.push(id)
+    agent.config_json = JSON.stringify(config)
     client.callTool.mockResolvedValue({ content: [{ type: 'text', text: 'done' }], isError: false })
     return { id, client }
   }
@@ -529,24 +574,54 @@ describe('MCP — fullAutoApprove bypass', () => {
     expect(client.callTool).toHaveBeenCalled()
   })
 
-  it('bypasses a block server trust when fullAutoApprove is true', async () => {
-    const { id: serverId } = addFaaServer()
-    // No per-tool row - server trust = 'block' which maps to 'always-ask'
-    // We simulate it by adding a server trust that forces always-ask with explicit override
-    mockOverrideRows.set(`agent1:${serverId}:testTool`, { enabled: 1, approval: 'always-ask' })
+  it('never bypasses a blocked server trust when fullAutoApprove is true', async () => {
+    const { id: serverId, client } = addFaaServer()
+    mockTrustRows.set(`agent1:${serverId}`, 'block')
 
     const r = await callMcpTool(serverId, 'testTool', {}, 'agent1', fakeSender as unknown as Electron.WebContents, false, false, true)
-    expect(r.success).toBe(true)
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('blocked')
+    expect(client.callTool).not.toHaveBeenCalled()
     expect(mockRequestApproval).not.toHaveBeenCalled()
   })
 
-  it('bypasses a disabled tool override when fullAutoApprove is true', async () => {
+  it('enforces a conversation policy even when the agent row has no server grant', async () => {
+    const { id: serverId, client } = addFaaServer()
+    const r = await callMcpTool(
+      serverId,
+      'testTool',
+      {},
+      'agent-1',
+      fakeSender as unknown as Electron.WebContents,
+      false,
+      false,
+      true,
+      { assignedServerIds: [serverId], serverTrust: { [serverId]: 'block' } },
+    )
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('blocked')
+    expect(client.callTool).not.toHaveBeenCalled()
+  })
+
+  it('does not let a per-tool auto row override an agent server block', async () => {
+    const { id: serverId, client } = addFaaServer()
+    mockTrustRows.set(`agent1:${serverId}`, 'block')
+    mockOverrideRows.set(`agent1:${serverId}:testTool`, { enabled: 1, approval: 'auto' })
+
+    const r = await callMcpTool(serverId, 'testTool', {}, 'agent1', fakeSender as unknown as Electron.WebContents, false, false, true)
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('blocked')
+    expect(client.callTool).not.toHaveBeenCalled()
+  })
+
+  it('never bypasses a disabled tool override when fullAutoApprove is true', async () => {
     const { id: serverId, client } = addFaaServer()
     mockOverrideRows.set(`agent1:${serverId}:testTool`, { enabled: 0, approval: 'auto' })
 
     const r = await callMcpTool(serverId, 'testTool', {}, 'agent1', fakeSender as unknown as Electron.WebContents, false, false, true)
-    expect(r.success).toBe(true)
-    expect(client.callTool).toHaveBeenCalled()
+    expect(r.success).toBe(false)
+    expect(r.error).toContain('disabled')
+    expect(client.callTool).not.toHaveBeenCalled()
   })
 
   it('still respects explicit always-ask override when fullAutoApprove is false', async () => {
@@ -568,6 +643,16 @@ describe('MCP — fullAutoApprove bypass', () => {
 })
 
 describe('MCP — Crash recovery', () => {
+  it('does not restart a disabled server', async () => {
+    const added = await invokeHandler('mcp:add-server', {
+      name: 'Disabled Server', command: 'node', args: [], env: {}, enabled: false,
+    })
+
+    const result = await invokeHandler('mcp:restart-server', added.id)
+    expect(result).toBe(false)
+    expect(servers.has(added.id)).toBe(false)
+  })
+
   it('auto-reconnects after an unexpected transport close', async () => {
     vi.useFakeTimers()
 
@@ -608,5 +693,49 @@ describe('MCP — Crash recovery', () => {
     await vi.advanceTimersByTimeAsync(5000)
 
     expect(servers.has(added.id)).toBe(false)
+  })
+})
+
+describe('MCP — Companion redaction', () => {
+  it('never includes environment secrets in companion server payloads', async () => {
+    const added = await invokeHandler('mcp:add-server', {
+      name: 'Secret Server', command: 'node', args: [], env: { API_KEY: 'do-not-send' }, enabled: false,
+    })
+
+    const payload = getMcpServersForCompanion()
+    const server = payload.find((entry) => entry.id === added.id)
+    expect(server).toBeDefined()
+    expect(server).not.toHaveProperty('env')
+    expect(JSON.stringify(server)).not.toContain('do-not-send')
+  })
+})
+
+describe('MCP — CLI sandbox proxy', () => {
+  it('does not expose a third-party command, cwd, or environment to a CLI adapter', async () => {
+    const added = await invokeHandler('mcp:add-server', {
+      name: 'CLI Secret Server', command: 'node', args: ['server.js'], cwd: 'C:\\private',
+      env: { API_KEY: 'must-not-reach-cli' }, enabled: false,
+    })
+    // CLI preparation only returns enabled servers.
+    await invokeHandler('mcp:update-server', added.id, { enabled: true })
+    const [proxy] = getMcpServerConfigsForCli([added.id])
+    expect(proxy.command).not.toBe('node')
+    expect(proxy.args).toContain('--session')
+    expect(proxy.args).not.toContain('server.js')
+    expect(proxy.cwd).toBeUndefined()
+    expect(proxy.env).toBeUndefined()
+    expect(JSON.stringify(proxy)).not.toContain('must-not-reach-cli')
+  })
+})
+
+describe('MCP — child process boundary', () => {
+  it('inherits only launch variables and explicit server variables', () => {
+    const previous = process.env.OPENAI_API_KEY
+    process.env.OPENAI_API_KEY = 'must-not-cross'
+    const env = buildMcpProcessEnv({ MCP_TOKEN: 'explicit-server-secret' })
+    expect(env.MCP_TOKEN).toBe('explicit-server-secret')
+    expect(env.OPENAI_API_KEY).toBeUndefined()
+    if (previous === undefined) delete process.env.OPENAI_API_KEY
+    else process.env.OPENAI_API_KEY = previous
   })
 })

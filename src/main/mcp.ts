@@ -1,5 +1,5 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import type { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { BrowserWindow, safeStorage, type WebContents } from 'electron'
 import { getDatabase } from './database'
 import { randomUUID } from 'crypto'
@@ -9,18 +9,9 @@ import { DESKTOP_NAVIGATOR_ID, DESKTOP_NAVIGATOR_TOOLS, createDesktopNavigatorHa
 import { startDesktopNavigatorBridge, getDesktopNavigatorCliConfig } from './desktop-navigator-bridge'
 import { debugLog } from './debug-mode'
 import { searchMcpRegistry } from './mcp-registry'
-
-interface McpServerConfig {
-  id: string
-  name: string
-  description?: string
-  command: string
-  args: string[]
-  env: Record<string, string>
-  cwd?: string
-  imageResponses?: 'allow' | 'omit'
-  enabled: boolean
-}
+import type { McpServerConfig, McpSandboxRuntimeStatus } from '../shared/types'
+import { normalizeMcpSandboxProfile } from '../shared/mcp-sandbox'
+import { createSandboxedMcpTransport, getMcpSandboxProxyConfig, shutdownMcpSandboxBroker, type McpSandboxHandle } from './mcp-sandbox'
 
 type InProcessHandler = (toolName: string, args: Record<string, unknown>) => Promise<{ success: boolean; result?: string; images?: { dataUrl: string; mimeType: string }[]; error?: string }>
 
@@ -32,6 +23,13 @@ interface McpServerInstance {
   status: 'connecting' | 'connected' | 'error' | 'disconnected'
   error?: string
   tools: McpTool[]
+  capabilities?: Record<string, unknown>
+  serverVersion?: { name: string; version: string }
+  instructions?: string
+  resources?: McpResource[]
+  prompts?: McpPrompt[]
+  sandbox?: McpSandboxRuntimeStatus
+  sandboxHandle?: McpSandboxHandle
 }
 
 interface McpTool {
@@ -51,6 +49,37 @@ export interface CliMcpServerConfig {
   cwd?: string
 }
 
+interface McpResource {
+  uri: string
+  name?: string
+  description?: string
+  mimeType?: string
+}
+
+interface McpPrompt {
+  name: string
+  description?: string
+  arguments?: Array<{ name: string; description?: string; required?: boolean }>
+}
+
+export interface McpExecutionPolicy {
+  assignedServerIds: string[]
+  serverTrust: Record<string, 'auto' | 'always-ask' | 'block'>
+}
+
+const INHERITED_MCP_ENV_KEYS = new Set([
+  'PATH', 'Path', 'PATHEXT', 'ComSpec', 'COMSPEC', 'SystemRoot', 'SYSTEMROOT', 'WINDIR',
+  'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'LANG', 'LC_ALL',
+])
+
+/** Keep provider credentials and other desktop secrets out of third-party MCP processes. */
+export function buildMcpProcessEnv(explicitEnv: Record<string, string> = {}): Record<string, string> {
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(([key, value]) => INHERITED_MCP_ENV_KEYS.has(key) && typeof value === 'string'),
+  ) as Record<string, string>
+  return { ...inherited, ...explicitEnv }
+}
+
 export const servers = new Map<string, McpServerInstance>()
 const reconnectTimers = new Map<string, NodeJS.Timeout>()
 const intentionallyDisconnected = new Set<string>()
@@ -66,8 +95,16 @@ function broadcastServerStatus(id: string): void {
     status: instance?.status ?? 'disconnected',
     error: instance?.error,
     toolCount: instance?.tools.length ?? 0,
+    ...(instance?.sandbox ? { sandbox: instance.sandbox } : {}),
   }
-  for (const win of BrowserWindow.getAllWindows()) {
+  let windows: BrowserWindow[]
+  try {
+    windows = BrowserWindow.getAllWindows()
+  } catch {
+    // Some headless/unit-test Electron shims do not expose BrowserWindow.
+    return
+  }
+  for (const win of windows) {
     win.webContents.send('mcp:server-status-changed', payload)
   }
 }
@@ -101,7 +138,7 @@ function loadServerConfigs(): McpServerConfig[] {
   }[]
   return rows.map((row) => {
     const config = JSON.parse(decodeStoredConfig(row.config_json, row.config_encrypted === 1))
-    return { ...config, id: row.id, enabled: row.enabled === 1 }
+    return { ...config, id: row.id, enabled: row.enabled === 1, sandboxProfile: normalizeMcpSandboxProfile(config.sandboxProfile) }
   })
 }
 
@@ -144,6 +181,10 @@ function scheduleReconnect(id: string): void {
 }
 
 async function connectServer(config: McpServerConfig): Promise<void> {
+  if (!config.enabled) {
+    intentionallyDisconnected.add(config.id)
+    return
+  }
   intentionallyDisconnected.delete(config.id)
 
   // Disconnect existing if any
@@ -155,13 +196,23 @@ async function connectServer(config: McpServerConfig): Promise<void> {
     extraArgs.push('--imageResponses', 'omit')
   }
 
-  const transport = new StdioClientTransport({
-    command: config.command,
-    args: [...config.args, ...extraArgs],
-    env: Object.keys(config.env).length > 0 ? { ...process.env, ...config.env } as Record<string, string> : undefined,
-    cwd: config.cwd || undefined,
-    stderr: 'pipe'
-  })
+  let sandboxHandle: McpSandboxHandle
+  try {
+    sandboxHandle = createSandboxedMcpTransport({
+      command: config.command,
+      args: [...config.args, ...extraArgs],
+      env: buildMcpProcessEnv(config.env),
+      cwd: config.cwd || undefined,
+      profile: config.sandboxProfile,
+      diagnosticLabel: config.name,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    servers.set(config.id, { config, status: 'error', error: message, tools: [], sandbox: { status: 'unavailable', backend: process.platform, diagnostics: message } })
+    broadcastServerStatus(config.id)
+    throw error
+  }
+  const transport = sandboxHandle.transport
 
   const client = new Client(
     { name: 'nexy', version: '0.9.0' },
@@ -173,7 +224,11 @@ async function connectServer(config: McpServerConfig): Promise<void> {
     client,
     transport,
     status: 'connecting',
-    tools: []
+    tools: [],
+    resources: [],
+    prompts: [],
+    sandbox: sandboxHandle.status,
+    sandboxHandle,
   }
 
   servers.set(config.id, instance)
@@ -182,6 +237,14 @@ async function connectServer(config: McpServerConfig): Promise<void> {
   try {
     await client.connect(transport)
     instance.status = 'connected'
+    instance.sandbox = { ...sandboxHandle.status, status: 'sandboxed' }
+    instance.capabilities = typeof client.getServerCapabilities === 'function'
+      ? client.getServerCapabilities() as Record<string, unknown> | undefined
+      : undefined
+    instance.serverVersion = typeof client.getServerVersion === 'function'
+      ? client.getServerVersion() as { name: string; version: string } | undefined
+      : undefined
+    instance.instructions = typeof client.getInstructions === 'function' ? client.getInstructions() : undefined
 
     transport.onclose = () => {
       const inst = servers.get(config.id)
@@ -210,6 +273,31 @@ async function connectServer(config: McpServerConfig): Promise<void> {
       instance.tools = []
       debugLog('mcp', `connected: ${config.name} (no tools listed)`)
     }
+    if (instance.capabilities?.resources && typeof client.listResources === 'function') {
+      try {
+        const resourceResult = await client.listResources()
+        instance.resources = (resourceResult.resources || []).map((resource) => ({
+          uri: resource.uri,
+          name: resource.name,
+          description: resource.description,
+          mimeType: resource.mimeType,
+        }))
+      } catch (error) {
+        debugLog('mcp', `resource discovery failed: ${config.name} — ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    if (instance.capabilities?.prompts && typeof client.listPrompts === 'function') {
+      try {
+        const promptResult = await client.listPrompts()
+        instance.prompts = (promptResult.prompts || []).map((prompt) => ({
+          name: prompt.name,
+          description: prompt.description,
+          arguments: prompt.arguments,
+        }))
+      } catch (error) {
+        debugLog('mcp', `prompt discovery failed: ${config.name} — ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
   } catch (error) {
     instance.status = 'error'
     instance.error = (error as Error).message
@@ -224,7 +312,11 @@ export interface McpTestResult {
   ok: boolean
   tools?: { name: string; description?: string }[]
   error?: string
+  sandbox?: McpSandboxRuntimeStatus
 }
+
+type McpLaunchConfig = Pick<McpServerConfig, 'command' | 'args' | 'env'> &
+  Partial<Pick<McpServerConfig, 'cwd' | 'imageResponses' | 'sandboxProfile'>>
 
 /**
  * Pre-flight check for a candidate server. Spawns an ephemeral stdio connection,
@@ -232,7 +324,7 @@ export interface McpTestResult {
  * live `servers` map. Powers the "Test connection" button in the add-server wizard.
  */
 export async function testMcpServer(
-  config: Pick<McpServerConfig, 'command' | 'args' | 'env'> & Partial<Pick<McpServerConfig, 'cwd' | 'imageResponses'>>
+  config: McpLaunchConfig
 ): Promise<McpTestResult> {
   if (!config.command || !config.command.trim()) {
     return { ok: false, error: 'A launch command is required.' }
@@ -243,14 +335,21 @@ export async function testMcpServer(
     extraArgs.push('--imageResponses', 'omit')
   }
 
-  const env = config.env ?? {}
-  const transport = new StdioClientTransport({
-    command: config.command,
-    args: [...(config.args ?? []), ...extraArgs],
-    env: Object.keys(env).length > 0 ? { ...process.env, ...env } as Record<string, string> : undefined,
-    cwd: config.cwd || undefined,
-    stderr: 'pipe',
-  })
+  let sandboxHandle: McpSandboxHandle
+  try {
+    sandboxHandle = createSandboxedMcpTransport({
+      command: config.command,
+      args: [...(config.args ?? []), ...extraArgs],
+      env: buildMcpProcessEnv(config.env ?? {}),
+      cwd: config.cwd || undefined,
+      profile: config.sandboxProfile,
+      diagnosticLabel: 'preflight',
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { ok: false, error: message, sandbox: { status: 'unavailable', backend: process.platform, diagnostics: message } }
+  }
+  const transport = sandboxHandle.transport
 
   const client = new Client({ name: 'nexy-preflight', version: '0.9.0' }, { capabilities: {} })
 
@@ -264,12 +363,12 @@ export async function testMcpServer(
       // Server connected but exposes no tools list — still a successful connection.
       tools = []
     }
-    return { ok: true, tools }
+    return { ok: true, tools, sandbox: { ...sandboxHandle.status, status: 'sandboxed' } }
   } catch (error) {
     return { ok: false, error: (error as Error).message }
   } finally {
     try {
-      await transport.close()
+      await sandboxHandle.close()
     } catch {
       // Ignore teardown errors.
     }
@@ -288,12 +387,14 @@ export async function disconnectServer(id: string): Promise<void> {
 
   const instance = servers.get(id)
   if (instance) {
-    if (instance.transport) {
+    if (instance.sandboxHandle) {
       try {
-        await instance.transport.close()
+        await instance.sandboxHandle.close()
       } catch {
         // Ignore close errors
       }
+    } else if (instance.transport) {
+      try { await instance.transport.close() } catch { /* Ignore close errors */ }
     }
     instance.status = 'disconnected'
     servers.delete(id)
@@ -344,14 +445,15 @@ export function getMcpServerConfigsForCli(serverIds: string[]): CliMcpServerConf
       const extraArgs = config.imageResponses === 'omit'
         ? ['--imageResponses', 'omit']
         : []
-      return {
-        id: config.id,
-        key: toCliMcpServerKey(config),
+      const proxy = getMcpSandboxProxyConfig({
         command: config.command,
         args: [...config.args, ...extraArgs],
-        ...(Object.keys(config.env).length > 0 && { env: config.env }),
-        ...(config.cwd && { cwd: config.cwd }),
-      }
+        env: buildMcpProcessEnv(config.env),
+        cwd: config.cwd,
+        profile: config.sandboxProfile,
+        diagnosticLabel: config.name,
+      })
+      return { ...proxy, id: config.id, key: toCliMcpServerKey(config) }
     })
 
   // Inject the Desktop Navigator bridge when it is assigned to this agent
@@ -371,8 +473,39 @@ export async function callMcpTool(
   webContents?: WebContents,
   agenticMode?: boolean,
   autoApprove?: boolean,
-  fullAutoApprove?: boolean
+  fullAutoApprove?: boolean,
+  executionPolicy?: McpExecutionPolicy,
 ): Promise<{ success: boolean; result?: string; images?: { dataUrl: string; mimeType: string }[]; error?: string }> {
+  const instance = servers.get(serverId)
+  if (!instance || instance.status !== 'connected') {
+    return { success: false, error: `Server ${serverId} not connected` }
+  }
+  if (!instance.tools.some((tool) => tool.name === toolName)) {
+    return { success: false, error: `Tool ${toolName} is not available on server ${serverId}` }
+  }
+  if (!agentId) return { success: false, error: 'An agent identity is required for MCP tool execution' }
+
+  const db = getDatabase()
+  const agentRow = db.prepare('SELECT config_json FROM agents WHERE id = ?').get(agentId) as { config_json: string } | undefined
+  if (!agentRow && !executionPolicy) return { success: false, error: `Agent ${agentId} not found` }
+  if (agentRow) {
+    let agentConfig: Record<string, unknown>
+    try {
+      agentConfig = JSON.parse(agentRow.config_json) as Record<string, unknown>
+    } catch {
+      return { success: false, error: `Agent ${agentId} has invalid configuration` }
+    }
+    const assignedServerIds = Array.isArray(agentConfig.mcpServers)
+      ? agentConfig.mcpServers.filter((id): id is string => typeof id === 'string')
+      : []
+    if (!assignedServerIds.includes(serverId) && !executionPolicy?.assignedServerIds.includes(serverId)) {
+      return { success: false, error: `MCP server ${serverId} is not assigned to agent ${agentId}` }
+    }
+  }
+  if (executionPolicy && !executionPolicy.assignedServerIds.includes(serverId)) {
+    return { success: false, error: `MCP server ${serverId} is not enabled for this conversation` }
+  }
+
   // Resolve approval policy. Per-tool overrides take precedence; the server-level
   // trust setting is the fallback. Both count as "explicit" so that agentic mode
   // cannot bypass them — agentic auto-approve only applies when neither a tool
@@ -380,37 +513,33 @@ export async function callMcpTool(
   let approval: string = 'always-ask'
   let hasExplicitOverride = false
 
-  if (agentId) {
-    const db = getDatabase()
+  {
+    const serverTrust = db.prepare(
+      'SELECT trust FROM agent_mcp_server_trust WHERE agent_id=? AND server_id=?'
+    ).get(agentId, serverId) as { trust: string } | undefined
+    const effectiveTrust = executionPolicy?.serverTrust[serverId] ?? serverTrust?.trust
+    if (effectiveTrust === 'block') return { success: false, error: 'MCP server is blocked by policy' }
     const override = db.prepare(
       'SELECT enabled, approval FROM agent_mcp_tool_overrides WHERE agent_id=? AND server_id=? AND tool_name=?'
     ).get(agentId, serverId, toolName) as { enabled: number; approval: string } | undefined
-    // fullAutoApprove overrides disabled tool overrides — the flag means "trust everything"
-    if (override?.enabled === 0 && !fullAutoApprove) return { success: false, error: 'Tool disabled for this agent' }
+    // Explicit denials are absolute, including in full-auto mode.
+    if (override?.enabled === 0) return { success: false, error: 'Tool disabled for this agent' }
     if (override) {
       approval = override.approval
       hasExplicitOverride = true
-    } else {
+    } else if (effectiveTrust) {
       // No per-tool row — fall back to the server-level trust setting.
-      const serverTrust = db.prepare(
-        'SELECT trust FROM agent_mcp_server_trust WHERE agent_id=? AND server_id=?'
-      ).get(agentId, serverId) as { trust: string } | undefined
-      if (serverTrust) {
-        approval = serverTrust.trust === 'auto' ? 'auto' : 'always-ask'
-        hasExplicitOverride = true
-      }
+      approval = effectiveTrust === 'auto' ? 'auto' : 'always-ask'
+      hasExplicitOverride = true
     }
   }
 
-  // fullAutoApprove overrides disabled approval — treat it as auto
-  if (approval === 'disabled' && !fullAutoApprove) return { success: false, error: 'Tool disabled for this agent' }
+  const policyTrust = executionPolicy?.serverTrust[serverId]
+  if (policyTrust === 'block') return { success: false, error: 'MCP server is blocked by policy' }
+  if (policyTrust === 'always-ask' && approval === 'auto') approval = 'always-ask'
+  if (approval === 'disabled') return { success: false, error: 'Tool disabled for this agent' }
 
-  const instance = servers.get(serverId)
-  if (!instance || instance.status !== 'connected') {
-    return { success: false, error: `Server ${serverId} not connected` }
-  }
-
-  // fullAutoApprove overrides explicit per-tool 'always-ask' and server 'block' trust.
+  // fullAutoApprove may bypass approval prompts, but never an explicit denial.
   // autoApprove bypasses when no explicit override exists (agentic mode).
   // agenticMode auto-approves tools that have no explicit override.
   const bypassApproval = fullAutoApprove || autoApprove || (agenticMode && !hasExplicitOverride)
@@ -496,6 +625,7 @@ export async function shutdownMcpServers(): Promise<void> {
       console.error(`[mcp] failed to disconnect ${id}:`, err)
     })
   }
+  await shutdownMcpSandboxBroker()
 }
 
 export function initDesktopNavigatorMcp(win: BrowserWindow): void {
@@ -513,6 +643,7 @@ export function initDesktopNavigatorMcp(win: BrowserWindow): void {
     inProcessHandler: handler,
     status: 'connected',
     tools: DESKTOP_NAVIGATOR_TOOLS,
+    sandbox: { status: 'sandboxed', backend: 'internal' },
   })
   // Start the HTTP bridge so CLI adapters (claude, codex) can also reach Desktop
   // Navigator tools via the stdio bridge worker script.
@@ -522,29 +653,65 @@ export function initDesktopNavigatorMcp(win: BrowserWindow): void {
   })
 }
 
-export function getMcpServersWithStatus(): (McpServerConfig & { status: string; error?: string; toolCount: number })[] {
+export function getMcpServersWithStatus(): (McpServerConfig & { status: string; error?: string; toolCount: number; resourceCount: number; promptCount: number; capabilities?: Record<string, unknown>; serverVersion?: { name: string; version: string }; instructions?: string; sandbox?: McpSandboxRuntimeStatus })[] {
   const configs = loadServerConfigs()
   const configIds = new Set(configs.map((c) => c.id))
   const result = configs.map((config) => {
     const instance = servers.get(config.id)
-    return { ...config, status: instance?.status ?? 'disconnected', error: instance?.error, toolCount: instance?.tools.length ?? 0 }
+    return {
+      ...config,
+      status: instance?.status ?? 'disconnected',
+      error: instance?.error,
+      toolCount: instance?.tools.length ?? 0,
+      resourceCount: instance?.resources?.length ?? 0,
+      promptCount: instance?.prompts?.length ?? 0,
+      ...(instance?.capabilities ? { capabilities: instance.capabilities } : {}),
+      ...(instance?.serverVersion ? { serverVersion: instance.serverVersion } : {}),
+      ...(instance?.instructions ? { instructions: instance.instructions } : {}),
+      ...(instance?.sandbox ? { sandbox: instance.sandbox } : {}),
+    }
   })
   for (const [id, instance] of servers) {
     if (!configIds.has(id) && instance.inProcessHandler) {
-      result.push({ ...instance.config, status: instance.status, error: instance.error, toolCount: instance.tools.length })
+      result.push({
+        ...instance.config,
+        status: instance.status,
+        error: instance.error,
+        toolCount: instance.tools.length,
+        resourceCount: instance.resources?.length ?? 0,
+        promptCount: instance.prompts?.length ?? 0,
+        ...(instance.capabilities ? { capabilities: instance.capabilities } : {}),
+        ...(instance.serverVersion ? { serverVersion: instance.serverVersion } : {}),
+        ...(instance.instructions ? { instructions: instance.instructions } : {}),
+      })
     }
   }
   return result
 }
 
-export function getMcpServerStatus(id: string): { status: string; error?: string; tools: McpTool[] } {
+/** Secret-free metadata for the companion protocol. */
+export function getMcpServersForCompanion(): Array<Omit<ReturnType<typeof getMcpServersWithStatus>[number], 'env'>> {
+  return getMcpServersWithStatus().map(({ env: _env, ...server }) => server)
+}
+
+export function getMcpServerStatus(id: string): { status: string; error?: string; tools: McpTool[]; resources: McpResource[]; prompts: McpPrompt[]; capabilities?: Record<string, unknown>; serverVersion?: { name: string; version: string }; instructions?: string; sandbox?: McpSandboxRuntimeStatus } {
   const instance = servers.get(id)
-  return { status: instance?.status ?? 'disconnected', error: instance?.error, tools: instance?.tools ?? [] }
+  return {
+    status: instance?.status ?? 'disconnected',
+    error: instance?.error,
+    tools: instance?.tools ?? [],
+    resources: instance?.resources ?? [],
+    prompts: instance?.prompts ?? [],
+    ...(instance?.capabilities ? { capabilities: instance.capabilities } : {}),
+    ...(instance?.serverVersion ? { serverVersion: instance.serverVersion } : {}),
+        ...(instance?.instructions ? { instructions: instance.instructions } : {}),
+        ...(instance?.sandbox ? { sandbox: instance.sandbox } : {}),
+  }
 }
 
 export async function addMcpServer(config: Omit<McpServerConfig, 'id'>): Promise<McpServerConfig> {
   const id = randomUUID()
-  const full = { ...config, id } as McpServerConfig
+  const full = { ...config, id, sandboxProfile: normalizeMcpSandboxProfile(config.sandboxProfile) } as McpServerConfig
   saveServerConfig(full)
   if (full.enabled) await connectServer(full).catch(() => {})
   return full
@@ -554,7 +721,7 @@ export async function updateMcpServer(id: string, updates: Partial<McpServerConf
   const configs = loadServerConfigs()
   const existing = configs.find((c) => c.id === id)
   if (!existing) return null
-  const updated = { ...existing, ...updates, id }
+  const updated = { ...existing, ...updates, id, sandboxProfile: normalizeMcpSandboxProfile(updates.sandboxProfile ?? existing.sandboxProfile) }
   saveServerConfig(updated)
   if (updated.enabled) {
     await connectServer(updated).catch(() => {})
@@ -572,7 +739,7 @@ export async function removeMcpServer(id: string): Promise<void> {
 export async function restartMcpServer(id: string): Promise<boolean> {
   const configs = loadServerConfigs()
   const config = configs.find((c) => c.id === id)
-  if (!config) return false
+  if (!config || !config.enabled) return false
   await connectServer(config).catch(() => {})
   return true
 }
@@ -592,29 +759,7 @@ export function listMcpToolsForAgent(agentId: string): McpTool[] {
 
 export function registerMcpHandlers(): void {
   safeHandle('mcp:list-servers', () => {
-    const configs = loadServerConfigs()
-    const configIds = new Set(configs.map((c) => c.id))
-    const result = configs.map((config) => {
-      const instance = servers.get(config.id)
-      return {
-        ...config,
-        status: instance?.status ?? 'disconnected',
-        error: instance?.error,
-        toolCount: instance?.tools.length ?? 0
-      }
-    })
-    // Append built-in in-process servers that have no DB row
-    for (const [id, instance] of servers) {
-      if (!configIds.has(id) && instance.inProcessHandler) {
-        result.push({
-          ...instance.config,
-          status: instance.status,
-          error: instance.error,
-          toolCount: instance.tools.length,
-        })
-      }
-    }
-    return result
+    return getMcpServersWithStatus()
   })
 
   safeHandle('mcp:add-server', async (_event, config: Omit<McpServerConfig, 'id'>) => {
@@ -651,12 +796,7 @@ export function registerMcpHandlers(): void {
   })
 
   safeHandle('mcp:get-server-status', (_event, id: string) => {
-    const instance = servers.get(id)
-    return {
-      status: instance?.status ?? 'disconnected',
-      error: instance?.error,
-      tools: instance?.tools ?? []
-    }
+    return getMcpServerStatus(id)
   })
 
   safeHandle('mcp:list-tools', (_event, serverIds?: string[]) => {
@@ -736,14 +876,10 @@ export function registerMcpHandlers(): void {
   )
 
   safeHandle('mcp:restart-server', async (_event, id: string) => {
-    const configs = loadServerConfigs()
-    const config = configs.find((c) => c.id === id)
-    if (!config) return false
-    await connectServer(config).catch(() => {})
-    return true
+    return await restartMcpServer(id)
   })
 
-  safeHandle('mcp:test-server', async (_event, config: Pick<McpServerConfig, 'command' | 'args' | 'env'> & Partial<Pick<McpServerConfig, 'cwd' | 'imageResponses'>>) => {
+  safeHandle('mcp:test-server', async (_event, config: McpLaunchConfig) => {
     return await testMcpServer(config)
   })
 

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createConnection } from 'node:net'
 
 const { mockIpcMain, mockDb, transportOptions } = vi.hoisted(() => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>()
@@ -89,6 +90,32 @@ async function invokeHandler(channel: string, ...args: unknown[]) {
   return handler({ sender: { isDestroyed: vi.fn().mockReturnValue(false) } }, ...args)
 }
 
+async function readSandboxLaunch(options: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const args = options.args as string[]
+  const endpoint = args[1]
+  const token = args[3]
+  return await new Promise((resolve, reject) => {
+    let buffer = ''
+    let attempts = 0
+    const connect = () => {
+      const socket = createConnection(Number(endpoint.split(':')[1]), '127.0.0.1')
+      socket.on('connect', () => socket.write(`${JSON.stringify({ type: 'hello', token })}\n`))
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString()
+        const line = buffer.split('\n')[0]
+        if (!line) return
+        socket.end()
+        resolve(JSON.parse(line) as Record<string, unknown>)
+      })
+      socket.on('error', () => {
+        if (++attempts < 20) setTimeout(connect, 10)
+        else reject(new Error(`could not connect to sandbox test session at ${endpoint}`))
+      })
+    }
+    connect()
+  })
+}
+
 describe('MCP imageResponses transport args', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -111,7 +138,9 @@ describe('MCP imageResponses transport args', () => {
       enabled: true
     })
 
-    expect(transportOptions[0]?.args).toEqual(['@playwright/mcp', '--imageResponses', 'omit'])
+    expect(transportOptions[0]?.args).toContain('--session')
+    const launch = await readSandboxLaunch(transportOptions[0])
+    expect(launch.args).toEqual(['@playwright/mcp', '--imageResponses', 'omit'])
   })
 
   it('does not include imageResponses args when undefined or allow', async () => {
@@ -131,7 +160,9 @@ describe('MCP imageResponses transport args', () => {
       enabled: true
     })
 
-    expect(transportOptions[0]?.args).toEqual(['tool-a'])
-    expect(transportOptions[1]?.args).toEqual(['tool-b'])
+    expect(transportOptions[0]?.args).toContain('--session')
+    expect(transportOptions[1]?.args).toContain('--session')
+    expect((await readSandboxLaunch(transportOptions[0])).args).toEqual(['tool-a'])
+    expect((await readSandboxLaunch(transportOptions[1])).args).toEqual(['tool-b'])
   })
 })
