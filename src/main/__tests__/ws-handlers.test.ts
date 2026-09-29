@@ -12,6 +12,7 @@ const state = vi.hoisted(() => {
   let commandHandler: ((command: string, data: Record<string, unknown>, reply: (event: unknown) => void) => void) | null = null
   const replies: unknown[] = []
   const runs: Array<{ sql: string; args: unknown[] }> = []
+  let promptRows: Array<Record<string, unknown>> = []
   const abortActiveStream = vi.fn()
   const dispatchChatSend = vi.fn()
   const webContentsSend = vi.fn()
@@ -73,6 +74,8 @@ const state = vi.hoisted(() => {
     set projectConfigJson(value) { projectConfigJson = value },
     get projectSources() { return projectSources },
     set projectSources(value) { projectSources = value },
+    get promptRows() { return promptRows },
+    set promptRows(value) { promptRows = value },
   }
 })
 
@@ -89,6 +92,7 @@ vi.mock('../database', () => ({
         if (sql.includes('FROM projects p')) return [{ id: 'proj-1', name: 'Project 1' }]
         if (sql.includes('FROM messages')) return [{ id: 'msg-1', role: 'user', content: 'hello', timestamp: 1 }]
         if (sql.includes('FROM agents')) return [{ id: 'agent-1', name: 'Codex', icon: 'C', backend: 'codex-cli', cli_model: 'gpt-5.5' }]
+        if (sql.includes('FROM prompt_library_entries')) return state.promptRows
         return []
       },
       get: (..._args: unknown[]) => {
@@ -151,6 +155,11 @@ vi.mock('../cli-detection', () => ({
     ? [{ id: 'gpt-5.5', label: 'GPT-5.5' }]
     : [{ id: 'claude-sonnet-4.6', label: 'Claude Sonnet 4.6' }]
   ),
+}))
+
+vi.mock('../cli-adapters/claude-model-probe', () => ({
+  getClaudeCliModelChoices: vi.fn(() => [{ id: 'claude-sonnet-4.6', label: 'Claude Sonnet 4.6', source: 'cli-menu-confirmed' }]),
+  isClaudeCliModelOrCandidate: vi.fn((model: string) => model === 'claude-sonnet-4.6'),
 }))
 
 vi.mock('../auth', () => ({
@@ -339,6 +348,7 @@ describe('ws handlers', () => {
     state.approveConversationApprovals.mockClear()
     state.projectConfigJson = null
     state.projectSources = []
+    state.promptRows = []
     state.listProjectAuditSessions.mockReset()
     state.listProjectAuditSessions.mockReturnValue([])
     state.listProjectAuditFiles.mockReset()
@@ -374,6 +384,29 @@ describe('ws handlers', () => {
     expect(reply).toHaveBeenCalledWith({
       event: 'conversation:list',
       data: [{ id: 'conv-1', title: 'Chat 1' }],
+    })
+  })
+
+  it('lists global prompts only without a project and includes the matching project', () => {
+    state.promptRows = [
+      { id: 'global-1', title: 'Global', body: 'Global body', description: '', category: 'Custom', tags: '[]', scope: 'global', project_id: null, created_at: 1, updated_at: 1 },
+      { id: 'project-a-1', title: 'Project A', body: 'A body', description: '', category: 'Custom', tags: '[]', scope: 'project', project_id: 'project-a', created_at: 2, updated_at: 2 },
+      { id: 'project-b-1', title: 'Project B', body: 'B body', description: '', category: 'Custom', tags: '[]', scope: 'project', project_id: 'project-b', created_at: 3, updated_at: 3 },
+    ]
+
+    const globalReply = sendCommand('prompt:list')
+    const projectReply = sendCommand('prompt:list', { projectId: ' project-a ' })
+
+    expect(globalReply).toHaveBeenCalledWith({
+      event: 'prompt:list',
+      data: { entries: [expect.objectContaining({ title: 'Global' })] },
+    })
+    expect(projectReply).toHaveBeenCalledWith({
+      event: 'prompt:list',
+      data: { entries: [
+        expect.objectContaining({ title: 'Global' }),
+        expect.objectContaining({ title: 'Project A' }),
+      ] },
     })
   })
 
