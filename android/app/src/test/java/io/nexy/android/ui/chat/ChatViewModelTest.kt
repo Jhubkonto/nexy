@@ -983,6 +983,23 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun draftHermesProfileIsIncludedWithFirstMessage() = runTest {
+        val fakeWs = FakeWsClient()
+        val vm = ChatViewModel("draft-conv", fakeWs)
+        advanceUntilIdle()
+
+        vm.setHermesProfile("localllm-iso")
+        vm.sendMessage("Hello")
+
+        assertEquals(
+            "localllm-iso",
+            fakeWs.sentCommands.last().data["hermesProfile"],
+        )
+
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
     fun refreshMessagesRequestsHistoryAgain() = runTest {
         val fakeWs = FakeWsClient()
         val vm = ChatViewModel("conv-1", fakeWs)

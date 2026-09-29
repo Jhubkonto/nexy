@@ -31,6 +31,7 @@ data class ConversationEntity(
     val projectId: String? = null,
     val projectName: String? = null,
     val model: String? = null,
+    val conversationHermesProfile: String? = null,
     val thinkingEffortOverride: String? = null,
     val fullAutoApproveOverride: Boolean? = null,
     val agenticModeOverride: Boolean? = null,

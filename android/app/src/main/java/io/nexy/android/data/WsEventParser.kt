@@ -63,6 +63,9 @@ import io.nexy.android.data.model.McpRegistryInstallConfig
 import io.nexy.android.data.model.McpRegistrySearchResult
 import io.nexy.android.data.model.McpRegistryServer
 import io.nexy.android.data.model.McpServerWithStatus
+import io.nexy.android.data.model.McpSandboxGrant
+import io.nexy.android.data.model.McpSandboxProfile
+import io.nexy.android.data.model.McpSandboxStatus
 import io.nexy.android.data.model.McpToolInfo
 import io.nexy.android.data.model.ProjectWikiMcpStatus
 import io.nexy.android.data.model.ProjectWikiMcpStdio
@@ -505,6 +508,7 @@ fun parseWsEvent(
                         agentIcons = agentIcons,
                         rootDirectory = p.nullableString("root_directory"),
                         defaultModel = p.nullableString("default_model"),
+                        projectHermesProfile = p.nullableString("project_hermes_profile"),
                         // `project:list` does not include the thinking default. Preserve the
                         // value hydrated from the full sync snapshot until project:config is
                         // requested, rather than replacing it with null.
@@ -746,7 +750,11 @@ fun parseWsEvent(
                 conversations.value = conversations.value.map { conversation ->
                     if (conversation.id == conversationId) conversation.copy(model = model) else conversation
                 }
-                WsEvent.ConversationModelUpdated(conversationId, model)
+                val hermesProfile = data?.nullableString("hermesProfile")
+                conversations.value = conversations.value.map { conversation ->
+                    if (conversation.id == conversationId) conversation.copy(conversationHermesProfile = hermesProfile) else conversation
+                }
+                WsEvent.ConversationModelUpdated(conversationId, model, hermesProfile)
             }
 
             "conversation:mode-updated" -> {
@@ -1046,6 +1054,7 @@ fun parseWsEvent(
                     chatCount = 0,
                     agentIcons = emptyList(),
                     defaultModel = p.nullableString("default_model"),
+                    projectHermesProfile = p.nullableString("project_hermes_profile"),
                 )
                 projects.value = projects.value + project
                 WsEvent.ProjectCreated(project)
@@ -1156,6 +1165,12 @@ fun parseWsEvent(
                         profiles = profiles,
                         acpReady = h.optBoolean("acpReady", false),
                         version = h.nullableString("version"),
+                        acpStatus = h.nullableString("acpStatus"),
+                        acpDetail = h.nullableString("acpDetail"),
+                        profileRoot = h.optJSONObject("profileDiscovery")?.nullableString("root"),
+                        profilesDirectory = h.optJSONObject("profileDiscovery")?.nullableString("profilesDirectory"),
+                        namedProfileCount = h.optJSONObject("profileDiscovery")?.optInt("namedProfileCount", 0) ?: 0,
+                        profileDiscoveryError = h.optJSONObject("profileDiscovery")?.nullableString("error"),
                     )
                 }
                 WsEvent.CliStatus(map)
@@ -1187,6 +1202,8 @@ fun parseWsEvent(
                         command = s.optString("command"),
                         args = args,
                         enabled = s.optBoolean("enabled", false),
+                        sandbox = parseMcpSandboxStatus(s.optJSONObject("sandbox")),
+                        sandboxProfile = parseMcpSandboxProfile(s.optJSONObject("sandboxProfile")),
                     )
                 }
                 mcpServers.value = list
@@ -1311,14 +1328,14 @@ fun parseWsEvent(
             "mcp:server-added" -> {
                 val s = data?.optJSONObject("server") ?: return
                 val server = parseMcpServerWithStatus(s)
-                mcpServers.value = mcpServers.value + McpServerInfo(id = server.id, name = server.name, description = server.description, command = server.command, args = server.args, enabled = server.enabled)
+                mcpServers.value = mcpServers.value + McpServerInfo(id = server.id, name = server.name, description = server.description, command = server.command, args = server.args, enabled = server.enabled, sandbox = server.sandbox, sandboxProfile = server.sandboxProfile)
                 WsEvent.McpServerAdded(server)
             }
 
             "mcp:server-updated" -> {
                 val s = data?.optJSONObject("server") ?: return
                 val server = parseMcpServerWithStatus(s)
-                mcpServers.value = mcpServers.value.map { if (it.id == server.id) McpServerInfo(id = server.id, name = server.name, description = server.description, command = server.command, args = server.args, enabled = server.enabled) else it }
+                mcpServers.value = mcpServers.value.map { if (it.id == server.id) McpServerInfo(id = server.id, name = server.name, description = server.description, command = server.command, args = server.args, enabled = server.enabled, sandbox = server.sandbox, sandboxProfile = server.sandboxProfile) else it }
                 WsEvent.McpServerUpdated(server)
             }
 
@@ -1333,7 +1350,7 @@ fun parseWsEvent(
                 val status = data?.optString("status") ?: "disconnected"
                 val error = data?.nullableString("error")
                 val toolCount = data?.optInt("toolCount", 0) ?: 0
-                WsEvent.McpServerStatus(id, status, error, toolCount)
+                WsEvent.McpServerStatus(id, status, error, toolCount, parseMcpSandboxStatus(data?.optJSONObject("sandbox")))
             }
 
             "mcp:tools" -> {
@@ -1812,7 +1829,7 @@ fun parseWsEvent(
                         it in setOf("low", "medium", "high", "max", "disabled")
                     }
                     projects.value = projects.value.map { project ->
-                        if (project.id == id) project.copy(defaultModel = defaultModel, defaultThinkingEffort = defaultThinkingEffort) else project
+                        if (project.id == id) project.copy(defaultModel = defaultModel, projectHermesProfile = config.nullableString("projectHermesProfile"), defaultThinkingEffort = defaultThinkingEffort) else project
                     }
                 }
                 WsEvent.ProjectConfigUpdated(id = id)
@@ -1833,7 +1850,7 @@ fun parseWsEvent(
                     ?.let(::parseProjectSettingsConfig)
                 if (configObject != null) {
                     projects.value = projects.value.map { project ->
-                        if (project.id == id) project.copy(defaultModel = defaultModel, defaultThinkingEffort = defaultThinkingEffort) else project
+                        if (project.id == id) project.copy(defaultModel = defaultModel, projectHermesProfile = configObject.nullableString("projectHermesProfile"), defaultThinkingEffort = defaultThinkingEffort) else project
                     }
                 }
                 WsEvent.ProjectConfigChanged(id = id, config = config)
@@ -2836,6 +2853,38 @@ private fun parseMcpServerWithStatus(s: JSONObject): McpServerWithStatus {
         status = s.optString("status", "disconnected"),
         error = s.nullableString("error"),
         toolCount = s.optInt("toolCount", 0),
+        sandbox = parseMcpSandboxStatus(s.optJSONObject("sandbox")),
+        sandboxProfile = parseMcpSandboxProfile(s.optJSONObject("sandboxProfile")),
+    )
+}
+
+private fun parseMcpSandboxStatus(s: JSONObject?): McpSandboxStatus? {
+    if (s == null) return null
+    return McpSandboxStatus(
+        status = s.optString("status", "unavailable"),
+        backend = s.nullableString("backend"),
+        helperVersion = s.nullableString("helperVersion"),
+        helperPid = s.optInt("helperPid", 0).takeIf { it > 0 },
+        serverPid = s.optInt("serverPid", 0).takeIf { it > 0 },
+        diagnostics = s.nullableString("diagnostics"),
+    )
+}
+
+private fun parseMcpSandboxProfile(s: JSONObject?): McpSandboxProfile {
+    if (s == null) return McpSandboxProfile()
+    val grants = s.optJSONArray("filesystem")?.let { arr ->
+        (0 until arr.length()).mapNotNull { index ->
+            val grant = arr.optJSONObject(index) ?: return@mapNotNull null
+            val path = grant.optString("path").trim()
+            val access = grant.optString("access")
+            if (path.isBlank() || access !in setOf("read-only", "read-write")) null else McpSandboxGrant(path, access)
+        }
+    } ?: emptyList()
+    return McpSandboxProfile(
+        version = s.optInt("version", 1),
+        network = if (s.optString("network") == "allowed") "allowed" else "blocked",
+        childProcesses = if (s.optString("childProcesses") == "allowed") "allowed" else "blocked",
+        filesystem = grants,
     )
 }
 
@@ -3208,6 +3257,7 @@ internal fun parseProjectSettingsConfig(config: JSONObject): ProjectSettingsConf
         outOfScope = objectList("outOfScope"),
         milestones = objectList("milestones"),
         defaultModel = config.nullableString("defaultModel"),
+        projectHermesProfile = config.nullableString("projectHermesProfile"),
         defaultThinkingEffort = config.nullableString("defaultThinkingEffort")?.takeIf {
             it in setOf("low", "medium", "high", "max", "disabled")
         },
@@ -3534,6 +3584,7 @@ private fun parseConversationArray(arr: JSONArray): List<Conversation> =
             project_id = row.nullableString("project_id"),
             project_name = row.nullableString("project_name"),
             model = row.nullableString("model"),
+            conversationHermesProfile = row.nullableString("conversation_hermes_profile"),
             last_message = row.nullableString("last_message"),
             pinned = row.optInt("pinned", 0) != 0,
             completed_at = if (row.has("completed_at") && !row.isNull("completed_at")) row.optLong("completed_at") else null,

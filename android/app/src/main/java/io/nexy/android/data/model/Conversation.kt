@@ -11,6 +11,7 @@ data class Conversation(
     val project_id: String? = null,
     val project_name: String? = null,
     val model: String? = null,
+    val conversationHermesProfile: String? = null,
     val last_message: String? = null,
     val pinned: Boolean = false,
     val archived: Boolean = false,

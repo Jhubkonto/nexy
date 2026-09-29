@@ -35,7 +35,7 @@ class LocalConverters {
         LocalSettingsEntity::class,
         DiagnosticLogEntity::class,
     ],
-    version = 10,
+    version = 11,
     exportSchema = true,
 )
 @TypeConverters(LocalConverters::class)
@@ -63,7 +63,7 @@ abstract class NexyDatabase : RoomDatabase() {
                     NexyDatabase::class.java,
                     "nexy-local.db",
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
                     .enableMultiInstanceInvalidation()
                     .build()
                     .also { instance = it }
@@ -150,6 +150,12 @@ abstract class NexyDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE local_conversations ADD COLUMN terminalSandboxOverride INTEGER")
                 db.execSQL("ALTER TABLE local_conversations ADD COLUMN cliModeOverride TEXT")
                 db.execSQL("ALTER TABLE local_conversations ADD COLUMN codexExecutionModeOverride TEXT")
+            }
+        }
+
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE local_conversations ADD COLUMN conversationHermesProfile TEXT")
             }
         }
     }

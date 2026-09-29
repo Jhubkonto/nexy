@@ -8,5 +8,6 @@ data class Project(
     val agentIcons: List<String> = emptyList(),
     val rootDirectory: String? = null,
     val defaultModel: String? = null,
+    val projectHermesProfile: String? = null,
     val defaultThinkingEffort: String? = null,
 )

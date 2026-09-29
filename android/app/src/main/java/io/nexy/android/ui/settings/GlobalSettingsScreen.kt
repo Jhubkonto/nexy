@@ -57,6 +57,7 @@ fun GlobalSettingsScreen(onBack: () -> Unit, onOpenProviders: () -> Unit = {}) {
     val disconnected = connectionState != ConnectionState.CONNECTED
     val modelOptions by WsRepository.models.collectAsStateWithLifecycle()
     val cliStatus by WsRepository.cliStatus.collectAsStateWithLifecycle()
+    val hermesInfo by WsRepository.hermesInfo.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     val standaloneProviderStore = remember { StandaloneProviderStore.get(context) }
@@ -65,6 +66,7 @@ fun GlobalSettingsScreen(onBack: () -> Unit, onOpenProviders: () -> Unit = {}) {
     val standaloneModelOptions = filterModelsByConfiguredProviders(modelOptions, configuredProviderIds)
 
     var defaultDesktopModel by remember { mutableStateOf("") }
+    var defaultDesktopHermesProfile by remember { mutableStateOf("") }
     var defaultStandaloneModel by remember { mutableStateOf("") }
     var showDesktopModelSheet by remember { mutableStateOf(false) }
     var showStandaloneModelSheet by remember { mutableStateOf(false) }
@@ -87,6 +89,7 @@ fun GlobalSettingsScreen(onBack: () -> Unit, onOpenProviders: () -> Unit = {}) {
     LaunchedEffect(Unit) {
         WsRepository.send("model:list", emptyMap())
         WsRepository.send("settings:get-default-desktop-model", emptyMap())
+        WsRepository.getSetting("global_default_hermes_profile")
         WsRepository.send("settings:get-default-standalone-model", emptyMap())
         WsRepository.send("settings:get-default-temperature", emptyMap())
         WsRepository.send("settings:get-default-max-tokens", emptyMap())
@@ -100,6 +103,7 @@ fun GlobalSettingsScreen(onBack: () -> Unit, onOpenProviders: () -> Unit = {}) {
             when (event) {
                 is WsEvent.SettingValue -> when (event.key) {
                     "defaultDesktopModel" -> defaultDesktopModel = event.value.orEmpty()
+                    "global_default_hermes_profile" -> defaultDesktopHermesProfile = event.value.orEmpty()
                     "defaultStandaloneModel" -> defaultStandaloneModel = event.value.orEmpty()
                     "defaultTemperature" -> temperature = event.value.orEmpty()
                     "defaultMaxTokens" -> maxTokens = event.value.orEmpty()
@@ -149,8 +153,29 @@ fun GlobalSettingsScreen(onBack: () -> Unit, onOpenProviders: () -> Unit = {}) {
                     enabled = modelOptions.isNotEmpty(),
                     modifier = Modifier.fillMaxWidth(),
                 )
-                if (modelOptions.isNotEmpty()) {
+            if (modelOptions.isNotEmpty()) {
                     Box(modifier = Modifier.matchParentSize().clickable { showDesktopModelSheet = true })
+                }
+            }
+
+            if (modelOptions.any { it.id == defaultDesktopModel && it.backend == "hermes-cli" }) {
+                OutlinedTextField(
+                    value = defaultDesktopHermesProfile,
+                    onValueChange = { value ->
+                        defaultDesktopHermesProfile = value
+                        WsRepository.setSetting("global_default_hermes_profile", value)
+                    },
+                    label = { Text("Hermes profile") },
+                    placeholder = { Text("Default profile") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (hermesInfo.profiles.isNotEmpty()) {
+                    Text(
+                        "Available: ${hermesInfo.profiles.joinToString(", ") { it.name }}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
 
@@ -306,6 +331,11 @@ fun GlobalSettingsScreen(onBack: () -> Unit, onOpenProviders: () -> Unit = {}) {
             ) { modelId ->
                 defaultDesktopModel = modelId ?: ""
                 WsRepository.send("settings:set-default-desktop-model", mapOf("modelId" to (modelId ?: "")))
+                val isHermes = modelOptions.any { it.id == modelId && it.backend == "hermes-cli" }
+                if (!isHermes) {
+                    defaultDesktopHermesProfile = ""
+                    WsRepository.setSetting("global_default_hermes_profile", "")
+                }
                 scope.launch { desktopModelSheetState.hide() }.invokeOnCompletion { showDesktopModelSheet = false }
             }
         }

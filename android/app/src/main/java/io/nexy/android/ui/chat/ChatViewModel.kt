@@ -217,6 +217,13 @@ class ChatViewModel(
     private val _userSelectedModel = MutableStateFlow(false)
     val userSelectedModel: StateFlow<Boolean> = _userSelectedModel
 
+    // A Hermes profile can be chosen before a model is committed on a brand-new chat. Keep that
+    // choice locally until the first send creates the conversation row on the desktop.
+    private val _selectedHermesProfile = MutableStateFlow<String?>(null)
+    val selectedHermesProfile: StateFlow<String?> = _selectedHermesProfile
+    private val _userSelectedHermesProfile = MutableStateFlow(false)
+    val userSelectedHermesProfile: StateFlow<Boolean> = _userSelectedHermesProfile
+
     // Local, optimistic mirror of the conversation's mode overrides. Needed because a
     // brand-new/unsent chat only has a client-generated draft id (see NavGraph.kt) — there's no
     // server-side conversation row yet, so `conversation:set-mode` would target an id the desktop
@@ -1358,15 +1365,31 @@ class ChatViewModel(
         _selectedModel.value = model?.takeIf { it.isNotBlank() && it != "default" }
     }
 
-    fun setModel(model: String?) {
+    fun loadHermesProfile(profile: String?) {
+        if (_userSelectedHermesProfile.value) return
+        _selectedHermesProfile.value = profile?.trim()?.takeIf { it.isNotBlank() }
+    }
+
+    fun setHermesProfile(profile: String?) {
+        _userSelectedHermesProfile.value = true
+        _selectedHermesProfile.value = profile?.trim()?.takeIf { it.isNotBlank() }
+    }
+
+    fun setModel(model: String?, hermesProfile: String? = null, cliBackend: String? = null) {
         val normalized = model?.takeIf { it.isNotBlank() && it != "default" }
         _userSelectedModel.value = true
         _selectedModel.value = normalized
+        if (cliBackend == "hermes-cli" && (hermesProfile != null || _userSelectedHermesProfile.value)) {
+            _userSelectedHermesProfile.value = true
+            _selectedHermesProfile.value = hermesProfile?.trim()?.takeIf { it.isNotBlank() }
+        }
         wsClient.send(
             "conversation:set-model",
             mapOf(
                 "conversationId" to conversationId,
                 "model" to (normalized ?: "default"),
+                "cliBackend" to (cliBackend ?: if (hermesProfile != null) "hermes-cli" else ""),
+                "hermesProfile" to (hermesProfile ?: ""),
             ),
         )
     }
@@ -1484,6 +1507,11 @@ class ChatViewModel(
             if (agentId != null) put("agentId", agentId)
             if (projectId != null) put("projectId", projectId)
             _selectedModel.value?.let { put("model", it) }
+            if (_userSelectedHermesProfile.value) {
+                // An empty value is intentional: it means the user explicitly selected the
+                // normal Hermes profile, rather than inheriting the desktop global default.
+                put("hermesProfile", _selectedHermesProfile.value.orEmpty())
+            }
             if (imageAtts.isNotEmpty()) {
                 put("images", imageAtts.map { mapOf("id" to it.id, "name" to it.name, "dataUrl" to it.dataUrl.orEmpty()) })
             }

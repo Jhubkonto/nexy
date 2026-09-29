@@ -29,6 +29,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -57,7 +62,9 @@ import androidx.compose.ui.unit.dp
 import io.nexy.android.ui.components.nexyDither
 import io.nexy.android.data.model.CliInstallInfo
 import io.nexy.android.data.model.ModelOption
+import io.nexy.android.data.model.HermesProfileInfo
 import io.nexy.android.data.model.PromptEntry
+import io.nexy.android.data.model.isVisibleInProject
 import io.nexy.android.data.model.WsEvent
 import io.nexy.android.ui.components.NexyDangerButton
 import io.nexy.android.ui.components.NexyPrimaryButton
@@ -184,6 +191,7 @@ fun ModelSheetItem(
  * vendor-grouped model list instead of a plain text field for the model id.
  */
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun ModelPickerSheet(
     title: String,
     models: List<ModelOption>,
@@ -193,6 +201,9 @@ fun ModelPickerSheet(
     emptyStateText: String = "No models available yet.",
     showDefaultModel: Boolean = true,
     effectiveMode: io.nexy.android.data.EffectiveConnectionMode = io.nexy.android.data.EffectiveConnectionMode.CONNECTED,
+    hermesProfiles: List<HermesProfileInfo> = emptyList(),
+    selectedHermesProfile: String? = null,
+    onSelectHermesProfile: ((String?) -> Unit)? = null,
     onSelect: (String?) -> Unit,
 ) {
     var modelQuery by remember { mutableStateOf("") }
@@ -235,6 +246,66 @@ fun ModelPickerSheet(
                 shape = MaterialTheme.shapes.medium,
             )
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(top = 4.dp))
+            if (hermesProfiles.isNotEmpty() && onSelectHermesProfile != null) {
+                var hermesProfileMenuExpanded by remember { mutableStateOf(false) }
+                val selectedProfile = selectedHermesProfile?.takeIf { it.isNotBlank() }
+                val selectedProfileLabel = selectedProfile ?: "Default profile"
+                ExposedDropdownMenuBox(
+                    expanded = hermesProfileMenuExpanded,
+                    onExpandedChange = { hermesProfileMenuExpanded = it },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = selectedProfileLabel,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Hermes profile") },
+                        supportingText = { Text("Choose one of the profiles available on the desktop") },
+                        singleLine = true,
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = hermesProfileMenuExpanded)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
+                    )
+                    ExposedDropdownMenu(
+                        expanded = hermesProfileMenuExpanded,
+                        onDismissRequest = { hermesProfileMenuExpanded = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Default profile") },
+                            onClick = {
+                                onSelectHermesProfile(null)
+                                hermesProfileMenuExpanded = false
+                            },
+                        )
+                        hermesProfiles.filterNot { it.isDefault }.forEach { profile ->
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(profile.name)
+                                        val detail = listOfNotNull(profile.model, profile.description)
+                                            .joinToString(" · ")
+                                            .takeIf { it.isNotBlank() }
+                                        if (detail != null) {
+                                            Text(
+                                                detail,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    }
+                                },
+                                onClick = {
+                                    onSelectHermesProfile(profile.name)
+                                    hermesProfileMenuExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         if (showDefault) {
@@ -301,6 +372,7 @@ fun ModelPickerSheet(
 @Composable
 fun PromptLibrarySheetContent(
     promptEntries: List<PromptEntry>,
+    projectId: String? = null,
     onInsert: (body: String) -> Unit,
 ) {
     Text(
@@ -326,6 +398,11 @@ fun PromptLibrarySheetContent(
             ) {
                 Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
                     Text(prompt.title, style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        if (prompt.scope == "project" && prompt.isVisibleInProject(projectId)) "This project" else "Global",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                     if (prompt.description.isNotBlank()) {
                         Text(
                             prompt.description,

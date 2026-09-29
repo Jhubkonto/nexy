@@ -676,6 +676,13 @@ fun AgentConfigScreen(
                         HermesProfileField(
                             connected = effectiveMode == EffectiveConnectionMode.CONNECTED,
                             profiles = hermesInfo.profiles,
+                            acpReady = hermesInfo.acpReady,
+                            acpVersion = hermesInfo.version,
+                            acpDetail = hermesInfo.acpDetail,
+                            profileRoot = hermesInfo.profileRoot,
+                            profilesDirectory = hermesInfo.profilesDirectory,
+                            namedProfileCount = hermesInfo.namedProfileCount,
+                            profileDiscoveryError = hermesInfo.profileDiscoveryError,
                             selected = hermesProfile,
                             expanded = hermesProfileMenuExpanded,
                             disabled = saving || disconnected,
@@ -1158,6 +1165,13 @@ fun AgentConfigScreen(
 private fun HermesProfileField(
     connected: Boolean,
     profiles: List<HermesProfileInfo>,
+    acpReady: Boolean,
+    acpVersion: String?,
+    acpDetail: String?,
+    profileRoot: String?,
+    profilesDirectory: String?,
+    namedProfileCount: Int,
+    profileDiscoveryError: String?,
     selected: String,
     expanded: Boolean,
     disabled: Boolean,
@@ -1185,6 +1199,19 @@ private fun HermesProfileField(
             selected.isBlank() -> "Default (normal Hermes profile)"
             isUnknown -> "⚠ $selected — unknown profile, will fall back to default"
             else -> selected
+        }
+
+        when {
+            profileDiscoveryError != null -> Text(
+                "Profile discovery failed: $profileDiscoveryError",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+            namedProfileCount == 0 -> Text(
+                "Only the default profile was found. On the connected desktop, open Settings → CLI Tools and choose the Hermes home containing profiles. Current location: ${profilesDirectory ?: profileRoot ?: "the Hermes home"}.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         ExposedDropdownMenuBox(
@@ -1249,6 +1276,12 @@ private fun HermesProfileField(
             "Nexy runs Hermes with this profile's own home — its memory, skills, and SOUL.md carry into every session. Profiles are managed in the Hermes CLI.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            if (acpReady) "Hermes ACP is ready${acpVersion?.let { " ($it)" } ?: ""}."
+            else "Hermes ACP is not ready${acpDetail?.let { " — $it" } ?: " — run Hermes setup/auth on the desktop, then reconnect."}",
+            style = MaterialTheme.typography.bodySmall,
+            color = if (acpReady) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
         )
     }
 }

@@ -279,7 +279,7 @@ sealed class WsEvent {
     data class CodeChangeFileDiff(val diff: String, val binary: Boolean, val relativePath: String, val seq: Int = 0) : WsEvent()
     data class CodeChangeStaged(val ok: Boolean, val error: String?) : WsEvent()
     data class CodeChangeUnstaged(val ok: Boolean, val error: String?) : WsEvent()
-    data class ConversationModelUpdated(val conversationId: String, val model: String?) : WsEvent()
+    data class ConversationModelUpdated(val conversationId: String, val model: String?, val hermesProfile: String? = null) : WsEvent()
     data class ConversationModeUpdated(
         val conversationId: String,
         val thinkingEffortOverride: String?,
@@ -451,7 +451,7 @@ sealed class WsEvent {
     data class McpServerAdded(val server: McpServerWithStatus) : WsEvent()
     data class McpServerUpdated(val server: McpServerWithStatus) : WsEvent()
     data class McpServerRemoved(val id: String) : WsEvent()
-    data class McpServerStatus(val id: String, val status: String, val error: String?, val toolCount: Int) : WsEvent()
+    data class McpServerStatus(val id: String, val status: String, val error: String?, val toolCount: Int, val sandbox: McpSandboxStatus? = null) : WsEvent()
     data class McpToolList(val agentId: String?, val tools: List<McpToolInfo>) : WsEvent()
     data class WikiMcpStatus(val status: ProjectWikiMcpStatus) : WsEvent()
     data class WikiMcpError(val projectId: String, val message: String) : WsEvent()
@@ -662,6 +662,27 @@ data class AgentMcpServerTrust(
     val trust: String,
 )
 
+data class McpSandboxStatus(
+    val status: String,
+    val backend: String? = null,
+    val helperVersion: String? = null,
+    val helperPid: Int? = null,
+    val serverPid: Int? = null,
+    val diagnostics: String? = null,
+)
+
+data class McpSandboxGrant(
+    val path: String,
+    val access: String,
+)
+
+data class McpSandboxProfile(
+    val version: Int = 1,
+    val network: String = "blocked",
+    val childProcesses: String = "blocked",
+    val filesystem: List<McpSandboxGrant> = emptyList(),
+)
+
 data class McpServerWithStatus(
     val id: String,
     val name: String,
@@ -672,6 +693,8 @@ data class McpServerWithStatus(
     val status: String,
     val error: String? = null,
     val toolCount: Int = 0,
+    val sandbox: McpSandboxStatus? = null,
+    val sandboxProfile: McpSandboxProfile = McpSandboxProfile(),
 )
 
 data class McpToolInfo(
@@ -985,6 +1008,8 @@ data class McpServerInfo(
     val command: String,
     val args: List<String> = emptyList(),
     val enabled: Boolean,
+    val sandbox: McpSandboxStatus? = null,
+    val sandboxProfile: McpSandboxProfile = McpSandboxProfile(),
 )
 
 data class McpCatalogRequiredEnv(
@@ -1337,6 +1362,7 @@ data class ProjectSettingsConfig(
     val outOfScope: List<Map<String, String>> = emptyList(),
     val milestones: List<Map<String, String>> = emptyList(),
     val defaultModel: String?,
+    val projectHermesProfile: String? = null,
     val defaultThinkingEffort: String? = null,
     /** IDs and approval policy only; MCP credentials never leave the desktop. */
     val capabilityProfile: CapabilityProfile = CapabilityProfile(),

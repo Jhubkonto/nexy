@@ -998,6 +998,7 @@ class LocalDataRepository private constructor(
                 projectId = row.nullableString("project_id"),
                 projectName = row.nullableString("project_name"),
                 model = row.nullableString("model"),
+                conversationHermesProfile = row.nullableString("conversation_hermes_profile"),
                 thinkingEffortOverride = row.nullableString("thinking_effort_override"),
                 fullAutoApproveOverride = row.nullableBoolean("full_auto_approve_override"),
                 agenticModeOverride = row.nullableBoolean("agentic_mode_override"),
@@ -1391,7 +1392,9 @@ class LocalDataRepository private constructor(
         when (event) {
             is WsEvent.ConversationList -> event.conversations.forEach { mergeRemoteConversation(it) }
             is WsEvent.ConversationPage -> event.conversations.forEach { mergeRemoteConversation(it) }
-            is WsEvent.ConversationModelUpdated -> updateRemoteConversation(event.conversationId) { it.copy(model = event.model) }
+            is WsEvent.ConversationModelUpdated -> updateRemoteConversation(event.conversationId) {
+                it.copy(model = event.model, conversationHermesProfile = event.hermesProfile)
+            }
             is WsEvent.ConversationModeUpdated -> updateRemoteConversation(event.conversationId) {
                 it.copy(
                     thinkingEffortOverride = event.thinkingEffortOverride,
@@ -1780,6 +1783,7 @@ private fun ConversationEntity.toModel() = Conversation(
     project_id = projectId,
     project_name = projectName,
     model = model,
+    conversationHermesProfile = conversationHermesProfile,
     thinking_effort_override = thinkingEffortOverride,
     full_auto_approve_override = fullAutoApproveOverride,
     agentic_mode_override = agenticModeOverride,
@@ -1804,6 +1808,7 @@ private fun Conversation.toEntity(remoteVersion: Long) = ConversationEntity(
     projectId = project_id,
     projectName = project_name,
     model = model,
+    conversationHermesProfile = conversationHermesProfile,
     thinkingEffortOverride = thinking_effort_override,
     fullAutoApproveOverride = full_auto_approve_override,
     agenticModeOverride = agentic_mode_override,
@@ -1869,6 +1874,7 @@ private fun ConversationEntity.toSyncJson(): String = JSONObject()
     .put("agentId", agentId)
     .put("projectId", projectId)
     .put("model", model)
+    .put("conversationHermesProfile", conversationHermesProfile)
     .put("thinkingEffortOverride", thinkingEffortOverride)
     .put("fullAutoApproveOverride", fullAutoApproveOverride)
     .put("agenticModeOverride", agenticModeOverride)

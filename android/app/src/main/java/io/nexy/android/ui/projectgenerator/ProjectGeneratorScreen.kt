@@ -65,6 +65,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.nexy.android.data.WsRepository
+import io.nexy.android.data.model.isVisibleInProject
 import io.nexy.android.data.model.ProjectGeneratorSpec
 import io.nexy.android.ui.components.GeneratorChatBubble
 import io.nexy.android.ui.components.NexyConfirmDialog
@@ -93,6 +94,7 @@ fun ProjectGeneratorScreen(
     val promptSheetState = rememberModalBottomSheetState()
     val modelSheetState = rememberModalBottomSheetState()
     val promptEntries by WsRepository.promptEntries.collectAsStateWithLifecycle()
+    val globalPromptEntries = promptEntries.filter { it.isVisibleInProject(null) }
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     var input by remember { mutableStateOf("") }
@@ -228,7 +230,7 @@ fun ProjectGeneratorScreen(
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             )
-            if (promptEntries.isEmpty()) {
+            if (globalPromptEntries.isEmpty()) {
                 Text(
                     "No prompts saved yet.",
                     style = MaterialTheme.typography.bodyMedium,
@@ -237,7 +239,7 @@ fun ProjectGeneratorScreen(
                 )
             } else {
                 LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
-                    items(promptEntries) { prompt ->
+                    items(globalPromptEntries) { prompt ->
                         ListItem(
                             headlineContent = { Text(prompt.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                             supportingContent = {

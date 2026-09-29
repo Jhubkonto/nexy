@@ -34,4 +34,10 @@ data class HermesCliInfo(
     val profiles: List<HermesProfileInfo> = emptyList(),
     val acpReady: Boolean = false,
     val version: String? = null,
+    val acpStatus: String? = null,
+    val acpDetail: String? = null,
+    val profileRoot: String? = null,
+    val profilesDirectory: String? = null,
+    val namedProfileCount: Int = 0,
+    val profileDiscoveryError: String? = null,
 )

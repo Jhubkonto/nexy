@@ -142,6 +142,7 @@ fun ProjectConfigScreen(
     val connectionState by WsRepository.connectionState.collectAsStateWithLifecycle()
     val models by WsRepository.models.collectAsStateWithLifecycle()
     val cliStatus by WsRepository.cliStatus.collectAsStateWithLifecycle()
+    val hermesInfo by WsRepository.hermesInfo.collectAsStateWithLifecycle()
     val effectiveMode by WsRepository.effectiveMode.collectAsStateWithLifecycle()
     val availableSkills by WsRepository.skills.collectAsStateWithLifecycle()
     val availableMcpServers by WsRepository.mcpServers.collectAsStateWithLifecycle()
@@ -160,6 +161,7 @@ fun ProjectConfigScreen(
     var showTeamActivity by remember { mutableStateOf(true) }
     var instructionModeExpanded by remember { mutableStateOf(false) }
     var defaultModel by remember { mutableStateOf<String?>(null) }
+    var projectHermesProfile by remember { mutableStateOf("") }
     var defaultThinkingEffort by remember { mutableStateOf<String?>(null) }
     var defaultThinkingEffortExpanded by remember { mutableStateOf(false) }
     var showModelSheet by remember { mutableStateOf(false) }
@@ -175,6 +177,7 @@ fun ProjectConfigScreen(
     var loadedMaxDelegationDepth by remember { mutableStateOf("5") }
     var loadedShowTeamActivity by remember { mutableStateOf(true) }
     var loadedDefaultModel by remember { mutableStateOf<String?>(null) }
+    var loadedProjectHermesProfile by remember { mutableStateOf("") }
     var loadedDefaultThinkingEffort by remember { mutableStateOf<String?>(null) }
     var savedCapabilityProfile by remember(projectId) { mutableStateOf(CapabilityProfile()) }
     var capabilityProfileDraft by remember(projectId) { mutableStateOf(CapabilityProfile()) }
@@ -228,6 +231,7 @@ fun ProjectConfigScreen(
         maxDelegationDepth != loadedMaxDelegationDepth ||
         showTeamActivity != loadedShowTeamActivity ||
         defaultModel != loadedDefaultModel ||
+        projectHermesProfile != loadedProjectHermesProfile ||
         defaultThinkingEffort != loadedDefaultThinkingEffort
     )
     val capabilityProfileDirty = !sameCapabilityProfile(capabilityProfileDraft, savedCapabilityProfile)
@@ -267,6 +271,7 @@ fun ProjectConfigScreen(
                     maxDelegationDepth = event.config.maxDelegationDepth.toString()
                     showTeamActivity = event.config.showTeamActivity
                     defaultModel = event.config.defaultModel
+                    projectHermesProfile = event.config.projectHermesProfile.orEmpty()
                     defaultThinkingEffort = event.config.defaultThinkingEffort
                     if (!currentCapabilityProfileDirty) {
                         savedCapabilityProfile = event.config.capabilityProfile
@@ -286,6 +291,7 @@ fun ProjectConfigScreen(
                     loadedMaxDelegationDepth = event.config.maxDelegationDepth.toString()
                     loadedShowTeamActivity = event.config.showTeamActivity
                     loadedDefaultModel = event.config.defaultModel
+                    loadedProjectHermesProfile = event.config.projectHermesProfile.orEmpty()
                     loadedDefaultThinkingEffort = event.config.defaultThinkingEffort
                     loaded = true
                 }
@@ -300,6 +306,7 @@ fun ProjectConfigScreen(
                     loadedMaxDelegationDepth = maxDelegationDepth
                     loadedShowTeamActivity = showTeamActivity
                     loadedDefaultModel = defaultModel
+                    loadedProjectHermesProfile = projectHermesProfile
                     loadedDefaultThinkingEffort = defaultThinkingEffort
                     if (isNew) {
                         WsRepository.pendingHighlightProjectId.value = projectId
@@ -544,6 +551,7 @@ fun ProjectConfigScreen(
                                     outOfScope = outOfScope.toList(),
                                     milestones = milestones.toList(),
                                     defaultModel = defaultModel,
+                                    projectHermesProfile = projectHermesProfile.takeIf { defaultModel != null },
                                     defaultThinkingEffort = defaultThinkingEffort,
                                 ),
                             )
@@ -713,6 +721,18 @@ fun ProjectConfigScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (models.any { it.id == defaultModel && it.backend == "hermes-cli" }) {
+                        OutlinedTextField(
+                            value = projectHermesProfile,
+                            onValueChange = { projectHermesProfile = it },
+                            label = { Text("Hermes profile") },
+                            placeholder = { Text("Default profile") },
+                            supportingText = { Text("Available: ${hermesInfo.profiles.joinToString(", ") { it.name }}") },
+                            singleLine = true,
+                            enabled = !saving && !disconnected,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                     ExposedDropdownMenuBox(
                         expanded = defaultThinkingEffortExpanded,
                         onExpandedChange = { if (!saving && !disconnected) defaultThinkingEffortExpanded = it },

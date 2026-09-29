@@ -19,6 +19,8 @@ import io.nexy.android.data.model.ArtifactSummary
 import io.nexy.android.data.model.CliInstallInfo
 import io.nexy.android.data.model.HermesCliInfo
 import io.nexy.android.data.model.PromptEntry
+import io.nexy.android.data.model.isVisibleInProject
+import io.nexy.android.data.model.normalizePromptProjectId
 import io.nexy.android.data.model.WikiEntry
 import io.nexy.android.data.model.Conversation
 import io.nexy.android.data.model.NewContentConversation
@@ -2473,10 +2475,8 @@ object WsRepository : WsClient {
                 }
             }
             "prompt:list" -> {
-                val projectId = data["projectId"] as? String
-                val entries = local.promptEntries.value.filter {
-                    projectId == null || it.scope == "global" || it.projectId == projectId
-                }
+                val projectId = normalizePromptProjectId(data["projectId"] as? String)
+                val entries = local.promptEntries.value.filter { it.isVisibleInProject(projectId) }
                 _events.tryEmit(WsEvent.PromptList(entries))
             }
             "prompt:create" -> {
@@ -3114,7 +3114,8 @@ object WsRepository : WsClient {
     fun deleteWikiEntry(id: String) { send("wiki:delete", mapOf("id" to id)) }
 
     fun listPrompts(projectId: String? = null) {
-        send("prompt:list", if (projectId != null) mapOf("projectId" to projectId) else emptyMap())
+        val normalizedProjectId = normalizePromptProjectId(projectId)
+        send("prompt:list", if (normalizedProjectId != null) mapOf("projectId" to normalizedProjectId) else emptyMap())
     }
     fun createPrompt(title: String, body: String, description: String, category: String, tags: List<String>, scope: String, projectId: String?) {
         val data = mutableMapOf<String, Any>("title" to title, "body" to body, "description" to description, "category" to category, "tags" to tags, "scope" to scope)
@@ -3266,7 +3267,9 @@ object WsRepository : WsClient {
     }
 
     fun addMcpServer(name: String, command: String, description: String = "", args: List<String> = emptyList(), env: Map<String, String> = emptyMap(), cwd: String? = null, imageResponses: String? = null, enabled: Boolean = true) {
-        val payload = mutableMapOf<String, Any>("name" to name, "description" to description, "command" to command, "args" to args, "env" to env, "enabled" to enabled)
+        // MCP environment values are desktop-owned secrets and never cross the
+        // companion connection, even when a caller supplies this legacy parameter.
+        val payload = mutableMapOf<String, Any>("name" to name, "description" to description, "command" to command, "args" to args, "enabled" to enabled)
         if (cwd != null) payload["cwd"] = cwd
         if (imageResponses != null) payload["imageResponses"] = imageResponses
         send("mcp:add", payload)
@@ -3277,13 +3280,13 @@ object WsRepository : WsClient {
         if (description != null) payload["description"] = description
         if (command != null) payload["command"] = command
         if (args != null) payload["args"] = args
-        if (env != null) payload["env"] = env
+        // Do not send env updates from Android; the desktop remains authoritative.
         if (cwd != null) payload["cwd"] = cwd
         if (enabled != null) payload["enabled"] = enabled
         send("mcp:update", payload)
     }
     fun testMcpServer(command: String, args: List<String>, env: Map<String, String> = emptyMap(), imageResponses: String? = null) {
-        val payload = mutableMapOf<String, Any>("command" to command, "args" to args, "env" to env)
+        val payload = mutableMapOf<String, Any>("command" to command, "args" to args)
         if (imageResponses != null) payload["imageResponses"] = imageResponses
         send("mcp:test", payload)
     }

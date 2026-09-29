@@ -113,6 +113,9 @@ import io.nexy.android.data.PreferenceStore
 import io.nexy.android.data.WsRepository
 import io.nexy.android.data.repository.InternetState
 import io.nexy.android.data.model.PromptEntry
+import io.nexy.android.data.model.isVisibleInProject
+import io.nexy.android.data.model.normalizePromptProjectId
+import io.nexy.android.data.model.WsEvent
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.snapshotFlow
@@ -273,6 +276,8 @@ fun ChatScreen(
     val liveTurnState by vm.liveTurnState.collectAsStateWithLifecycle()
     val generationStartedAt by vm.generationStartedAt.collectAsStateWithLifecycle()
     val selectedModel by vm.selectedModel.collectAsStateWithLifecycle()
+    val selectedHermesProfile by vm.selectedHermesProfile.collectAsStateWithLifecycle()
+    val userSelectedHermesProfile by vm.userSelectedHermesProfile.collectAsStateWithLifecycle()
     val attachments by vm.attachments.collectAsStateWithLifecycle()
     val conversations by WsRepository.conversations.collectAsStateWithLifecycle()
     val agents by WsRepository.agents.collectAsStateWithLifecycle()
@@ -281,6 +286,7 @@ fun ChatScreen(
     val models by WsRepository.models.collectAsStateWithLifecycle()
     val modelSource by WsRepository.modelSource.collectAsStateWithLifecycle()
     val cliStatus by WsRepository.cliStatus.collectAsStateWithLifecycle()
+    val hermesInfo by WsRepository.hermesInfo.collectAsStateWithLifecycle()
     val connectionState by WsRepository.connectionState.collectAsStateWithLifecycle()
     val capabilities by WsRepository.capabilities.collectAsStateWithLifecycle()
     val availableSkills by WsRepository.skills.collectAsStateWithLifecycle()
@@ -305,6 +311,7 @@ fun ChatScreen(
     val chatAgentId = conversation?.agent_id ?: agentId
         ?: (conversation?.project_id ?: projectId)?.let { projectPrimaryAgents[it] }
     val chatAgent = chatAgentId?.let { id -> agents.find { it.id == id } }
+    val fullAgentConfig by WsRepository.agentFullConfig.collectAsStateWithLifecycle()
     val forcedAgentBackend = chatAgent?.backend?.takeIf {
         it == "claude-cli" || it == "codex-cli" || it == "hermes-cli"
     }
@@ -315,6 +322,25 @@ fun ChatScreen(
     val chatBackend = chatAgent?.backend
     val statusProjectId = conversation?.project_id ?: projectId
     val chatProject = statusProjectId?.let { id -> projects.find { it.id == id } }
+    var globalHermesProfile by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        WsRepository.getSetting("global_default_hermes_profile")
+        WsRepository.events.collect { event ->
+            if (event is WsEvent.SettingValue && event.key == "global_default_hermes_profile") {
+                globalHermesProfile = event.value?.takeIf { it.isNotBlank() }
+            }
+        }
+    }
+    val inheritedHermesProfile = when {
+        forcedAgentBackend == "hermes-cli" && fullAgentConfig?.id == chatAgentId -> fullAgentConfig?.hermesProfile
+        !conversation?.model.isNullOrBlank() -> conversation?.conversationHermesProfile
+        !chatProject?.defaultModel.isNullOrBlank() -> chatProject?.projectHermesProfile
+        else -> globalHermesProfile
+    }
+    LaunchedEffect(inheritedHermesProfile) {
+        vm.loadHermesProfile(inheritedHermesProfile)
+    }
+    val targetHermesProfile = if (userSelectedHermesProfile) selectedHermesProfile else inheritedHermesProfile
     val projectDefaultThinkingEffort = chatProject?.defaultThinkingEffort
     val availableProjectDefault = if (forcedAgentBackend == null) {
         resolveAvailableProjectDefault(chatProject?.defaultModel, models)
@@ -575,6 +601,7 @@ fun ChatScreen(
     // The current request resolved by an out-of-band signal (tool ran / turn ended); advance the queue.
     val advanceApproval = { pendingApproval = approvalQueue.removeFirstOrNull() }
     val promptEntries by WsRepository.promptEntries.collectAsStateWithLifecycle()
+    val visiblePromptEntries = promptEntries.filter { it.isVisibleInProject(statusProjectId) }
     var relaunchFilePicker by remember { mutableStateOf(false) }
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
@@ -849,11 +876,12 @@ fun ChatScreen(
             buildMap {
                 if (!chatBackend.isNullOrBlank()) put("backend", chatBackend)
                 if (!chatAgentId.isNullOrBlank()) put("agentId", chatAgentId)
+                if (!targetHermesProfile.isNullOrBlank()) put("hermesProfile", targetHermesProfile)
             },
         )
     }
 
-    LaunchedEffect(chatBackend, chatAgentId) {
+    LaunchedEffect(chatBackend, chatAgentId, targetHermesProfile) {
         requestModelList()
     }
 
@@ -1074,11 +1102,18 @@ fun ChatScreen(
                 models = chatModels,
                 cliStatus = cliStatus,
                 selectedModelId = activeModelId,
+                hermesProfiles = if (activeCliBackend == "hermes-cli") hermesInfo.profiles else emptyList(),
+                selectedHermesProfile = targetHermesProfile,
+                onSelectHermesProfile = { profile ->
+                    vm.setHermesProfile(profile)
+                    selectedModel?.let { model -> vm.setModel(model, profile, "hermes-cli") }
+                },
                 subtitle = backendLockDetail,
                 emptyStateText = emptyModelListDetail(modelSource),
                 effectiveMode = effectiveMode,
             ) { modelId ->
-                vm.setModel(modelId)
+                val selectedBackend = models.find { it.id == modelId }?.backend
+                vm.setModel(modelId, if (selectedBackend == "hermes-cli") targetHermesProfile else null, selectedBackend)
                 scope.launch { modelSheetState.hide() }.invokeOnCompletion { showModelSheet = false }
             }
         }
@@ -1212,7 +1247,7 @@ fun ChatScreen(
             sheetState = promptSheetState,
             containerColor = MaterialTheme.colorScheme.surface,
         ) {
-            PromptLibrarySheetContent(promptEntries = promptEntries) { body ->
+            PromptLibrarySheetContent(promptEntries = visiblePromptEntries, projectId = statusProjectId) { body ->
                 val separator = if (input.isNotBlank() && !input.endsWith("\n")) "\n" else ""
                 input += "$separator$body"
                 vm.setDraft(input)
@@ -1584,7 +1619,7 @@ fun ChatScreen(
                     // Project prompts must be requested with the active project. Calling the
                     // unscoped list here replaces the repository flow with global prompts only,
                     // making a newly saved project prompt disappear from this picker.
-                    WsRepository.listPrompts(conversation?.project_id ?: projectId)
+                    WsRepository.listPrompts(normalizePromptProjectId(conversation?.project_id ?: projectId))
                     showPromptSheet = true
                 },
                 onShowInspector = { showInspectorSheet = true },
