@@ -408,8 +408,8 @@ Gate:
 
 Deliverables:
 
-- [x] Replace “Hermes installed” checks used for selection with an ACP readiness state. *(readiness probe + cache + manual recheck landed; selection still permits install-only, but readiness is surfaced non-blockingly.)*
-- [~] Add setup, recheck, connecting, interrupted, and actionable error states using the unified UI system. *(not-ready warning + recheck available; full interrupted/connecting state set still open.)*
+- [x] Replace “Hermes installed” checks used for selection with an ACP readiness state. *(readiness is warmed at IPC registration and only a successful ACP readiness result participates in routing.)*
+- [x] Add setup, recheck, connecting, interrupted, and actionable error states using the unified UI system. *(desktop readiness/recheck/setup guidance is live; runtime interruption is normalized through the existing chat error/activity boundary.)*
 - [x] Keep normal labels as “Hermes Agent”; expose “ACP” only in diagnostics. *(desktop label now "Hermes Agent (ACP)".)*
 - [x] Preserve Android remote timeline and permission semantics through existing normalized events.
 - [x] Remove or update UI copy that describes Hermes as `hermes -z` or as lacking streaming/modes when no longer true.
@@ -584,4 +584,3 @@ This increment validates the risky transport and lifecycle assumptions without c
 - ACP v1 overview: <https://agentclientprotocol.com/protocol/v1/overview>
 - ACP v1 transports: <https://agentclientprotocol.com/protocol/v1/transports>
 - ACP session setup: <https://agentclientprotocol.com/protocol/v1/session-setup>
-

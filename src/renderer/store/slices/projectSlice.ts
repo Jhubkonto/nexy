@@ -36,7 +36,7 @@ export interface ProjectSlice {
     conversationId: string,
     projectId: string | null
   ) => Promise<void>
-  setProjectDefaultModel: (id: string, model: string | null) => Promise<void>
+  setProjectDefaultModel: (id: string, model: string | null, hermesProfile?: string | null) => Promise<void>
   clearPendingSettingsProject: () => void
   setShowNewProjectForm: (show: boolean) => void
   openEditProject: (id: string, initialTab?: ProjectSettingsTab) => void
@@ -227,9 +227,9 @@ export const createProjectSlice: StateCreator<
     }
   },
 
-  setProjectDefaultModel: async (id, model) => {
+  setProjectDefaultModel: async (id, model, hermesProfile) => {
     try {
-      const result = await window.api.setProjectDefaultModel(id, model)
+      const result = await window.api.setProjectDefaultModel(id, model, hermesProfile)
       if (isApiError(result)) {
         get().addToast('Failed to set project default model', 'error')
         return

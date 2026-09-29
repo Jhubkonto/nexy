@@ -17,6 +17,7 @@ import {
 } from './providers'
 import { runProviderMcpToolLoop } from './tool-loop'
 import type { ModelToolStreamCaller, ToolLoopToolFinishedEvent, ToolLoopToolStartedEvent } from './tool-loop'
+import type { McpExecutionPolicy } from './mcp'
 import { callWithResilience } from './provider-resilience'
 import type { ToolDefinition, ToolChoice, ProviderNonStreamResult } from './provider-types'
 import type { InlineHandler, MobileChatActivity } from './chat-context-builder'
@@ -69,6 +70,7 @@ export type ProviderDispatchOptions = {
   toolPolicy?: { preApproved: string[]; alwaysAsk: string[]; neverAllow: string[] }
   fullAutoApprove?: boolean
   forceFirstToolChoice?: boolean
+  mcpPolicy?: McpExecutionPolicy
 }
 
 function makeActivityHandler(sendActivity: (a: MobileChatActivity) => void) {
@@ -138,6 +140,7 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
     toolPolicy,
     fullAutoApprove,
     forceFirstToolChoice,
+    mcpPolicy,
   } = opts
   const byokKey = credential ?? legacyByokKey
   if (!byokKey) throw new Error('No provider credential reference supplied')
@@ -270,6 +273,7 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
             conversationId,
           })
         ),
+        mcpPolicy,
       )
     }
     sendActivity({ state: 'thinking', label: 'Generating response' })
@@ -323,6 +327,7 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
             conversationId,
           })
         ),
+        mcpPolicy,
       )
     }
     sendActivity({ state: 'thinking', label: 'Generating response' })
@@ -408,6 +413,7 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
         },
         onToolStarted,
         streamingToolCaller,
+        mcpPolicy,
       )
     }
     sendActivity({ state: 'thinking', label: 'Generating response' })
@@ -469,6 +475,7 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
           conversationId,
         })
       ),
+      mcpPolicy,
     )
   }
   sendActivity({ state: 'thinking', label: 'Generating response' })

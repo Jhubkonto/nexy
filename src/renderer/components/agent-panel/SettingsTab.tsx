@@ -1,11 +1,140 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { X, Folder, FileText, Plus, ExternalLink, AlertTriangle } from 'lucide-react'
-import type { AgentConfig, HermesProfileInfo, HermesAcpReadiness } from '../../../shared/types'
+import type { AgentConfig, HermesProfileInfo, HermesProfileDiscovery, HermesAcpReadiness } from '../../../shared/types'
 import { isValidHermesProfile } from '../../../shared/hermes'
 import { Button, ToggleSwitch } from '../ui/primitives'
 
 const EMOJI_OPTIONS = ['🤖', '🔍', '🐛', '💡', '📝', '🎨', '🔧', '🚀', '🧠', '⚡', '🛡️', '📊']
 const FORMAT_OPTIONS = ['default', 'concise', 'detailed', 'code-only'] as const
+
+interface HermesProfileSelectProps {
+  value?: string
+  profiles: HermesProfileInfo[]
+  onChange: (value: string | undefined) => void
+}
+
+/**
+ * A bounded replacement for the native select used for Hermes profiles.
+ * Native option popups are owned by the OS and may size themselves from the
+ * longest option, which lets long model/SOUL descriptions escape the field.
+ */
+function HermesProfileSelect({ value, profiles, onChange }: HermesProfileSelectProps) {
+  const [open, setOpen] = useState(false)
+  const [highlightedIndex, setHighlightedIndex] = useState(0)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const options = useMemo(() => {
+    const discovered = profiles.map((profile) => {
+      const meta = [profile.model, profile.description].filter(Boolean).join(' · ')
+      return {
+        value: profile.isDefault ? '' : profile.name,
+        label: profile.isDefault ? 'default (normal Hermes profile)' : profile.name,
+        meta,
+      }
+    })
+    if (value && !discovered.some((option) => option.value === value)) {
+      discovered.push({
+        value,
+        label: `⚠ ${value}`,
+        meta: 'unknown profile, will fall back to default',
+      })
+    }
+    return discovered
+  }, [profiles, value])
+
+  const selected = options.find((option) => option.value === (value ?? '')) ?? options[0]
+
+  useEffect(() => {
+    if (!open) return
+    const handleOutsideMouseDown = (event: MouseEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handleOutsideMouseDown)
+    return () => document.removeEventListener('mousedown', handleOutsideMouseDown)
+  }, [open])
+
+  useEffect(() => {
+    const selectedIndex = options.findIndex((option) => option.value === (value ?? ''))
+    setHighlightedIndex(selectedIndex >= 0 ? selectedIndex : 0)
+  }, [options, value])
+
+  const choose = (index: number) => {
+    const option = options[index]
+    if (!option) return
+    onChange(option.value || undefined)
+    setOpen(false)
+  }
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === 'Escape') {
+      setOpen(false)
+      return
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      if (open) choose(highlightedIndex)
+      else setOpen(true)
+      return
+    }
+    if (!open) return
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      setHighlightedIndex((current) => {
+        const delta = event.key === 'ArrowDown' ? 1 : -1
+        return (current + delta + options.length) % options.length
+      })
+    } else if (event.key === 'Home') {
+      event.preventDefault()
+      setHighlightedIndex(0)
+    } else if (event.key === 'End') {
+      event.preventDefault()
+      setHighlightedIndex(Math.max(0, options.length - 1))
+    }
+  }
+
+  return (
+    <div ref={containerRef} className="relative w-full">
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="flex w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-left text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={handleKeyDown}
+      >
+        <span className="min-w-0 truncate" title={selected ? `${selected.label}${selected.meta ? ` — ${selected.meta}` : ''}` : undefined}>
+          {selected?.label ?? 'Select a Hermes profile'}{selected?.meta ? ` — ${selected.meta}` : ''}
+        </span>
+        <span aria-hidden="true" className="shrink-0 text-xs text-gray-500">▾</span>
+      </button>
+      {open && (
+        <div
+          role="listbox"
+          aria-label="Hermes profiles"
+          className="absolute left-0 right-0 z-30 mt-1 max-h-64 overflow-y-auto overflow-x-hidden rounded-lg border border-gray-300 bg-white p-1 shadow-lg dark:border-gray-600 dark:bg-gray-800"
+        >
+          {options.map((option, index) => (
+            <button
+              key={`${option.value || 'default'}-${index}`}
+              type="button"
+              role="option"
+              aria-selected={option.value === (value ?? '')}
+              title={`${option.label}${option.meta ? ` — ${option.meta}` : ''}`}
+              className={`block w-full min-w-0 rounded-md px-2 py-1.5 text-left text-sm ${
+                index === highlightedIndex
+                  ? 'bg-blue-600 text-white'
+                  : 'text-gray-900 hover:bg-gray-100 dark:text-gray-100 dark:hover:bg-gray-700'
+              }`}
+              onMouseEnter={() => setHighlightedIndex(index)}
+              onClick={() => choose(index)}
+            >
+              <span className="block truncate">{option.label}{option.meta ? ` — ${option.meta}` : ''}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 interface Props {
   config: AgentConfig
@@ -48,18 +177,61 @@ export function SettingsTab({
 
   // Hermes profile enumeration + ACP readiness (fetched only when the Hermes backend is selected).
   const [hermesProfiles, setHermesProfiles] = useState<HermesProfileInfo[] | null>(null)
+  const [hermesProfileDiscovery, setHermesProfileDiscovery] = useState<HermesProfileDiscovery | null>(null)
   const [hermesReadiness, setHermesReadiness] = useState<HermesAcpReadiness | null>(null)
+  const [hermesReadinessChecking, setHermesReadinessChecking] = useState(false)
+  const [hermesCommandCopied, setHermesCommandCopied] = useState(false)
   useEffect(() => {
-    if (config.backend !== 'hermes-cli') return
+    if (config.backend !== 'hermes-cli') {
+      setHermesProfiles(null)
+      setHermesProfileDiscovery(null)
+      setHermesReadiness(null)
+      return
+    }
     let cancelled = false
-    Promise.resolve(window.api?.listHermesProfiles?.()).then((list) => {
-      if (!cancelled) setHermesProfiles(Array.isArray(list) ? list : [])
+    Promise.resolve(window.api?.getHermesProfileDiscovery?.()).then((discovery) => {
+      if (discovery?.profiles && !cancelled) {
+        setHermesProfileDiscovery(discovery)
+        setHermesProfiles(discovery.profiles)
+        return undefined
+      }
+      return window.api?.listHermesProfiles?.()
+    }).then((list) => {
+      if (Array.isArray(list) && !cancelled) setHermesProfiles(list)
     }).catch(() => { if (!cancelled) setHermesProfiles([]) })
     Promise.resolve(window.api?.getHermesAcpReadiness?.()).then((r) => {
       if (!cancelled) setHermesReadiness(r ?? null)
     }).catch(() => { if (!cancelled) setHermesReadiness(null) })
     return () => { cancelled = true }
   }, [config.backend])
+
+  const recheckHermes = async () => {
+    setHermesReadinessChecking(true)
+    try {
+      const readiness = await window.api?.getHermesAcpReadiness?.(true)
+      setHermesReadiness(readiness ?? null)
+      const discovery = await window.api?.getHermesProfileDiscovery?.()
+      if (discovery?.profiles) {
+        setHermesProfileDiscovery(discovery)
+        setHermesProfiles(discovery.profiles)
+      } else {
+        const profiles = await window.api?.listHermesProfiles?.()
+        setHermesProfiles(Array.isArray(profiles) ? profiles : [])
+      }
+    } finally {
+      setHermesReadinessChecking(false)
+    }
+  }
+
+  const copyHermesCommand = async () => {
+    try {
+      await navigator.clipboard?.writeText('hermes acp --check')
+      setHermesCommandCopied(true)
+      window.setTimeout(() => setHermesCommandCopied(false), 1500)
+    } catch {
+      // Clipboard access is optional in packaged environments; the command remains visible.
+    }
+  }
 
   return (
     <>
@@ -166,23 +338,11 @@ export function SettingsTab({
           <div className="mt-2 space-y-1.5">
             <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Hermes profile</label>
             {hermesProfiles && hermesProfiles.length > 0 ? (
-              <select
-                value={config.hermesProfile ?? ''}
-                onChange={(e) => onUpdateField('hermesProfile', e.target.value || undefined)}
-                className="w-full px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                {hermesProfiles.map((p) => {
-                  const meta = [p.model, p.description].filter(Boolean).join(' · ')
-                  return (
-                    <option key={p.name} value={p.isDefault ? '' : p.name}>
-                      {p.isDefault ? 'default (normal Hermes profile)' : p.name}{meta ? ` — ${meta}` : ''}
-                    </option>
-                  )
-                })}
-                {config.hermesProfile && !hermesProfiles.some((p) => p.name === config.hermesProfile) && (
-                  <option value={config.hermesProfile}>⚠ {config.hermesProfile} — unknown profile, will fall back to default</option>
-                )}
-              </select>
+              <HermesProfileSelect
+                value={config.hermesProfile}
+                profiles={hermesProfiles}
+                onChange={(value) => onUpdateField('hermesProfile', value)}
+              />
             ) : (
               <input
                 value={config.hermesProfile ?? ''}
@@ -204,12 +364,56 @@ export function SettingsTab({
             <p className="text-xs text-gray-400">
               Nexy runs Hermes with this profile&apos;s own home — its memory, skills, and SOUL.md carry into every session. Profiles are managed in the Hermes CLI.
             </p>
-            {hermesReadiness && !hermesReadiness.ready && (
-              <p className="text-xs text-amber-500 flex items-start gap-1">
-                <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
-                <span>Hermes is installed but not ACP-ready{hermesReadiness.detail ? ` — ${hermesReadiness.detail}` : ' — check credentials'}.</span>
-              </p>
+            {hermesProfileDiscovery && (
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-2 text-[11px] text-gray-500 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-400">
+                {hermesProfileDiscovery.error ? (
+                  <p>Profile discovery failed: {hermesProfileDiscovery.error}</p>
+                ) : hermesProfileDiscovery.namedProfileCount === 0 ? (
+                  <>
+                    <p>Nexy found only the default profile. Named profiles must be valid Hermes profile homes under <code className="font-mono">{hermesProfileDiscovery.profilesDirectory}</code>.</p>
+                    <p className="mt-1">If your profiles are stored elsewhere, open <button type="button" onClick={onOpenCliSettings} className="underline underline-offset-2 hover:text-gray-700 dark:hover:text-gray-200">Settings → CLI Tools</button> and choose the Hermes home that contains <code className="font-mono">profiles</code>, or set <code className="font-mono">HERMES_HOME</code> before starting Nexy.</p>
+                  </>
+                ) : (
+                  <p>Profiles discovered from <code className="font-mono">{hermesProfileDiscovery.root}</code>.</p>
+                )}
+                {hermesProfileDiscovery.ignoredEntries.length > 0 && (
+                  <p className="mt-1">Ignored {hermesProfileDiscovery.ignoredEntries.length} incomplete or invalid profile entr{hermesProfileDiscovery.ignoredEntries.length === 1 ? 'y' : 'ies'}.</p>
+                )}
+              </div>
             )}
+            <div className={`rounded-lg border p-2 text-xs ${hermesReadiness?.ready
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/20 dark:text-emerald-300'
+              : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-300'}`}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-start gap-1 min-w-0">
+                  {!hermesReadiness?.ready && <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />}
+                  <span>
+                    {hermesReadiness?.ready
+                      ? `Hermes ACP is ready${hermesReadiness.version ? ` (${hermesReadiness.version})` : ''}.`
+                      : `Hermes is installed but not ACP-ready${hermesReadiness?.detail ? ` — ${hermesReadiness.detail}` : ' — run the readiness check'}.`}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { void recheckHermes() }}
+                  disabled={hermesReadinessChecking}
+                  className="shrink-0 underline underline-offset-2 disabled:opacity-50"
+                >
+                  {hermesReadinessChecking ? 'Checking…' : 'Recheck'}
+                </button>
+              </div>
+              {!hermesReadiness?.ready && (
+                <div className="mt-1.5 flex items-center gap-1.5 text-[11px]">
+                  <code className="rounded bg-black/5 px-1 py-0.5 dark:bg-white/10">hermes acp --check</code>
+                  <button type="button" onClick={() => { void copyHermesCommand() }} className="underline underline-offset-2">
+                    {hermesCommandCopied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+              )}
+            </div>
+            <p className="text-[11px] text-gray-400">
+              Hermes owns authentication, provider settings, memory, skills, and hooks. Use <code className="font-mono">hermes setup</code> or <code className="font-mono">hermes auth</code> in a terminal, then press Recheck; Nexy never copies Hermes credentials.
+            </p>
           </div>
         )}
       </div>

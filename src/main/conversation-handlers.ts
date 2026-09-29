@@ -206,11 +206,11 @@ export function registerConversationHandlers(): void {
 
   safeHandle(
     "conversation:set-model",
-    (_event, id: string, model: string | null, cliBackend?: string | null) => {
+    (_event, id: string, model: string | null, cliBackend?: string | null, hermesProfile?: string | null) => {
       ensureConversationModelColumn();
       db.prepare(
-        "UPDATE conversations SET model = ?, cli_backend = ?, updated_at = ? WHERE id = ?",
-      ).run(model, cliBackend ?? null, Date.now(), id);
+        "UPDATE conversations SET model = ?, conversation_hermes_profile = ?, cli_backend = ?, updated_at = ? WHERE id = ?",
+      ).run(model, model && cliBackend === 'hermes-cli' ? (hermesProfile?.trim() || null) : null, cliBackend ?? null, Date.now(), id);
       return true;
     },
   );

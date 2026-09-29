@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto'
 
 import { getDatabase } from './database'
-import { callMcpTool, servers } from './mcp'
+import { callMcpTool, servers, type McpExecutionPolicy } from './mcp'
 import { broadcastToMobile } from './ws-server'
 import type { ProviderNonStreamResult, ToolChoice, ToolDefinition } from './provider-types'
 import type { ProviderMessage } from './providers'
@@ -172,6 +172,7 @@ export async function runProviderMcpToolLoop(
   ) => Promise<void>,
   onToolStarted?: (event: ToolLoopToolStartedEvent) => void,
   toolRoundStreamCaller?: ModelToolStreamCaller,
+  mcpPolicy?: McpExecutionPolicy,
 ): Promise<string> {
   const toolNames = [...new Set(toolDefs.map((t) => t.function.name.split('__').pop()))].join(', ')
   const directive = toolDirective ??
@@ -460,6 +461,7 @@ export async function runProviderMcpToolLoop(
         const mcpResolved = resolved!
         sendActivity({ type: 'tool', name: toolShortName, server: serverName })
         try {
+          const mcpPolicyArgs = mcpPolicy ? [mcpPolicy] as const : [] as const
           const toolResult = await callMcpTool(
             mcpResolved.serverId,
             mcpResolved.toolName,
@@ -469,6 +471,7 @@ export async function runProviderMcpToolLoop(
             agenticMode,
             autoApproveTools,
             fullAutoApprove,
+            ...mcpPolicyArgs,
           )
           toolResultContent = toolResult.success
             ? (toolResult.result ?? '(no output)')

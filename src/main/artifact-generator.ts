@@ -10,6 +10,7 @@ import { getAdapter } from './cli-adapters/registry'
 import { ClaudeAdapter } from './cli-adapters/claude'
 import { CodexAdapter } from './cli-adapters/codex'
 import { getCliModels } from './cli-detection'
+import { isClaudeCliModelOrCandidate } from './cli-adapters/claude-model-probe'
 import type { ProviderMessage } from './provider-core-types'
 import type { ArtifactSpec, ArtifactGeneratorMessage, ArtifactGeneratorRun, ArtifactKind, ArtifactExportFormat } from '../shared/types'
 import { getDatabase } from './database'
@@ -205,7 +206,7 @@ export function getArtifactGeneratorModel(): string {
   const savedProvider = getProviderForAgent(savedModel)
   if (isProviderConfigured(savedProvider.provider)) return savedModel
 
-  if (ClaudeAdapter.isAvailable() && getCliModels('claude-cli').some((m) => m.id === savedModel)) {
+  if (ClaudeAdapter.isAvailable() && isClaudeCliModelOrCandidate(savedModel)) {
     return `claude-cli:${savedModel}`
   }
   if (CodexAdapter.isAvailable() && getCliModels('codex-cli').some((m) => m.id === savedModel)) {
@@ -242,7 +243,7 @@ async function runProviderChat(
       cliBackend = prefix
       cliModel = selectedModel.slice(colonIdx + 1)
     }
-  } else if (ClaudeAdapter.isAvailable() && getCliModels('claude-cli').some((m) => m.id === selectedModel)) {
+  } else if (ClaudeAdapter.isAvailable() && isClaudeCliModelOrCandidate(selectedModel)) {
     cliBackend = 'claude-cli'
   } else if (CodexAdapter.isAvailable() && getCliModels('codex-cli').some((m) => m.id === selectedModel)) {
     cliBackend = 'codex-cli'

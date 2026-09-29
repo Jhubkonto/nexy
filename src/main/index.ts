@@ -8,7 +8,7 @@ import { stopAllProjectWikiMcpBridges } from './project-wiki-mcp'
 import { initAutoUpdater, registerUpdaterHandlers, checkForUpdatesOnStartup } from './updater'
 import { loadModelCatalog } from './model-catalog'
 import { ClaudeAdapter } from './cli-adapters/claude'
-import { probeClaudeCliModels, cacheClaudeCliPtyModels } from './cli-adapters/claude-model-probe'
+import { probeClaudeCliModels, cacheClaudeCliDiscovery } from './cli-adapters/claude-model-probe'
 import { initLogger } from './logger'
 import { validateSender } from './safe-handle'
 import { initDebugMode, debugLog } from './debug-mode'
@@ -20,6 +20,7 @@ import { startDeferredCallbackEngine } from './deferred-callbacks'
 import { initializeActivityBadge, setUnseenCountChangeCallback } from './activity-badge'
 import { cancelAllPendingUserInputs } from './user-input'
 import { applyStoredAutoStartSetting, isRunInBackgroundEnabled } from './app-lifecycle-settings'
+import { HermesAcpAdapterInstance } from './cli-adapters/hermes-acp'
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -94,9 +95,12 @@ function createWindow(showOnReady = true): void {
     }
     if (ClaudeAdapter.isAvailable()) {
       void probeClaudeCliModels()
-        .then((models) => {
-          cacheClaudeCliPtyModels(models)
-          if (models.length > 0) mainWindow?.webContents.send('model:cli-models-updated')
+        .then((discovery) => {
+          // Do not make a partial rendered menu authoritative. The snapshot function preserves
+          // the last complete result and tells us whether selectable choices actually changed.
+          const changed = cacheClaudeCliDiscovery(discovery)
+          debugLog('claude-models', `discovery=${discovery.status} version=${discovery.cliVersion ?? 'unknown'} models=[${discovery.models.map((model) => model.id).join(',')}]${'reason' in discovery ? ` reason=${discovery.reason}` : ''}`)
+          if (changed) mainWindow?.webContents.send('model:cli-models-updated')
         })
         .catch(() => {})
     }
@@ -421,6 +425,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isQuitting = true
+  HermesAcpAdapterInstance.closeAll()
 })
 
 app.on('will-quit', () => {

@@ -14,7 +14,8 @@ import { getProviderCredential, getOpenRouterModels } from './providers'
 import { ClaudeAdapter } from './cli-adapters/claude'
 import { CodexAdapter } from './cli-adapters/codex'
 import { HermesAdapter } from './cli-adapters/hermes'
-import { getCliModels } from './cli-detection'
+import { getCliModels, isHermesAcpReady } from './cli-detection'
+import { isClaudeCliModelOrCandidate } from './cli-adapters/claude-model-probe'
 import { retrieveAuthMode } from './auth'
 import { getDatabase } from './database'
 
@@ -39,8 +40,8 @@ export function resolveEffectiveModelForRouting(explicitModel: string | null | u
 export function inferCliBackendFromModel(model: string | undefined): EffectiveCliBackend {
   if (!model) return undefined
   if (CodexAdapter.isAvailable() && getCliModels('codex-cli').some((m) => m.id === model)) return 'codex-cli'
-  if (ClaudeAdapter.isAvailable() && getCliModels('claude-cli').some((m) => m.id === model)) return 'claude-cli'
-  if (HermesAdapter.isAvailable() && getCliModels('hermes-cli').some((m) => m.id === model)) return 'hermes-cli'
+  if (ClaudeAdapter.isAvailable() && isClaudeCliModelOrCandidate(model)) return 'claude-cli'
+  if (HermesAdapter.isAvailable() && isHermesAcpReady() && getCliModels('hermes-cli').some((m) => m.id === model)) return 'hermes-cli'
   return undefined
 }
 
@@ -55,6 +56,7 @@ export function resolveEffectiveBackend(opts: {
   providerName: ProviderName
   projectId?: string | null
   agentId?: string | null
+  hermesProfile?: string | null
 }): EffectiveCliBackend {
   const credentialForModel = getProviderCredential(opts.providerName, {
     projectId: opts.projectId,
@@ -66,23 +68,26 @@ export function resolveEffectiveBackend(opts: {
 
   if (opts.cliBackend === 'codex-cli' && CodexAdapter.isAvailable()) return 'codex-cli'
   if (opts.cliBackend === 'claude-cli' && ClaudeAdapter.isAvailable()) return 'claude-cli'
-  if (opts.cliBackend === 'hermes-cli' && HermesAdapter.isAvailable()) return 'hermes-cli'
+  if (opts.cliBackend === 'hermes-cli' && HermesAdapter.isAvailable() && isHermesAcpReady()) return 'hermes-cli'
   if (opts.agentBackend === 'codex-cli' && CodexAdapter.isAvailable()) return 'codex-cli'
   if (opts.agentBackend === 'claude-cli' && ClaudeAdapter.isAvailable()) return 'claude-cli'
-  if (opts.agentBackend === 'hermes-cli' && HermesAdapter.isAvailable()) return 'hermes-cli'
+  if (opts.agentBackend === 'hermes-cli' && HermesAdapter.isAvailable() && isHermesAcpReady()) return 'hermes-cli'
   if (!selectedModelIsOpenRouter && opts.convCliBackend === 'codex-cli' && CodexAdapter.isAvailable()) {
     return 'codex-cli'
   }
   if (!selectedModelIsOpenRouter && opts.convCliBackend === 'claude-cli' && ClaudeAdapter.isAvailable()) {
     return 'claude-cli'
   }
-  if (!selectedModelIsOpenRouter && opts.convCliBackend === 'hermes-cli' && HermesAdapter.isAvailable()) {
+  if (!selectedModelIsOpenRouter && opts.convCliBackend === 'hermes-cli' && HermesAdapter.isAvailable() && isHermesAcpReady()) {
+    return 'hermes-cli'
+  }
+  if (!selectedModelIsOpenRouter && HermesAdapter.isAvailable() && isHermesAcpReady() && getCliModels('hermes-cli', opts.hermesProfile ?? undefined).some((entry) => entry.id === opts.selectedModel)) {
     return 'hermes-cli'
   }
   if (retrieveAuthMode() === 'none' && !credentialForModel) {
     if (ClaudeAdapter.isAvailable()) return 'claude-cli'
     if (CodexAdapter.isAvailable()) return 'codex-cli'
-    if (HermesAdapter.isAvailable()) return 'hermes-cli'
+    if (HermesAdapter.isAvailable() && isHermesAcpReady()) return 'hermes-cli'
   }
   return undefined
 }

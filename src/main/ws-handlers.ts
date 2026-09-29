@@ -21,6 +21,7 @@ import { dispatchChatSend, broadcastConversationMessages } from './chat-handlers
 import { activateEmergencyStop, getEmergencyStopStatus, resumeConversations } from './emergency-stop'
 import { debugLog } from './debug-mode'
 import { getCliModels } from './cli-detection'
+import { getClaudeCliModelChoices, isClaudeCliModelOrCandidate } from './cli-adapters/claude-model-probe'
 import { getCachedCatalog } from './model-catalog'
 import { getAndroidUpdateManifest, getAndroidWorkspaceInfo, getSigningConfig, publishAndroidUpdate, restoreAndroidVersion, startAndroidBuildFromMobile, cancelAndroidBuildFromMobile } from './android-handlers'
 import { getWorkspaceInfo, startBuildFromMobile, cancelMobileBuild, publishArtifactToFeed, runPublishedUpdateInstall } from './build-handlers'
@@ -105,7 +106,7 @@ import {
 import type { ProjectGeneratorSpec, AgentGeneratorSpec, SkillConfig, SkillGeneratorSpec, ScheduleGeneratorMessage, ScheduleGeneratorSpec, ArtifactGeneratorMessage, ArtifactSpec, PromptLibraryEntry, PromptLibraryVersion, AutomatedWorkflowGeneratorMessage, AutomatedWorkflowStepStatus } from '../shared/types'
 import { storeApiKey, removeApiKey, getAzureEndpoint, setAzureEndpoint } from './provider-secrets'
 import { testProviderKey } from './providers'
-import { detectAllClis, listHermesProfiles, hermesAcpReadiness } from './cli-detection'
+import { detectAllClis, getHermesProfileDiscovery, listHermesProfiles, hermesAcpReadiness } from './cli-detection'
 import { ClaudeAdapter } from './cli-adapters/claude'
 import { CodexAdapter } from './cli-adapters/codex'
 import { HermesAdapter } from './cli-adapters/hermes'
@@ -123,12 +124,14 @@ import {
 } from './rating-handlers'
 import { getActivitySnapshot, endActivity } from './activity-tracker'
 import { clearUnseenDestination, getNewContentConversations, markAllConversationsRead } from './activity-badge'
-import { getMcpServersWithStatus, getMcpServerStatus, addMcpServer, updateMcpServer, removeMcpServer, restartMcpServer, listMcpTools, listMcpToolsForAgent, testMcpServer } from './mcp'
+import { getMcpServersForCompanion, getMcpServerStatus, addMcpServer, updateMcpServer, removeMcpServer, restartMcpServer, listMcpTools, listMcpToolsForAgent, testMcpServer } from './mcp'
 import { searchMcpRegistry } from './mcp-registry'
 import { getProjectWikiMcpStatus, startProjectWikiMcpBridge, stopProjectWikiMcpBridge } from './project-wiki-mcp'
 import { MCP_CATALOG } from '../shared/mcp-catalog'
+import { normalizeMcpSandboxProfile } from '../shared/mcp-sandbox'
 import {
   insertPromptLibraryEntry,
+  isPromptVisibleForProject,
   listPromptLibraryVersions,
   rollbackPromptLibraryEntry,
   updatePromptLibraryEntry,
@@ -861,8 +864,11 @@ export function registerWsHandlers(): void {
               }
             : { type: 'none', label: 'No configured model backend' }
 
+        const cliModels = resolvedBackend === 'claude-cli'
+          ? getClaudeCliModelChoices().map(({ source: _source, ...model }) => model)
+          : getCliModels(resolvedBackend, hermesProfile)
         const models = cliLabel
-          ? getCliModels(resolvedBackend, hermesProfile).map((model) => ({
+          ? cliModels.map((model) => ({
               ...model,
               vendor: cliLabel,
               isCliSourced: true,
@@ -884,7 +890,7 @@ export function registerWsHandlers(): void {
 
       // No explicit backend — aggregate ALL available sources for the model picker
       if (ClaudeAdapter.isAvailable()) {
-        for (const model of getCliModels('claude-cli')) {
+        for (const { source: _source, ...model } of getClaudeCliModelChoices()) {
           if (!byId.has(model.id)) byId.set(model.id, {
             ...model,
             vendor: 'Claude CLI',
@@ -1027,9 +1033,22 @@ export function registerWsHandlers(): void {
             const row = getDatabase().prepare("SELECT value FROM settings WHERE key = 'default_model'").get() as { value: string } | undefined
             return row?.value || undefined
           })()
+      const routeHermesProfile = typeof data.hermesProfile === 'string'
+        ? data.hermesProfile.trim() || undefined
+        : (() => {
+            const routingDb = getDatabase()
+            const row = routingDb.prepare(`
+              SELECT c.conversation_hermes_profile, p.project_hermes_profile
+              FROM conversations c LEFT JOIN projects p ON p.id = c.project_id
+              WHERE c.id = ?
+            `).get(conversationId) as { conversation_hermes_profile: string | null; project_hermes_profile: string | null } | undefined
+            if (row?.conversation_hermes_profile) return row.conversation_hermes_profile
+            if (row?.project_hermes_profile) return row.project_hermes_profile
+            return (routingDb.prepare("SELECT value FROM settings WHERE key = 'global_default_hermes_profile'").get() as { value: string } | undefined)?.value || undefined
+          })()
       const codexModels = CodexAdapter.isAvailable() ? getCliModels('codex-cli').map((m) => m.id) : []
-      const claudeModels = ClaudeAdapter.isAvailable() ? getCliModels('claude-cli').map((m) => m.id) : []
-      const hermesModels = HermesAdapter.isAvailable() ? getCliModels('hermes-cli').map((m) => m.id) : []
+      const claudeModels = ClaudeAdapter.isAvailable() ? getClaudeCliModelChoices().map((m) => m.id) : []
+      const hermesModels = HermesAdapter.isAvailable() ? getCliModels('hermes-cli', routeHermesProfile).map((m) => m.id) : []
       const routeLog = (msg: string): void => {
         debugLog('ws', msg)
         broadcastToMobile({ event: 'android:log', data: { tag: 'WsRoute', message: msg, ts: Date.now() } })
@@ -1041,7 +1060,7 @@ export function registerWsHandlers(): void {
       if (effectiveModel && effectiveModel !== 'default') {
         if (CodexAdapter.isAvailable() && codexModels.some((id) => id === effectiveModel)) {
           inferredCliBackend = 'codex-cli'
-        } else if (ClaudeAdapter.isAvailable() && claudeModels.some((id) => id === effectiveModel)) {
+        } else if (ClaudeAdapter.isAvailable() && isClaudeCliModelOrCandidate(effectiveModel)) {
           inferredCliBackend = 'claude-cli'
         } else if (HermesAdapter.isAvailable() && hermesModels.some((id) => id === effectiveModel)) {
           inferredCliBackend = 'hermes-cli'
@@ -1051,6 +1070,7 @@ export function registerWsHandlers(): void {
       activeAndroidDispatches.add(conversationId)
       void dispatchChatSend(wins[0], conversationId, content, {
         model,
+        hermesProfile: typeof data.hermesProfile === 'string' ? data.hermesProfile : undefined,
         agentId,
         projectId,
         images: images.length > 0 ? images : undefined,
@@ -1087,6 +1107,7 @@ export function registerWsHandlers(): void {
           SELECT c.id, c.title, c.created_at, c.updated_at,
             c.agent_id,
             c.model,
+            c.conversation_hermes_profile,
             c.pinned,
             c.archived,
             c.completed_at,
@@ -1136,6 +1157,7 @@ export function registerWsHandlers(): void {
         data as ConversationPageRequest,
         `c.id, c.title, c.created_at, c.updated_at,
           c.agent_id, c.model, c.pinned, c.archived, c.completed_at,
+          c.conversation_hermes_profile,
           c.thinking_effort_override, c.full_auto_approve_override,
           c.agentic_mode_override, c.terminal_sandbox_override,
           c.cli_mode_override, c.codex_execution_mode_override, c.kind,
@@ -1151,9 +1173,16 @@ export function registerWsHandlers(): void {
     if (command === 'conversation:set-model') {
       const conversationId = typeof data.conversationId === 'string' ? data.conversationId : ''
       const model = typeof data.model === 'string' && data.model !== 'default' ? data.model : null
+      const hermesProfile = model && data.cliBackend === 'hermes-cli' && typeof data.hermesProfile === 'string'
+        ? data.hermesProfile.trim() || null
+        : null
       if (!conversationId) return
-      db.prepare('UPDATE conversations SET model = ?, updated_at = ? WHERE id = ?').run(model, Date.now(), conversationId)
-      reply({ event: 'conversation:model-updated', data: { conversationId, model } })
+      if ('cliBackend' in data || 'hermesProfile' in data) {
+        db.prepare('UPDATE conversations SET model = ?, conversation_hermes_profile = ?, cli_backend = ?, updated_at = ? WHERE id = ?').run(model, hermesProfile, typeof data.cliBackend === 'string' && data.cliBackend ? data.cliBackend : null, Date.now(), conversationId)
+      } else {
+        db.prepare('UPDATE conversations SET model = ?, updated_at = ? WHERE id = ?').run(model, Date.now(), conversationId)
+      }
+      reply({ event: 'conversation:model-updated', data: { conversationId, model, ...(('cliBackend' in data || 'hermesProfile' in data) ? { hermesProfile } : {}) } })
       return
     }
 
@@ -1274,7 +1303,7 @@ export function registerWsHandlers(): void {
 
     if (command === 'project:list') {
       const rows = db.prepare(`
-          SELECT p.id, p.name, p.color, p.default_model,
+          SELECT p.id, p.name, p.color, p.default_model, p.project_hermes_profile,
             (SELECT COUNT(*) FROM conversations
              WHERE project_id = p.id AND archived = 0 AND kind != 'project-conversation-mode') AS chat_count,
             (SELECT GROUP_CONCAT(NULLIF(json_extract(a.config_json, '$.icon'), ''), ',')
@@ -1540,6 +1569,15 @@ export function registerWsHandlers(): void {
         db.prepare('UPDATE projects SET default_model = ?, updated_at = ? WHERE id = ?')
           .run(defaultModel, Date.now(), id)
       }
+      if ('projectHermesProfile' in data) {
+        const projectHermesProfile = typeof data.projectHermesProfile === 'string' ? data.projectHermesProfile.trim() || null : null
+        const targetModel = typeof data.defaultModel === 'string'
+          ? data.defaultModel.trim() || null
+          : (db.prepare('SELECT default_model FROM projects WHERE id = ?').get(id) as { default_model: string | null } | undefined)?.default_model
+        patch.projectHermesProfile = projectHermesProfile
+        db.prepare('UPDATE projects SET project_hermes_profile = ?, updated_at = ? WHERE id = ?')
+          .run(targetModel ? projectHermesProfile : null, Date.now(), id)
+      }
       if ('defaultThinkingEffort' in data) {
         const requestedThinkingEffort = typeof data.defaultThinkingEffort === 'string'
           ? data.defaultThinkingEffort.trim()
@@ -1765,12 +1803,12 @@ export function registerWsHandlers(): void {
       if (!id) return
       const row = db.prepare('SELECT config_json FROM projects WHERE id = ?').get(id) as
         { config_json: string | null } | undefined
-      const defaultModelRow = db.prepare('SELECT default_model FROM projects WHERE id = ?').get(id) as
-        { default_model: string | null } | undefined
+      const defaultModelRow = db.prepare('SELECT default_model, project_hermes_profile FROM projects WHERE id = ?').get(id) as
+        { default_model: string | null; project_hermes_profile: string | null } | undefined
       const parsed = parseProjectConfig(row?.config_json ?? null)
       ensureLegacyProjectSource(db, id, parsed.rootDirectory)
       const hierarchy = listProjectSources(db, id)
-      const config = { ...parsed, ...hierarchy, rootDirectory: primarySourcePath(hierarchy) || parsed.rootDirectory, defaultModel: defaultModelRow?.default_model ?? null }
+      const config = { ...parsed, ...hierarchy, rootDirectory: primarySourcePath(hierarchy) || parsed.rootDirectory, defaultModel: defaultModelRow?.default_model ?? null, projectHermesProfile: defaultModelRow?.project_hermes_profile ?? null }
       reply({ event: 'project:config', data: { id, config } })
       return
     }
@@ -2010,8 +2048,11 @@ export function registerWsHandlers(): void {
           clis,
           hermes: {
             profiles: listHermesProfiles(),
+            profileDiscovery: getHermesProfileDiscovery(),
             acpReady: readiness.ready,
             version: readiness.version ?? null,
+            acpStatus: readiness.status ?? null,
+            acpDetail: readiness.detail ?? null,
           },
         },
       })
@@ -2036,8 +2077,24 @@ export function registerWsHandlers(): void {
       return
     }
 
+    // Compatibility aliases used by older Android builds for the desktop-owned model setting.
+    // The canonical transport is app:get-setting/app:set-setting, but keeping these replies
+    // makes the companion upgrade-safe while both clients are in the field.
+    if (command === 'settings:get-default-desktop-model') {
+      const row = db.prepare("SELECT value FROM settings WHERE key = 'default_model'").get() as { value: string } | undefined
+      reply({ event: 'app:setting-value', data: { key: 'defaultDesktopModel', value: row?.value ?? null } })
+      return
+    }
+
+    if (command === 'settings:set-default-desktop-model') {
+      const model = typeof data.modelId === 'string' ? data.modelId : ''
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('default_model', ?)").run(model)
+      reply({ event: 'app:setting-set', data: { key: 'defaultDesktopModel', value: model } })
+      return
+    }
+
     if (command === 'mcp:list') {
-      const servers = getMcpServersWithStatus()
+      const servers = getMcpServersForCompanion()
       reply({ event: 'mcp:list', data: { servers } })
       return
     }
@@ -2065,13 +2122,17 @@ export function registerWsHandlers(): void {
       const command2 = typeof data.command === 'string' ? data.command.trim() : ''
       if (!name || !command2) return
       const args = Array.isArray(data.args) ? (data.args as string[]) : []
-      const env = (data.env && typeof data.env === 'object' && !Array.isArray(data.env)) ? data.env as Record<string, string> : {}
       const cwd = typeof data.cwd === 'string' ? data.cwd : undefined
       const imageResponses = data.imageResponses === 'allow' || data.imageResponses === 'omit' ? data.imageResponses : undefined
       const enabled = typeof data.enabled === 'boolean' ? data.enabled : true
-      void addMcpServer({ name, description, command: command2, args, env, cwd, imageResponses, enabled }).then((server) => {
+      const sandboxProfile = normalizeMcpSandboxProfile(data.sandboxProfile)
+      // Environment secrets are desktop-owned. Android can create a server, but it
+      // cannot inject or overwrite the encrypted env map through the companion link.
+      void addMcpServer({ name, description, command: command2, args, env: {}, cwd, imageResponses, sandboxProfile, enabled }).then((server) => {
         const s = getMcpServerStatus(server.id)
-        const payload = { ...server, status: s.status, toolCount: s.tools.length }
+        const safeServer = getMcpServersForCompanion().find((entry) => entry.id === server.id)
+        if (!safeServer) return
+        const payload = { ...safeServer, status: s.status, toolCount: s.tools.length }
         broadcastToMobile({ event: 'mcp:server-added', data: { server: payload } })
         reply({ event: 'mcp:server-added', data: { server: payload } })
       })
@@ -2086,13 +2147,16 @@ export function registerWsHandlers(): void {
       if (typeof data.description === 'string') updates.description = data.description
       if (typeof data.command === 'string') updates.command = data.command
       if (Array.isArray(data.args)) updates.args = data.args
-      if (data.env && typeof data.env === 'object') updates.env = data.env
       if (typeof data.cwd === 'string') updates.cwd = data.cwd || undefined
       if (typeof data.enabled === 'boolean') updates.enabled = data.enabled
+      if (data.imageResponses === 'allow' || data.imageResponses === 'omit') updates.imageResponses = data.imageResponses
+      if (data.sandboxProfile && typeof data.sandboxProfile === 'object') updates.sandboxProfile = normalizeMcpSandboxProfile(data.sandboxProfile)
       void updateMcpServer(id, updates).then((server) => {
         if (!server) return
         const s = getMcpServerStatus(id)
-        const payload = { ...server, status: s.status, toolCount: s.tools.length }
+        const safeServer = getMcpServersForCompanion().find((entry) => entry.id === server.id)
+        if (!safeServer) return
+        const payload = { ...safeServer, status: s.status, toolCount: s.tools.length }
         broadcastToMobile({ event: 'mcp:server-updated', data: { server: payload } })
         reply({ event: 'mcp:server-updated', data: { server: payload } })
       })
@@ -2114,7 +2178,7 @@ export function registerWsHandlers(): void {
       if (!id) return
       void restartMcpServer(id).then(() => {
         const s = getMcpServerStatus(id)
-        reply({ event: 'mcp:server-status', data: { id, status: s.status, error: s.error ?? null, toolCount: s.tools.length } })
+        reply({ event: 'mcp:server-status', data: { id, status: s.status, error: s.error ?? null, toolCount: s.tools.length, sandbox: s.sandbox ?? null } })
       })
       return
     }
@@ -2123,7 +2187,7 @@ export function registerWsHandlers(): void {
       const id = typeof data.id === 'string' ? data.id : ''
       if (!id) return
       const status = getMcpServerStatus(id)
-      reply({ event: 'mcp:server-status', data: { id, status: status.status, error: status.error ?? null, toolCount: status.tools.length } })
+      reply({ event: 'mcp:server-status', data: { id, status: status.status, error: status.error ?? null, toolCount: status.tools.length, sandbox: status.sandbox ?? null } })
       return
     }
 
@@ -2145,10 +2209,10 @@ export function registerWsHandlers(): void {
     if (command === 'mcp:test') {
       const command2 = typeof data.command === 'string' ? data.command.trim() : ''
       const args = Array.isArray(data.args) ? data.args as string[] : []
-      const env = (data.env && typeof data.env === 'object' && !Array.isArray(data.env)) ? data.env as Record<string, string> : {}
       const cwd = typeof data.cwd === 'string' ? data.cwd : undefined
       const imageResponses = data.imageResponses === 'allow' || data.imageResponses === 'omit' ? data.imageResponses : undefined
-      void testMcpServer({ command: command2, args, env, cwd, imageResponses }).then((result) => {
+      const sandboxProfile = normalizeMcpSandboxProfile(data.sandboxProfile)
+      void testMcpServer({ command: command2, args, env: {}, cwd, imageResponses, sandboxProfile }).then((result) => {
         reply({ event: 'mcp:test-result', data: result })
       })
       return
@@ -2731,9 +2795,10 @@ export function registerWsHandlers(): void {
       const projectId = typeof data.projectId === 'string' ? data.projectId : null
       type PromptRow = { id: string; title: string; body: string; description: string; category: string; tags: string; scope: string; project_id: string | null; created_at: number; updated_at: number }
       const rows = db.prepare(
-        `SELECT * FROM prompt_library_entries WHERE scope = 'global' OR (scope = 'project' AND project_id = ?) ORDER BY category COLLATE NOCASE ASC, updated_at DESC`
-      ).all(projectId) as PromptRow[]
-      const entries = rows.map((r) => ({
+        `SELECT * FROM prompt_library_entries ORDER BY category COLLATE NOCASE ASC, updated_at DESC`
+      ).all() as PromptRow[]
+      const visibleRows = rows.filter((row) => isPromptVisibleForProject(row, projectId))
+      const entries = visibleRows.map((r) => ({
         id: r.id, title: r.title, body: r.body, description: r.description, category: r.category,
         tags: (() => { try { return JSON.parse(r.tags) as string[] } catch { return [] } })(),
         scope: r.scope, projectId: r.project_id, createdAt: r.created_at, updatedAt: r.updated_at,

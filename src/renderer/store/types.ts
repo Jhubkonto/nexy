@@ -4,6 +4,7 @@ export interface Conversation {
   id: string
   agent_id: string | null
   model?: string | null
+  conversation_hermes_profile?: string | null
   pinned?: number
   project_id?: string | null
   title: string
@@ -25,6 +26,7 @@ export interface Project {
   name: string
   color: string
   default_model?: string | null
+  project_hermes_profile?: string | null
   created_at: number
   updated_at: number
 }

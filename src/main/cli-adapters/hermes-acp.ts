@@ -4,7 +4,7 @@ import type { CliAdapterRequest, CliAgentAdapter, CliStreamEvent } from './types
 import { buildCliChildEnv, createOpenBlockTracker, resolveCliPath } from './utils'
 import { debugLog } from '../debug-mode'
 import { recordErrorLogEntry } from '../error-log-handlers'
-import { listHermesProfiles } from '../cli-detection'
+import { listHermesProfiles, resolveHermesRoot } from '../cli-detection'
 import { extractCitations } from '../../shared/citations'
 
 // Local-model Hermes profiles run vision/aux capability probes against the configured endpoint
@@ -15,6 +15,7 @@ import { extractCitations } from '../../shared/citations'
 const HERMES_INITIALIZE_TIMEOUT_MS = 60 * 1000
 const HERMES_SESSION_NEW_TIMEOUT_MS = 5 * 60 * 1000
 const HERMES_CANCEL_GRACE_MS = 1_000
+const HERMES_IDLE_SESSION_TTL_MS = 30 * 60 * 1000
 
 /**
  * Always-on persistent diagnostic for the Hermes ACP lifecycle. Unlike {@link debugLog} (gated
@@ -39,6 +40,8 @@ type Session = {
   lastTextBlockId?: string
   lastThinkingBlockId?: string
   trackers: Map<string, ReturnType<typeof createOpenBlockTracker>>
+  busy: boolean
+  lastUsedAt: number
 }
 type ContentBlock = { type?: string; text?: string; data?: string; mimeType?: string }
 
@@ -61,6 +64,12 @@ export class HermesAcpAdapter implements CliAgentAdapter {
   readonly name = 'hermes-cli'
   private readonly sessions = new Map<string, Session>()
   private readonly conversationKeys = new Map<string, string>()
+  private readonly idleCleanupTimer: NodeJS.Timeout
+
+  constructor() {
+    this.idleCleanupTimer = setInterval(() => this.closeIdleSessions(), 60_000)
+    if (typeof this.idleCleanupTimer.unref === 'function') this.idleCleanupTimer.unref()
+  }
 
   isAvailable(): boolean { return resolveCliPath('hermes') !== null }
 
@@ -71,6 +80,7 @@ export class HermesAcpAdapter implements CliAgentAdapter {
     onEvent?: (event: CliStreamEvent) => void,
     signal?: AbortSignal,
   ): Promise<string> {
+    this.closeIdleSessions()
     const executable = resolveCliPath('hermes')
     if (!executable) throw new Error('hermes CLI not found')
     const requestedProfile = req.hermesProfile?.trim()
@@ -101,11 +111,11 @@ export class HermesAcpAdapter implements CliAgentAdapter {
     let session = this.sessions.get(key)
     if (!session) {
       const args = useProfileFlag ? ['--profile', profile, 'acp'] : ['acp']
-      logHermes('info', `spawn ${executable} ${args.join(' ')} (profile=${profile}, cwd=${req.cwd})`)
-      // Assigned once at line ~91 after `session` exists, but captured by the
-      // notification callback below (which only fires later) — so it must be a
-      // forward-declared `let`; the const suggestion is unfollowable here.
-      // eslint-disable-next-line prefer-const
+      // Do not put project paths into the durable diagnostic log. Profile and argument details
+      // are enough to diagnose launch selection without leaking the user's workspace location.
+      logHermes('info', `spawn Hermes ACP (profile=${profile}, args=${args.join(' ')})`)
+      // Assigned after bootstrap completes, but captured by the notification callback below
+      // (which only fires later), so it is intentionally forward-declared.
       let activeSession: Session | undefined
       const connection = new AcpStdioConnection(
         executable,
@@ -113,7 +123,9 @@ export class HermesAcpAdapter implements CliAgentAdapter {
         req.cwd,
         (message) => this.handleNotification(message, activeSession),
         (message) => this.handleRequest(message, req),
-        buildCliChildEnv({ HERMES_ACP_SKIP_CONFIGURED_MCP: '1' }),
+        // Discovery, model lookup, and the child must resolve the same Hermes root. This
+        // matters when HERMES_HOME was inherited as a profile directory.
+        buildCliChildEnv({ HERMES_HOME: resolveHermesRoot(), HERMES_ACP_SKIP_CONFIGURED_MCP: '1' }),
       )
       const bootstrapStartedAt = Date.now()
       try {
@@ -141,7 +153,17 @@ export class HermesAcpAdapter implements CliAgentAdapter {
           throw new Error('Hermes ACP did not return a session ID')
         }
         logHermes('info', `session/new ok in ${Date.now() - bootstrapStartedAt}ms (profile=${profile}, id=${created.sessionId})`)
-        session = { id: created.sessionId, cwd: req.cwd, model: req.model, profile, connection, chunks: [], trackers: new Map() }
+        session = {
+          id: created.sessionId,
+          cwd: req.cwd,
+          model: req.model,
+          profile,
+          connection,
+          chunks: [],
+          trackers: new Map(),
+          busy: false,
+          lastUsedAt: Date.now(),
+        }
         activeSession = session
         this.sessions.set(key, session)
         this.conversationKeys.set(req.conversationId, key)
@@ -154,6 +176,14 @@ export class HermesAcpAdapter implements CliAgentAdapter {
       }
     }
 
+    if (session.busy) {
+      throw new Error('Hermes is already processing a message in this conversation')
+    }
+    session.busy = true
+    session.lastUsedAt = Date.now()
+    session.lastTextBlockId = undefined
+    session.lastThinkingBlockId = undefined
+    session.trackers.clear()
     const text = this.promptText(req)
     const prompt: ContentBlock[] = [{ type: 'text', text }]
     if (req.images) for (const image of req.images) {
@@ -192,6 +222,8 @@ export class HermesAcpAdapter implements CliAgentAdapter {
       signal?.removeEventListener('abort', abort)
       session.onChunk = undefined
       session.onEvent = undefined
+      session.busy = false
+      session.lastUsedAt = Date.now()
     }
   }
 
@@ -199,6 +231,13 @@ export class HermesAcpAdapter implements CliAgentAdapter {
     for (const session of this.sessions.values()) session.connection.close()
     this.sessions.clear()
     this.conversationKeys.clear()
+  }
+
+  private closeIdleSessions(): void {
+    const cutoff = Date.now() - HERMES_IDLE_SESSION_TTL_MS
+    for (const [key, session] of this.sessions) {
+      if (!session.busy && session.lastUsedAt < cutoff) this.invalidateSession(key, session)
+    }
   }
 
   private promptText(req: CliAdapterRequest): string {
@@ -275,6 +314,7 @@ export class HermesAcpAdapter implements CliAgentAdapter {
     // in-memory map key that prevents state crossing a changed security/context boundary.
     return JSON.stringify({
       profile,
+      hermesRoot: resolveHermesRoot(),
       cwd: req.cwd,
       model: req.model,
       systemPrompt: req.systemPrompt ?? '',

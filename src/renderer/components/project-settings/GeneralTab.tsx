@@ -3,7 +3,7 @@ import { FolderOpen, Plus, X, ChevronDown } from 'lucide-react'
 import { DropdownPanel } from '../DropdownPanel'
 import type { ProjectConfig } from '../../store/types'
 import type { ThinkingEffort } from '../../../shared/types'
-import type { AvailableModelGroup, CatalogModel } from '../../../shared/types'
+import type { AvailableModelGroup, CatalogModel, HermesProfileInfo } from '../../../shared/types'
 import { ModelPicker } from '../chat/ModelPicker'
 import { PROJECT_COLOR_OPTIONS, PROJECT_COLOR_HEX_REGEX } from '../../../shared/project-colors'
 
@@ -48,6 +48,8 @@ interface Props {
   showModeDropdown: boolean
   hasVarErrors: boolean
   defaultModel: string | null
+  projectHermesProfile: string
+  hermesProfiles: HermesProfileInfo[]
   availableModelGroups: AvailableModelGroup[]
   catalogModels: CatalogModel[]
   globalDefaultModel: string | null
@@ -72,6 +74,7 @@ interface Props {
   onRemoveVariable: (idx: number) => void
   onVarChange: (idx: number, field: 'key' | 'value', val: string) => void
   onDefaultModelChange: (model: string | null) => void
+  onProjectHermesProfileChange: (profile: string) => void
   defaultThinkingEffort?: ThinkingEffort | null
   onDefaultThinkingEffortChange: (value: ThinkingEffort | null) => void
 }
@@ -80,11 +83,11 @@ export function GeneralTab({
   isDraft, name, color, rootDirectory, sources, repositories, codingWorkspace, strategyRetrievalEnabled, terminalSandboxBypass, workspaceInfo,
   instructions, instructionMode, instructionsEnabled,
   variables, varErrors, showModeDropdown, hasVarErrors,
-  defaultModel, availableModelGroups, catalogModels, globalDefaultModel,
+  defaultModel, projectHermesProfile, hermesProfiles, availableModelGroups, catalogModels, globalDefaultModel,
   onSetName, onSetColor, onNameBlur, onConfirm,
   onInstructionsChange, onRootDirChange, onModeChange, onEnabledToggle, onBrowseDir, onAddSource, onRemoveSource, onRemoveRepository, onRescanSources, onCodingWorkspaceToggle,
   onStrategyRetrievalToggle, onTerminalSandboxBypassToggle, onSetShowModeDropdown, onAddVariable, onRemoveVariable, onVarChange,
-  onDefaultModelChange, defaultThinkingEffort = null, onDefaultThinkingEffortChange,
+  onDefaultModelChange, onProjectHermesProfileChange, defaultThinkingEffort = null, onDefaultThinkingEffortChange,
 }: Props) {
   const selectedModeLabel = INSTRUCTION_MODES.find((m) => m.value === instructionMode)?.label ?? instructionMode
   const highlightParts = resolveVarHighlights(instructions, variables)
@@ -171,6 +174,17 @@ export function GeneralTab({
               onSelectAvailableModel={(_group, model) => onDefaultModelChange(model.id)}
             />
           </div>
+          {availableModelGroups.some((group) => group.sourceKey === 'hermes-cli' && group.models.some((model) => model.id === defaultModel)) && (
+            <select
+              aria-label="Project Hermes profile"
+              value={projectHermesProfile}
+              onChange={(event) => onProjectHermesProfileChange(event.target.value)}
+              className="mt-2 w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-800 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+            >
+              <option value="">Default profile</option>
+              {hermesProfiles.map((profile) => <option key={profile.name} value={profile.name}>{profile.name}</option>)}
+            </select>
+          )}
         </div>
       )}
 

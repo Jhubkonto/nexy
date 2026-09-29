@@ -13,8 +13,8 @@ export interface Message {
 
 export type { TokenCount, TokenCountQuality, TokenCountSource, TokenUsage, TurnUsageTotal } from './token-usage'
 
-import type { HermesProfileInfo, HermesAcpReadiness } from './hermes'
-export type { HermesProfileInfo, HermesAcpReadiness } from './hermes'
+import type { HermesProfileInfo, HermesProfileDiscovery, HermesAcpReadiness } from './hermes'
+export type { HermesProfileInfo, HermesProfileDiscovery, HermesAcpReadiness } from './hermes'
 
 export interface Attachment {
   id: string
@@ -703,6 +703,7 @@ export interface McpServerConfig {
   env: Record<string, string>
   cwd?: string
   imageResponses?: 'allow' | 'omit'
+  sandboxProfile?: McpSandboxProfile
   enabled: boolean
 }
 
@@ -1308,6 +1309,7 @@ export interface ConversationRow {
   project_id: string | null
   title: string
   model: string | null
+  conversation_hermes_profile?: string | null
   pinned: number
   created_at: number
   updated_at: number
@@ -1400,6 +1402,7 @@ export interface ConversationExportProject {
   name: string
   color: string
   default_model: string | null
+  project_hermes_profile: string | null
   created_at: number
   updated_at: number
 }
@@ -1465,6 +1468,7 @@ export interface ConversationImportResult {
 
 export interface ConversationForkOptions {
   model?: string | null
+  conversationHermesProfile?: string | null
   agentId?: string | null
   projectId?: string | null
   cutoffTimestamp?: number | null
@@ -1950,6 +1954,7 @@ export interface ProjectRow {
   name: string
   color: string
   default_model: string | null
+  project_hermes_profile: string | null
   config: ProjectConfig
   created_at: number
   updated_at: number
@@ -1989,6 +1994,39 @@ export interface DeleteAgentResult {
 // MCP
 // ---------------------------------------------------------------------------
 
+export type McpSandboxNetworkPolicy = 'blocked' | 'allowed'
+export type McpSandboxChildProcessPolicy = 'blocked' | 'allowed'
+export type McpSandboxFilesystemAccess = 'read-only' | 'read-write'
+
+export interface McpSandboxFilesystemGrant {
+  path: string
+  access: McpSandboxFilesystemAccess
+}
+
+export interface McpSandboxProfile {
+  version: 1
+  network: McpSandboxNetworkPolicy
+  childProcesses: McpSandboxChildProcessPolicy
+  filesystem: McpSandboxFilesystemGrant[]
+  memoryLimitMiB: 512
+  maxProcesses: 1 | 8
+  startupTimeoutMs: 15000
+  gracefulShutdownTimeoutMs: 2000
+  hardTerminationTimeoutMs: 5000
+  maxDiagnosticBytes: 65536
+}
+
+export type McpSandboxStatus = 'sandboxed' | 'starting' | 'unavailable' | 'failed' | 'stopped'
+
+export interface McpSandboxRuntimeStatus {
+  status: McpSandboxStatus
+  backend?: string
+  helperVersion?: string
+  helperPid?: number
+  serverPid?: number
+  diagnostics?: string
+}
+
 export interface McpTool {
   name: string
   description?: string
@@ -2001,12 +2039,24 @@ export interface McpServerWithStatus extends McpServerConfig {
   status: 'connecting' | 'connected' | 'error' | 'disconnected'
   error?: string
   toolCount: number
+  resourceCount: number
+  promptCount: number
+  capabilities?: Record<string, unknown>
+  serverVersion?: { name: string; version: string }
+  instructions?: string
+  sandbox?: McpSandboxRuntimeStatus
 }
 
 export interface McpServerStatus {
   status: 'connecting' | 'connected' | 'error' | 'disconnected'
   error?: string
   tools: McpTool[]
+  resources: Array<{ uri: string; name?: string; description?: string; mimeType?: string }>
+  prompts: Array<{ name: string; description?: string; arguments?: Array<{ name: string; description?: string; required?: boolean }> }>
+  capabilities?: Record<string, unknown>
+  serverVersion?: { name: string; version: string }
+  instructions?: string
+  sandbox?: McpSandboxRuntimeStatus
 }
 
 export interface McpToolOverrideRow {
@@ -2028,6 +2078,7 @@ export interface McpTestResult {
   ok: boolean
   tools?: { name: string; description?: string }[]
   error?: string
+  sandbox?: McpSandboxRuntimeStatus
 }
 
 export interface McpRegistryEnvRequirement {
@@ -2159,7 +2210,12 @@ export interface CredentialBindingUpdateInput {
   expiresAt?: number | null
 }
 
-export interface AvailableModelEntry { id: string; label: string }
+export interface AvailableModelEntry {
+  id: string
+  label: string
+  /** Present only for Claude Code's full-ID candidates; a local CLI request verifies them on first use. */
+  source?: 'cli-menu-confirmed' | 'legacy-candidate' | 'validated'
+}
 export interface AvailableModelGroup {
   sourceKey: string
   sourceLabel: string
@@ -2269,6 +2325,8 @@ export type IpcReturnMap = {
   'cli:detect-all': Record<string, CliInstallStatus>
   'cli:get-models': { id: string; label: string }[]
   'hermes:list-profiles': HermesProfileInfo[]
+  'hermes:profile-discovery': HermesProfileDiscovery
+  'hermes:validate-home': import('./hermes').HermesHomeValidation
   'hermes:acp-readiness': HermesAcpReadiness
   // Context
   'context:git': string
@@ -2759,6 +2817,8 @@ export type IpcChannels =
   | 'cli:detect-all'
   | 'cli:get-models'
   | 'hermes:list-profiles'
+  | 'hermes:profile-discovery'
+  | 'hermes:validate-home'
   | 'hermes:acp-readiness'
   | 'context:git'
   | 'context:git-diff'

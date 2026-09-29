@@ -82,13 +82,14 @@ export function importConversationExport(
         ? (db.prepare("SELECT id FROM agents WHERE id = ?").get(exported.conversation.agent_id) ? exported.conversation.agent_id : null)
         : null;
       db.prepare(
-        "INSERT INTO conversations (id, agent_id, project_id, title, model, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO conversations (id, agent_id, project_id, title, model, conversation_hermes_profile, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(
         conversationId,
         agentId,
         projectId,
         title,
         exported.conversation.model ?? null,
+        exported.conversation.conversation_hermes_profile ?? null,
         0,
         exported.conversation.created_at ?? now,
         now,

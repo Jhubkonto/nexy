@@ -1983,8 +1983,25 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       CREATE INDEX IF NOT EXISTS idx_deferred_callbacks_status
         ON deferred_callbacks(status, expires_at);
       CREATE INDEX IF NOT EXISTS idx_deferred_callbacks_conversation
-        ON deferred_callbacks(conversation_id, status);
+      ON deferred_callbacks(conversation_id, status);
     `,
+  },
+  {
+    // Hermes profiles are part of a model target. Keep the existing model columns and add
+    // nullable profile companions so older rows continue to mean "use the default profile".
+    version: 98,
+    run: (db) => {
+      const hasTable = (table: string): boolean => Boolean(
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table),
+      )
+      const addColumn = (table: string, column: string): void => {
+        if (!hasTable(table)) return
+        const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+        if (!columns.some((entry) => entry.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`)
+      }
+      addColumn('projects', 'project_hermes_profile')
+      addColumn('conversations', 'conversation_hermes_profile')
+    },
   },
 ];
 

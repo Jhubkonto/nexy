@@ -57,7 +57,7 @@ function summarizeToolCall(content: string): ConversationExportToolCall | null {
 function getProjectExport(db: Database.Database, projectId: string | null): ConversationExportProject | null {
   if (!projectId) return null;
   const row = db
-    .prepare("SELECT id, name, color, default_model, created_at, updated_at FROM projects WHERE id = ?")
+    .prepare("SELECT id, name, color, default_model, project_hermes_profile, created_at, updated_at FROM projects WHERE id = ?")
     .get(projectId) as ConversationExportProject | undefined;
   return row ?? null;
 }

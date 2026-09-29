@@ -40,6 +40,13 @@ function validateForkTarget(db: Database.Database, agentId: string | null, model
   if (backend === "claude-cli" || backend === "codex-cli" || backend === "hermes-cli") {
     const availableModels = getCliModels(backend).map((entry) => entry.id);
     const resolvedModel = model ?? cliModel ?? availableModels[0] ?? null;
+    // A newly installed Claude Code session has no confirmed picker snapshot until the
+    // background probe completes. Preserve an explicitly configured legacy Claude agent in
+    // that short window; it remains an intentional backend/model pairing, not a new picker
+    // choice. Once discovery has a snapshot, normal compatibility validation resumes.
+    if (backend === 'claude-cli' && availableModels.length === 0 && cliModel && resolvedModel === cliModel) {
+      return resolvedModel;
+    }
     if (resolvedModel && !availableModels.includes(resolvedModel)) {
       throw new Error(`Model ${resolvedModel} is not available for ${backend}`);
     }
@@ -217,6 +224,9 @@ export function forkConversation(
     ? (options.model === "default" ? null : options.model ?? null)
     : source.model;
   const targetModel = validateForkTarget(db, targetAgentId, requestedModel);
+  const targetHermesProfile = targetModel && (targetModel === requestedModel || !Object.prototype.hasOwnProperty.call(options, "model"))
+    ? (options.conversationHermesProfile ?? source.conversation_hermes_profile ?? null)
+    : null;
   const targetProjectId = Object.prototype.hasOwnProperty.call(options, "projectId")
     ? (options.projectId ?? null)
     : source.project_id;
@@ -243,8 +253,8 @@ export function forkConversation(
 
   const transaction = db.transaction(() => {
     db.prepare(
-      "INSERT INTO conversations (id, agent_id, project_id, title, model, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    ).run(forkId, targetAgentId, targetProjectId, continuedTitle(source.title), targetModel, 0, now, now);
+      "INSERT INTO conversations (id, agent_id, project_id, title, model, conversation_hermes_profile, pinned, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(forkId, targetAgentId, targetProjectId, continuedTitle(source.title), targetModel, targetHermesProfile, 0, now, now);
 
     const insertMessage = db.prepare(
       `INSERT INTO messages

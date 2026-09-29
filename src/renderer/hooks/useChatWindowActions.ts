@@ -966,11 +966,11 @@ export function useChatWindowActions({
   )
 
   const handleSetConversationModel = useCallback(
-    async (model: string) => {
+    async (model: string, hermesProfile?: string | null) => {
       if (!conversationId) return
       const value = model === 'default' ? null : model
       const write = pendingModelWriteRef.current.then(async () => {
-        const result = await window.api.setConversationModel(conversationId, value)
+        const result = await window.api.setConversationModel(conversationId, value, value && hermesProfile ? 'hermes-cli' : null, value && hermesProfile ? hermesProfile : null)
         if (isApiError(result)) throw new Error(result.error)
         await loadConversations()
         addToast(`Model set to ${getModelLabel(model, catalogModels, globalDefaultModel ?? undefined)}`, 'success')
@@ -1012,10 +1012,10 @@ export function useChatWindowActions({
   )
 
   const handleSetCliBackendAndModel = useCallback(
-    async (backend: CliBackend, modelId: string) => {
+    async (backend: CliBackend, modelId: string, hermesProfile?: string | null) => {
       if (conversationId) {
         const write = pendingModelWriteRef.current.then(async () => {
-          const result = await window.api.setConversationModel(conversationId, modelId, backend)
+          const result = await window.api.setConversationModel(conversationId, modelId, backend, backend === 'hermes-cli' ? hermesProfile : null)
           if (isApiError(result)) throw new Error(result.error)
           await loadConversations()
         }).catch(() => {

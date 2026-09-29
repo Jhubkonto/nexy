@@ -1,17 +1,18 @@
 import { EventEmitter } from 'events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { mockSpawn, mockResolve, mockListProfiles } = vi.hoisted(() => ({
+const { mockSpawn, mockResolve, mockListProfiles, mockResolveHermesRoot } = vi.hoisted(() => ({
   mockSpawn: vi.fn(),
   mockResolve: vi.fn(() => 'C:\\hermes.exe'),
   mockListProfiles: vi.fn(() => [{ name: 'default', isDefault: true }, { name: 'coder' }]),
+  mockResolveHermesRoot: vi.fn(() => 'C:\\Users\\test\\.hermes'),
 }))
 vi.mock('child_process', async (importOriginal) => ({ ...(await importOriginal<typeof import('child_process')>()), spawn: mockSpawn }))
 vi.mock('../cli-adapters/utils', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../cli-adapters/utils')>()),
   resolveCliPath: mockResolve,
 }))
-vi.mock('../cli-detection', () => ({ listHermesProfiles: mockListProfiles }))
+vi.mock('../cli-detection', () => ({ listHermesProfiles: mockListProfiles, resolveHermesRoot: mockResolveHermesRoot }))
 
 import { HermesAcpAdapter } from '../cli-adapters/hermes-acp'
 
@@ -56,7 +57,7 @@ describe('Hermes ACP adapter', () => {
     await expect(request).resolves.toBe('Hi')
     expect(chunks).toEqual(['Hi'])
     expect(JSON.parse(proc.stdin.write.mock.calls[0][0])).toMatchObject({ method: 'initialize' })
-    expect(mockSpawn).toHaveBeenCalledWith('C:\\hermes.exe', ['--profile', 'coder', 'acp'], expect.objectContaining({ shell: false }))
+    expect(mockSpawn).toHaveBeenCalledWith('C:\\hermes.exe', ['--profile', 'coder', 'acp'], expect.objectContaining({ shell: false, env: expect.objectContaining({ HERMES_ACP_SKIP_CONFIGURED_MCP: '1' }) }))
 
     const second = adapter.send({} as never, {
       messages: [{ role: 'user', content: 'again' }], cwd: 'C:\\workspace', model: 'default', conversationId: 'c1', hermesProfile: 'coder',
@@ -185,5 +186,26 @@ describe('Hermes ACP adapter', () => {
     await vi.waitFor(() => expect(second.stdin.write).toHaveBeenCalledTimes(3))
     sendResponse(second, 3, { stopReason: 'end_turn' })
     await expect(secondTurn).resolves.toBe('')
+  })
+
+  it('rejects overlapping turns in one conversation instead of corrupting ACP ordering', async () => {
+    const proc = makeProc()
+    mockSpawn.mockReturnValue(proc)
+    const adapter = new HermesAcpAdapter()
+    const first = adapter.send({} as never, {
+      messages: [{ role: 'user', content: 'first' }], cwd: 'C:\\workspace', model: 'default', conversationId: 'c-busy',
+    }, () => {})
+    await vi.waitFor(() => expect(proc.stdin.write).toHaveBeenCalledTimes(1))
+    sendResponse(proc, 1, { protocolVersion: 1 })
+    await vi.waitFor(() => expect(proc.stdin.write).toHaveBeenCalledTimes(2))
+    sendResponse(proc, 2, { sessionId: 's-busy' })
+    await vi.waitFor(() => expect(proc.stdin.write).toHaveBeenCalledTimes(3))
+
+    await expect(adapter.send({} as never, {
+      messages: [{ role: 'user', content: 'second' }], cwd: 'C:\\workspace', model: 'default', conversationId: 'c-busy',
+    }, () => {})).rejects.toThrow(/already processing/)
+
+    sendResponse(proc, 3, { stopReason: 'end_turn' })
+    await expect(first).resolves.toBe('')
   })
 })

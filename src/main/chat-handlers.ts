@@ -32,7 +32,8 @@ import { sendChatCompleteNotification } from './fcm-sender'
 import { ClaudeAdapter } from './cli-adapters/claude'
 import { CodexAdapter } from './cli-adapters/codex'
 import { HermesAdapter } from './cli-adapters/hermes'
-import { getCliModels } from './cli-detection'
+import { getCachedHermesAcpReadiness, getCliModels, isHermesAcpReady } from './cli-detection'
+import { isClaudeCliModelOrCandidate } from './cli-adapters/claude-model-probe'
 import { retrieveAuthMode } from './auth'
 import { resolveEffectiveBackend } from './backend-routing'
 import { applyRollingContextCompression } from './context-compression'
@@ -207,6 +208,7 @@ type ChatSendOptions = {
   agentId?: string
   model?: string
   cliBackend?: 'claude-cli' | 'codex-cli' | 'hermes-cli'
+  hermesProfile?: string | null
   messageId?: string
   projectId?: string
   contextSnapshot?: string
@@ -714,6 +716,9 @@ export async function dispatchChatSend(
   const agentId = options?.agentId
   const modelOverride = options?.model
   const cliBackend = options?.cliBackend
+  const requestedHermesProfile = options?.hermesProfile === undefined
+    ? undefined
+    : options.hermesProfile?.trim() || null
   const projectId = options?.projectId
   const contextSnapshot = options?.contextSnapshot ?? null
   const toolPolicy = options?.toolPolicy ?? null
@@ -819,6 +824,11 @@ export async function dispatchChatSend(
   if (requestedModel && requestedModel !== 'default') {
     db.prepare('UPDATE conversations SET model = ? WHERE id = ?').run(requestedModel, conversationId)
   }
+  if (requestedHermesProfile !== undefined) {
+    try {
+      db.prepare('UPDATE conversations SET conversation_hermes_profile = ? WHERE id = ?').run(requestedHermesProfile, conversationId)
+    } catch { /* pre-migration/test databases do not have the optional column */ }
+  }
 
   // ── Provider resolution ────────────────────────────────────────────────────
   const convRow = db
@@ -834,6 +844,10 @@ export async function dispatchChatSend(
       cli_mode_override: string | null
       codex_execution_mode_override: string | null
     } | undefined
+  let conversationHermesProfile: string | null = null
+  try {
+    conversationHermesProfile = (db.prepare('SELECT conversation_hermes_profile FROM conversations WHERE id = ?').get(conversationId) as { conversation_hermes_profile: string | null } | undefined)?.conversation_hermes_profile ?? null
+  } catch { /* pre-migration/test databases do not have the optional column */ }
   // Auto-heal: if cli_backend is missing but the stored model is a known CLI model, infer and persist it.
   // Skip healing if the model is in the OpenRouter cache — it's a BYOK model, not a CLI one.
   // Reverse-heal: if cli_backend was previously set by mistake for an OpenRouter model, clear it.
@@ -846,11 +860,11 @@ export async function dispatchChatSend(
       debugLog('chat', `reverse-healed cli_backend cleared for conv=${conversationId} model=${convRow.model} (OpenRouter model)`)
     } else if (!isOpenRouterModel && convRow.cli_backend == null) {
       let healedBackend: 'claude-cli' | 'codex-cli' | 'hermes-cli' | null = null
-      if (ClaudeAdapter.isAvailable() && getCliModels('claude-cli').some((m) => m.id === convRow.model)) {
+      if (ClaudeAdapter.isAvailable() && isClaudeCliModelOrCandidate(convRow.model)) {
         healedBackend = 'claude-cli'
       } else if (CodexAdapter.isAvailable() && getCliModels('codex-cli').some((m) => m.id === convRow.model)) {
         healedBackend = 'codex-cli'
-      } else if (HermesAdapter.isAvailable() && getCliModels('hermes-cli').some((m) => m.id === convRow.model)) {
+      } else if (HermesAdapter.isAvailable() && isHermesAcpReady() && getCliModels('hermes-cli').some((m) => m.id === convRow.model)) {
         healedBackend = 'hermes-cli'
       }
       if (healedBackend) {
@@ -865,6 +879,10 @@ export async function dispatchChatSend(
     .all() as Array<{ key: string; value: string }>
   const settingsMap = new Map(settingsRows.map((r) => [r.key, r.value]))
   const defaultModel = settingsMap.get('default_model') || 'default'
+  let globalDefaultHermesProfile: string | null = null
+  try {
+    globalDefaultHermesProfile = (db.prepare("SELECT value FROM settings WHERE key = 'global_default_hermes_profile'").get() as { value: string } | undefined)?.value || null
+  } catch { /* optional setting */ }
   const temperatureSetting = Number.parseFloat(settingsMap.get('temperature') ?? '')
   const maxTokensSetting = Number.parseInt(settingsMap.get('max_tokens') ?? '', 10)
   const effectiveAgentId = agentId ?? convRow?.agent_id ?? null
@@ -913,10 +931,10 @@ export async function dispatchChatSend(
     : convRow?.agentic_mode_override === 0 ? false
     : agentCfg2?.agenticMode === true
   const conversationModel = typeof convRow?.model === 'string' ? convRow.model : undefined
-  const isModelAvailable = (model: string): boolean => {
-    if (ClaudeAdapter.isAvailable() && getCliModels('claude-cli').some((entry) => entry.id === model)) return true
+  const isModelAvailable = (model: string, hermesProfile?: string | null): boolean => {
+    if (ClaudeAdapter.isAvailable() && isClaudeCliModelOrCandidate(model)) return true
     if (CodexAdapter.isAvailable() && getCliModels('codex-cli').some((entry) => entry.id === model)) return true
-    if (HermesAdapter.isAvailable() && getCliModels('hermes-cli').some((entry) => entry.id === model)) return true
+    if (HermesAdapter.isAvailable() && isHermesAcpReady() && getCliModels('hermes-cli', hermesProfile ?? undefined).some((entry) => entry.id === model)) return true
     const { provider } = getProviderForAgent(model)
     return !!getProviderCredential(provider, { projectId: terminalSandboxProjectId, agentId: effectiveAgentId })
   }
@@ -924,12 +942,19 @@ export async function dispatchChatSend(
     conversationModel !== 'default' &&
     isModelAvailable(conversationModel)
   const effectiveProjectId = terminalSandboxProjectId
-  const projectDefaultModel = effectiveProjectId
-    ? (db.prepare('SELECT default_model FROM projects WHERE id = ?').get(effectiveProjectId) as { default_model: string | null } | undefined)?.default_model
-    : null
+  const projectDefault = effectiveProjectId
+    ? (db.prepare('SELECT default_model FROM projects WHERE id = ?').get(effectiveProjectId) as { default_model: string | null } | undefined)
+    : undefined
+  const projectDefaultModel = projectDefault?.default_model ?? null
+  let projectDefaultHermesProfile: string | null = null
+  if (effectiveProjectId) {
+    try {
+      projectDefaultHermesProfile = (db.prepare('SELECT project_hermes_profile FROM projects WHERE id = ?').get(effectiveProjectId) as { project_hermes_profile: string | null } | undefined)?.project_hermes_profile ?? null
+    } catch { /* optional column */ }
+  }
   const projectModelIsAvailable = !!projectDefaultModel &&
     projectDefaultModel !== 'default' &&
-    isModelAvailable(projectDefaultModel)
+    isModelAvailable(projectDefaultModel, projectDefaultHermesProfile)
   const selectedModel =
     modelOverride && modelOverride !== 'default'
       ? modelOverride
@@ -940,6 +965,20 @@ export async function dispatchChatSend(
         : defaultModel !== 'default'
           ? defaultModel
           : DEFAULT_PROVIDER_MODEL
+  const selectedHermesProfile =
+    agentCfg2?.backend === 'hermes-cli' && typeof agentCfg2.hermesProfile === 'string' && agentCfg2.hermesProfile
+      ? agentCfg2.hermesProfile
+      : requestedHermesProfile !== undefined
+        ? requestedHermesProfile
+      : modelOverride && modelOverride !== 'default'
+        ? conversationHermesProfile
+        : conversationModelIsAvailable && conversationModel === selectedModel
+          ? conversationHermesProfile
+          : projectModelIsAvailable && projectDefaultModel === selectedModel
+            ? projectDefaultHermesProfile
+            : defaultModel === selectedModel
+              ? globalDefaultHermesProfile
+              : null
   const { provider: providerName, model: providerModel } = getProviderForAgent(selectedModel)
   debugLog('chat', `model resolved: selectedModel=${selectedModel} provider=${providerName} providerModel=${providerModel} agent=${effectiveAgentId ?? 'none'}`)
   const modelIdentityInstruction =
@@ -1139,8 +1178,17 @@ export async function dispatchChatSend(
   const assignedAgentMcpServerIds = Array.isArray(agentCfg2?.mcpServers)
     ? (agentCfg2.mcpServers as string[])
     : []
+  const effectiveCapabilityProfile = getEffectiveCapabilityProfile(db, conversationId)
+  const effectiveMcpTrust = Object.fromEntries(
+    effectiveCapabilityProfile.mcp.map((entry) => [entry.serverId, entry.trust]),
+  )
   const chatMcpServerIds = getConversationMcpServerIds(db, conversationId)
   const effectiveMcpServerIds = [...new Set([...assignedAgentMcpServerIds, ...chatMcpServerIds])]
+    .filter((serverId) => effectiveMcpTrust[serverId] !== 'block')
+  const mcpExecutionPolicy = {
+    assignedServerIds: effectiveMcpServerIds,
+    serverTrust: effectiveMcpTrust,
+  } as const
   const agentHasAssignedMcpServers = effectiveMcpServerIds.length > 0
   const credentialForModel = getProviderCredential(providerName, { projectId: orchProjId, agentId: effectiveAgentId })
   const fallbackCliBackend = resolveEffectiveBackend({
@@ -1151,7 +1199,13 @@ export async function dispatchChatSend(
     providerName,
     projectId: orchProjId,
     agentId: effectiveAgentId,
+    hermesProfile: selectedHermesProfile,
   })
+  const hermesWasRequested = cliBackend === 'hermes-cli' || agentBackend === 'hermes-cli' || convRow?.cli_backend === 'hermes-cli'
+  if (hermesWasRequested && !isHermesAcpReady()) {
+    const detail = getCachedHermesAcpReadiness()?.detail
+    throw new Error(`Hermes Agent is not ready for ACP${detail ? `: ${detail}` : '. Run "hermes acp --check" in a terminal, then recheck Hermes in Nexy.'}`)
+  }
   const effectiveBackend = fallbackCliBackend ?? agentBackend
   debugLog('chat', `routing: authMode=${retrieveAuthMode()} credential=${credentialForModel ? 'available' : 'missing'} agentBackend=${agentBackend ?? 'none'} fallbackCli=${fallbackCliBackend ?? 'none'} effectiveBackend=${effectiveBackend ?? 'byok'}`)
 
@@ -1218,6 +1272,7 @@ export async function dispatchChatSend(
         'Context ready',
       )
       const availableCodexModels = effectiveBackend === 'codex-cli' ? getCliModels('codex-cli') : []
+      const availableHermesModels = effectiveBackend === 'hermes-cli' ? getCliModels('hermes-cli', selectedHermesProfile ?? undefined) : []
       // Per-conversation override (conversationModel) takes priority over the agent's default
       // cliModel so users can switch models within a backend for a single conversation.
       const requestedCliModel = (modelOverride || conversationModel || agentCfg2?.cliModel || '') as string
@@ -1230,6 +1285,10 @@ export async function dispatchChatSend(
         } else {
           cliModelForRequest = availableCodexModels[0]?.id ?? ''
         }
+      } else if (effectiveBackend === 'hermes-cli') {
+        cliModelForRequest = availableHermesModels.some((m) => m.id === requestedCliModel)
+          ? requestedCliModel
+          : (availableHermesModels[0]?.id ?? requestedCliModel)
       } else {
         cliModelForRequest = requestedCliModel
       }
@@ -1344,6 +1403,8 @@ export async function dispatchChatSend(
             let serverNeedsApproval = false
             let serverFullyBlocked = false
             const toolStatuses = serverTools.map((tool) => {
+              const serverTrust = serverTrustMap.get(serverId)
+              if (serverTrust === 'block') return 'disabled'
               const override = db
                 .prepare('SELECT enabled, approval FROM agent_mcp_tool_overrides WHERE agent_id=? AND server_id=? AND tool_name=?')
                 .get(agentIdForTrust, serverId, tool.name) as { enabled: number; approval: string } | undefined
@@ -1351,7 +1412,6 @@ export async function dispatchChatSend(
                 if (override.enabled === 0 || override.approval === 'disabled') return 'disabled'
                 return override.approval // 'auto' or 'always-ask'
               }
-              const serverTrust = serverTrustMap.get(serverId)
               return serverTrust ?? 'always-ask'
             })
 
@@ -1543,9 +1603,7 @@ export async function dispatchChatSend(
           window,
           {
             systemPrompt: cliSystemPrompt,
-            hermesProfile: effectiveBackend === 'hermes-cli' && typeof agentCfg2?.hermesProfile === 'string'
-              ? agentCfg2.hermesProfile
-              : undefined,
+            hermesProfile: effectiveBackend === 'hermes-cli' ? selectedHermesProfile ?? undefined : undefined,
             agents: claudeCliProjectTeam?.agents,
             messages: [{ role: 'user' as const, content: cliUserContent }],
             images: attachedImages.length > 0 ? attachedImages : undefined,
@@ -2145,6 +2203,7 @@ export async function dispatchChatSend(
       systemPrompt,
       toolPolicy: toolPolicy ?? undefined,
       fullAutoApprove: effectiveFullAutoApprove,
+      mcpPolicy: mcpExecutionPolicy,
       forceFirstToolChoice,
       onThinkingChunk: (blockId, chunk) => {
         // Reasoning starts a new chronological segment too. Date.now() alone can tie with a

@@ -7,6 +7,7 @@ import { broadcastToMobile } from './ws-server'
 import { safeHandle } from './safe-handle'
 import { abortAllHttpsRequests } from './http-client'
 import { cancelAllPendingUserInputs } from './user-input'
+import { HermesAcpAdapterInstance } from './cli-adapters/hermes-acp'
 
 export interface EmergencyStopStatus {
   active: boolean
@@ -57,6 +58,9 @@ export function activateEmergencyStop(): EmergencyStopStatus {
   clearAllActiveChatTurns()
   denyAllPendingApprovals()
   cancelAllPendingUserInputs('Emergency stop activated')
+  // Emergency stop is a hard execution boundary. Closing the ACP process prevents an in-flight
+  // Hermes tool from surviving the UI stop action and ensures the next turn starts clean.
+  HermesAcpAdapterInstance.closeAll()
   return publishStatus()
 }
 

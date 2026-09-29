@@ -35,10 +35,36 @@ export interface HermesProfileInfo {
   description?: string
 }
 
+export type HermesProfileDiscoveryRootSource = 'configured' | 'environment' | 'platform-default'
+
+export interface HermesHomeValidation {
+  path: string
+  profilesDirectory: string
+  valid: boolean
+  reason?: 'empty' | 'not-directory' | 'profiles-directory-missing'
+}
+
+/** Diagnostics returned with the profile list; profile contents and credentials are excluded. */
+export interface HermesProfileDiscovery {
+  profiles: HermesProfileInfo[]
+  root: string
+  rootSource: HermesProfileDiscoveryRootSource
+  profilesDirectory: string
+  profilesDirectoryExists: boolean
+  namedProfileCount: number
+  ignoredEntries: Array<{
+    name: string
+    reason: 'invalid-name' | 'tombstone' | 'markerless' | 'not-directory' | 'inaccessible'
+  }>
+  error?: string
+}
+
 /** Result of probing whether the installed Hermes CLI is ready to serve ACP. */
 export interface HermesAcpReadiness {
   ready: boolean
   version?: string
+  /** Stable machine-readable diagnosis for routing and companion UIs. */
+  status?: 'ready' | 'missing' | 'unsupported' | 'authentication' | 'error'
   /** Human-readable detail when not ready (e.g. missing credentials). */
   detail?: string
 }

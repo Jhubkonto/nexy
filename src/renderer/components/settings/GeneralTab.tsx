@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { NexyIcon } from '../ui/icons/NexyIcon'
 import { getModelLabel } from '../../../shared/models'
 import { Button, ToggleSwitch } from '../ui/primitives'
-import type { AvailableModelGroup } from '@shared/types'
+import type { AvailableModelGroup, HermesProfileInfo } from '@shared/types'
 import type { UiStyle } from '../../store/types'
 import { TabHeader } from './TabHeader'
 
@@ -17,6 +17,8 @@ interface Props {
   runInBackground: boolean
   autoClipboard: boolean
   defaultModel: string
+  globalHermesProfile: string
+  hermesProfiles: HermesProfileInfo[]
   defaultModelSearch: string
   showDefaultModelMenu: boolean
   defaultModelMenuRect: DOMRect | null
@@ -29,6 +31,7 @@ interface Props {
   onToggleRunInBackground: () => void
   onToggleAutoClipboard: () => void
   onSetDefaultModel: (id: string) => void
+  onSetGlobalHermesProfile: (profile: string) => void
   onSetDefaultModelSearch: (q: string) => void
   onSetShowDefaultModelMenu: (show: boolean) => void
   onSetDefaultModelMenuRect: (rect: DOMRect | null) => void
@@ -44,12 +47,12 @@ export function GeneralTab({
   theme, toggleTheme, uiStyle, onSetUiStyle,
   effectiveModel, effectiveProvider,
   autoStart, runInBackground, autoClipboard,
-  defaultModel, defaultModelSearch, showDefaultModelMenu, defaultModelMenuRect,
+  defaultModel, globalHermesProfile, hermesProfiles, defaultModelSearch, showDefaultModelMenu, defaultModelMenuRect,
   availableModelGroups, modelIds,
   temperature, maxTokens,
   catalogModels,
   onToggleAutoStart, onToggleRunInBackground, onToggleAutoClipboard,
-  onSetDefaultModel, onSetDefaultModelSearch, onSetShowDefaultModelMenu, onSetDefaultModelMenuRect,
+  onSetDefaultModel, onSetGlobalHermesProfile, onSetDefaultModelSearch, onSetShowDefaultModelMenu, onSetDefaultModelMenuRect,
   onSetTemperature, onSetMaxTokens, onSaveAdvanced,
   onOpenMcp,
   defaultModelMenuRef, defaultModelButtonRef,
@@ -261,6 +264,22 @@ export function GeneralTab({
               </div>
             )}
           </div>
+          {availableModelGroups.some((group) => group.sourceKey === 'hermes-cli' && group.models.some((model) => model.id === defaultModel)) && (
+            <div className="mt-2">
+              <label htmlFor="global-default-hermes-profile" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Hermes profile</label>
+              <select
+                id="global-default-hermes-profile"
+                aria-label="Global default Hermes profile"
+                value={globalHermesProfile}
+                onChange={(event) => onSetGlobalHermesProfile(event.target.value)}
+                className="w-full px-2 py-1.5 text-xs rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100"
+              >
+                <option value="">Default profile</option>
+                {hermesProfiles.map((profile) => <option key={profile.name} value={profile.name}>{profile.name}</option>)}
+              </select>
+              <p className="mt-1 text-[11px] text-gray-500">This profile travels with the global Hermes model target.</p>
+            </div>
+          )}
         </div>
 
         <div>

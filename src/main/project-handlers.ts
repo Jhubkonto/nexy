@@ -326,19 +326,21 @@ export function registerProjectHandlers(): void {
           color: string;
           config_json: string | null;
           default_model: string | null;
+          project_hermes_profile: string | null;
         }
       | undefined;
     if (!row) return null;
     const newId = randomUUID();
     const now = Date.now();
     db.prepare(
-      "INSERT INTO projects (id, name, color, config_json, default_model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO projects (id, name, color, config_json, default_model, project_hermes_profile, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       newId,
       `${row.name} (copy)`,
       row.color,
       row.config_json,
       row.default_model,
+      row.project_hermes_profile,
       now,
       now,
     );
@@ -347,6 +349,7 @@ export function registerProjectHandlers(): void {
       name: `${row.name} (copy)`,
       color: row.color,
       default_model: row.default_model,
+      project_hermes_profile: row.project_hermes_profile,
       created_at: now,
       updated_at: now,
     };
@@ -360,6 +363,7 @@ export function registerProjectHandlers(): void {
           color: string;
           config_json: string | null;
           default_model: string | null;
+          project_hermes_profile: string | null;
         }
       | undefined;
     if (!row) return false;
@@ -373,6 +377,7 @@ export function registerProjectHandlers(): void {
       name: row.name,
       color: row.color,
       default_model: row.default_model,
+      project_hermes_profile: row.project_hermes_profile,
       config: row.config_json ? JSON.parse(row.config_json) : {},
     };
     writeFileSync(result.filePath, JSON.stringify(data, null, 2), "utf-8");
@@ -391,18 +396,19 @@ export function registerProjectHandlers(): void {
 
   safeHandle(
     "project:set-default-model",
-    (_event, id: string, model: string | null) => {
+    (_event, id: string, model: string | null, hermesProfile?: string | null) => {
       const normalizedModel = model && model !== "default" ? model : null;
+      const normalizedProfile = normalizedModel && hermesProfile?.trim() ? hermesProfile.trim() : null;
       db.prepare(
-        "UPDATE projects SET default_model = ?, updated_at = ? WHERE id = ?",
-      ).run(normalizedModel, Date.now(), id);
+        "UPDATE projects SET default_model = ?, project_hermes_profile = ?, updated_at = ? WHERE id = ?",
+      ).run(normalizedModel, normalizedProfile, Date.now(), id);
       const row = db.prepare("SELECT config_json FROM projects WHERE id = ?").get(id) as
         { config_json: string | null } | undefined;
       broadcastToMobile({
         event: "project:config-changed",
         data: {
           id,
-          config: { ...parseProjectConfig(row?.config_json ?? null), defaultModel: normalizedModel },
+          config: { ...parseProjectConfig(row?.config_json ?? null), defaultModel: normalizedModel, projectHermesProfile: normalizedProfile },
         },
       });
       return true;

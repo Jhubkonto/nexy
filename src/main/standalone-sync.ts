@@ -503,13 +503,15 @@ function buildSnapshot(
   // HydrationMode comment above for why this is safe; mirrors the message-body deferral below.
   const includeLibraryBodies = hydrationMode === 'full'
   const projects = (db.prepare(`
-    SELECT id, name, color, config_json, created_at, updated_at
+    SELECT id, name, color, config_json, default_model, project_hermes_profile, created_at, updated_at
     FROM projects ORDER BY updated_at, id
   `).all() as Record<string, unknown>[]).map(row => ({
     id: row.id,
     name: row.name,
     color: row.color,
     config: sanitizeSyncValue(parseJsonValue(row.config_json, {})),
+    defaultModel: row.default_model,
+    projectHermesProfile: row.project_hermes_profile,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }))
@@ -526,7 +528,7 @@ function buildSnapshot(
     SELECT id FROM conversations ORDER BY updated_at DESC, id DESC LIMIT ?
   `).all(SNAPSHOT_MAX_CONVERSATIONS) as Array<{ id: string }>).map(row => row.id)
   const conversations = conversationIds.length === 0 ? [] : db.prepare(`
-    SELECT c.id, c.title, c.agent_id, c.project_id, c.model, c.pinned, c.archived, c.completed_at,
+    SELECT c.id, c.title, c.agent_id, c.project_id, c.model, c.conversation_hermes_profile, c.pinned, c.archived, c.completed_at,
            c.thinking_effort_override, c.full_auto_approve_override, c.agentic_mode_override,
            c.terminal_sandbox_override, c.cli_mode_override, c.codex_execution_mode_override,
            c.kind, c.created_at, c.updated_at,
@@ -705,15 +707,18 @@ function applyOperation(
   switch (operation.entityType) {
     case 'project': {
       db.prepare(`
-        INSERT INTO projects (id, name, color, config_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO projects (id, name, color, config_json, default_model, project_hermes_profile, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET name = excluded.name, color = excluded.color,
-          config_json = COALESCE(excluded.config_json, projects.config_json), updated_at = excluded.updated_at
+          config_json = COALESCE(excluded.config_json, projects.config_json), default_model = excluded.default_model,
+          project_hermes_profile = excluded.project_hermes_profile, updated_at = excluded.updated_at
       `).run(
         operation.entityId,
         stringValue(payload.name) ?? 'Project',
         normalizeProjectColor(payload.color) ?? 'blue',
         jsonString(payload.config),
+        nullableString(payload.defaultModel),
+        nullableString(payload.projectHermesProfile),
         numberValue(payload.createdAt, Date.now()),
         numberValue(payload.updatedAt, Date.now()),
       )
@@ -742,15 +747,17 @@ function applyOperation(
     }
     case 'conversation': {
       db.prepare(`
-        INSERT INTO conversations (id, agent_id, model, pinned, archived, project_id, title, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO conversations (id, agent_id, model, conversation_hermes_profile, pinned, archived, project_id, title, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET agent_id = excluded.agent_id, model = excluded.model,
+          conversation_hermes_profile = excluded.conversation_hermes_profile,
           pinned = excluded.pinned, archived = excluded.archived, project_id = excluded.project_id, title = excluded.title,
           updated_at = excluded.updated_at
       `).run(
         operation.entityId,
         nullableString(payload.agentId),
         nullableString(payload.model),
+        nullableString(payload.conversationHermesProfile),
         payload.pinned === true ? 1 : 0,
         payload.archived === true ? 1 : 0,
         nullableString(payload.projectId),

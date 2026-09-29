@@ -100,6 +100,7 @@ export class AcpStdioConnection {
   }
 
   private write(message: JsonRpcMessage): void {
+    if (this.closed || this.process.stdin.destroyed || this.process.stdin.writableEnded) return
     this.process.stdin.write(`${JSON.stringify(message)}\n`)
   }
 

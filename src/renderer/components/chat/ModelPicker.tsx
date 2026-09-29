@@ -171,7 +171,10 @@ export function ModelPicker({
                         onSelectAvailableModel(group, model)
                       }}
                     >
-                      <span>{getModelLabel(model.id, catalogModels) !== model.id ? getModelLabel(model.id, catalogModels) : model.label}</span>
+                      <span className="min-w-0 truncate">{getModelLabel(model.id, catalogModels) !== model.id ? getModelLabel(model.id, catalogModels) : model.label}</span>
+                      {model.source === 'legacy-candidate' && (
+                        <span className="text-[9px] text-amber-600 dark:text-amber-400 shrink-0">Verify on first use</span>
+                      )}
                       {availableGroups.length > 1 && (
                         <span className="text-[9px] text-gray-400 dark:text-gray-500 shrink-0">{group.sourceLabel}</span>
                       )}

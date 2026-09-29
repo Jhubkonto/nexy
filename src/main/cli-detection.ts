@@ -2,21 +2,15 @@ import { execFile } from 'child_process'
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
 import { basename, dirname, isAbsolute, join, relative } from 'path'
 import { homedir } from 'os'
-import type { CliInstallStatus, HermesProfileInfo, HermesAcpReadiness } from '../shared/types'
-import { HERMES_DEFAULT_PROFILE } from '../shared/hermes'
+import type { CliInstallStatus, HermesProfileInfo, HermesProfileDiscovery, HermesAcpReadiness } from '../shared/types'
+import { HERMES_DEFAULT_PROFILE, isValidHermesProfile } from '../shared/hermes'
 import { safeHandle } from './safe-handle'
 import { CODEX_DEFAULT_MODELS } from './cli-adapters/codex'
 import { resolveCliPathAsync } from './cli-adapters/utils'
-import { getCachedAnthropicModels } from './anthropic-models'
 import { getCachedClaudeCliPtyModels } from './cli-adapters/claude-model-probe'
+import { getDatabase } from './database'
 
 type CliModelOption = { id: string; label: string }
-
-const CLAUDE_DEFAULT_MODELS: CliModelOption[] = [
-  { id: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
-  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-  { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
-]
 
 function readCodexConfigModel(): string | null {
   try {
@@ -162,8 +156,10 @@ function platformDefaultHermesHome(): string {
  *     back to `<root>` so all sibling profiles are still enumerable;
  *   - otherwise falls back to the platform-native default.
  */
-function resolveHermesRoot(): string {
+export function resolveHermesRoot(): string {
   const nativeHome = platformDefaultHermesHome()
+  const configuredHome = getConfiguredHermesHome()
+  if (configuredHome) return configuredHome
   const envHome = (process.env['HERMES_HOME'] ?? '').trim()
   if (!envHome) return nativeHome
   // HERMES_HOME is the native home itself or a subdir of it (normal or profile mode).
@@ -262,6 +258,58 @@ function readHermesProfileDescription(profileDir: string): string | undefined {
   return undefined
 }
 
+function readHermesProfileYamlDescription(profileDir: string): string | undefined {
+  try {
+    const content = readFileSync(join(profileDir, 'profile.yaml'), 'utf8')
+    return readYamlScalar(content, 'description') ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Nexy's optional persisted override takes precedence over the process environment so a
+ * directory selected in Settings applies to both discovery and every future ACP launch.
+ * Keep this lookup defensive: profile discovery is also used by isolated tests and during
+ * early startup, before the database may be available.
+ */
+function getConfiguredHermesHome(): string {
+  try {
+    const row = getDatabase().prepare("SELECT value FROM settings WHERE key = 'hermes_home'").get() as { value?: string } | undefined
+    return row?.value?.trim() ?? ''
+  } catch {
+    return ''
+  }
+}
+
+export function validateHermesHome(home: string): import('../shared/hermes').HermesHomeValidation {
+  const path = home.trim()
+  const profilesDirectory = path ? join(path, 'profiles') : ''
+  if (!path) return { path, profilesDirectory, valid: false, reason: 'empty' }
+  try {
+    if (!statSync(path).isDirectory()) return { path, profilesDirectory, valid: false, reason: 'not-directory' }
+    if (!statSync(profilesDirectory).isDirectory()) {
+      return { path, profilesDirectory, valid: false, reason: 'profiles-directory-missing' }
+    }
+    return { path, profilesDirectory, valid: true }
+  } catch {
+    return { path, profilesDirectory, valid: false, reason: 'profiles-directory-missing' }
+  }
+}
+
+// A Hermes profile is a stateful home, not an arbitrary folder. These markers are all
+// configuration/identity files; their contents are never read for diagnostics.
+const HERMES_PROFILE_MARKERS = ['config.yaml', 'profile.yaml', '.env', 'SOUL.md', 'auth.json'] as const
+const HERMES_PROFILE_TOMBSTONES = ['.deleted', '.tombstone', 'TOMBSTONE', 'profile.deleted'] as const
+
+function hasHermesProfileMarker(profileDir: string): boolean {
+  return HERMES_PROFILE_MARKERS.some((marker) => existsSync(join(profileDir, marker)))
+}
+
+function isHermesProfileTombstoned(profileDir: string): boolean {
+  return HERMES_PROFILE_TOMBSTONES.some((marker) => existsSync(join(profileDir, marker)))
+}
+
 /** Model/provider recorded in a single profile's config.yaml, if present. */
 function readHermesProfileModel(profileDir: string): { model?: string; provider?: string } {
   try {
@@ -290,19 +338,46 @@ function readHermesProfileModel(profileDir: string): { model?: string; provider?
  * instead of `hermes profile list` (which has no `--json`) to avoid a subprocess on the
  * config-UI path. Fully try/catch-guarded → `[default]`-safe, like readHermesConfigModels().
  */
-export function listHermesProfiles(): HermesProfileInfo[] {
+export function getHermesProfileDiscovery(): HermesProfileDiscovery {
   const defaultEntry: HermesProfileInfo = { name: HERMES_DEFAULT_PROFILE, isDefault: true }
+  const root = resolveHermesRoot()
+  const profilesDirectory = join(root, 'profiles')
+  const discovery: HermesProfileDiscovery = {
+    profiles: [defaultEntry],
+    root,
+    rootSource: hermesRootSource(),
+    profilesDirectory,
+    profilesDirectoryExists: false,
+    namedProfileCount: 0,
+    ignoredEntries: [],
+  }
   try {
-    const profilesDir = join(resolveHermesRoot(), 'profiles')
-    if (!existsSync(profilesDir)) return [defaultEntry]
+    if (!existsSync(profilesDirectory)) return discovery
+    discovery.profilesDirectoryExists = true
 
     const named: HermesProfileInfo[] = []
-    for (const entry of readdirSync(profilesDir)) {
+    for (const entry of readdirSync(profilesDirectory)) {
       if (entry === HERMES_DEFAULT_PROFILE) continue
-      const profileDir = join(profilesDir, entry)
+      if (!isValidHermesProfile(entry)) {
+        discovery.ignoredEntries.push({ name: entry, reason: 'invalid-name' })
+        continue
+      }
+      const profileDir = join(profilesDirectory, entry)
       try {
-        if (!statSync(profileDir).isDirectory()) continue
+        if (!statSync(profileDir).isDirectory()) {
+          discovery.ignoredEntries.push({ name: entry, reason: 'not-directory' })
+          continue
+        }
       } catch {
+        discovery.ignoredEntries.push({ name: entry, reason: 'inaccessible' })
+        continue
+      }
+      if (isHermesProfileTombstoned(profileDir)) {
+        discovery.ignoredEntries.push({ name: entry, reason: 'tombstone' })
+        continue
+      }
+      if (!hasHermesProfileMarker(profileDir)) {
+        discovery.ignoredEntries.push({ name: entry, reason: 'markerless' })
         continue
       }
       const { model, provider } = readHermesProfileModel(profileDir)
@@ -311,14 +386,21 @@ export function listHermesProfiles(): HermesProfileInfo[] {
         isDefault: false,
         model,
         provider,
-        description: readHermesProfileDescription(profileDir),
+        description: readHermesProfileYamlDescription(profileDir) ?? readHermesProfileDescription(profileDir),
       })
     }
     named.sort((a, b) => a.name.localeCompare(b.name))
-    return [defaultEntry, ...named]
-  } catch {
-    return [defaultEntry]
+    discovery.profiles = [defaultEntry, ...named]
+    discovery.namedProfileCount = named.length
+  } catch (error) {
+    discovery.error = error instanceof Error ? error.message : 'Unable to read the Hermes profiles directory.'
   }
+  return discovery
+}
+
+/** Backwards-compatible list view for existing callers and older clients. */
+export function listHermesProfiles(): HermesProfileInfo[] {
+  return getHermesProfileDiscovery().profiles
 }
 
 let cachedHermesReadiness: HermesAcpReadiness | null = null
@@ -369,7 +451,7 @@ export async function hermesAcpReadiness(force = false): Promise<HermesAcpReadin
   hermesReadinessProbe = (async () => {
     const executable = (await findCli('hermes')).path
     if (!executable) {
-      cachedHermesReadiness = { ready: false, detail: 'Hermes CLI not found on PATH.' }
+      cachedHermesReadiness = { ready: false, status: 'missing', detail: 'Hermes CLI not found on PATH.' }
       return cachedHermesReadiness
     }
 
@@ -379,11 +461,18 @@ export async function hermesAcpReadiness(force = false): Promise<HermesAcpReadin
       : undefined
     const check = await runHermesProbe(executable, ['acp', '--check'])
     if (check.status === 0) {
+      // Keep the successful shape backwards-compatible with existing IPC consumers; `ready`
+      // itself is the stable success discriminator.
       cachedHermesReadiness = { ready: true, version }
     } else {
       const detail = check.stderr.trim() || check.stdout.trim() || check.error?.message ||
         `hermes acp --check exited with code ${check.status ?? 'unknown'}`
-      cachedHermesReadiness = { ready: false, version, detail }
+      const status = /credential|auth|login|provider|token/i.test(detail)
+        ? 'authentication'
+        : /version|unsupported|unknown command|acp/i.test(detail) && !/check/i.test(detail)
+          ? 'unsupported'
+          : 'error'
+      cachedHermesReadiness = { ready: false, status, version, detail }
     }
     return cachedHermesReadiness
   })()
@@ -393,6 +482,26 @@ export async function hermesAcpReadiness(force = false): Promise<HermesAcpReadin
   } finally {
     hermesReadinessProbe = null
   }
+}
+
+function hermesRootSource(): 'configured' | 'environment' | 'platform-default' {
+  if (getConfiguredHermesHome()) return 'configured'
+  return (process.env['HERMES_HOME'] ?? '').trim() ? 'environment' : 'platform-default'
+}
+
+/**
+ * Synchronous view used by backend selection. The first readiness probe is started when CLI
+ * handlers are registered; until it completes, Hermes is deliberately not considered routable.
+ * This prevents an installed-but-unconfigured Hermes binary from silently winning fallback
+ * routing while still allowing the asynchronous settings UI to show the detailed diagnosis.
+ */
+export function isHermesAcpReady(): boolean {
+  return cachedHermesReadiness?.ready === true
+}
+
+/** Returns the last probe result without starting a subprocess. */
+export function getCachedHermesAcpReadiness(): HermesAcpReadiness | null {
+  return cachedHermesReadiness
 }
 
 export function detectCli(command: string): Promise<CliInstallStatus> {
@@ -423,11 +532,9 @@ export function getCliModels(backend: string, hermesProfile?: string): CliModelO
     return withPreferredModelFirst(CODEX_DEFAULT_MODELS, readCodexConfigModel())
   }
   if (backend === 'claude-cli') {
-    const ptyProbed = getCachedClaudeCliPtyModels()
-    if (ptyProbed.length > 0) return ptyProbed
-    const anthropicApi = getCachedAnthropicModels()
-    if (anthropicApi.length > 0) return anthropicApi
-    return CLAUDE_DEFAULT_MODELS
+    // Claude Code OAuth availability is distinct from the user's Anthropic API entitlement.
+    // Until its own menu probe completes, offer no invented model ids; callers retain Default.
+    return getCachedClaudeCliPtyModels()
   }
   if (backend === 'hermes-cli') {
     const configuredModels = readHermesConfigModels(hermesProfile)
@@ -460,7 +567,18 @@ export function registerCliHandlers(): void {
 
   safeHandle('hermes:list-profiles', () => listHermesProfiles())
 
+  // The renderer uses the richer discovery result so it can explain the active Hermes root
+  // when only the synthetic default profile is available. Keep the legacy list endpoint above
+  // for older clients, but register this endpoint as well or the renderer falls back to text.
+  safeHandle('hermes:profile-discovery', () => getHermesProfileDiscovery())
+
+  safeHandle('hermes:validate-home', (_event, home: string) => validateHermesHome(home))
+
   safeHandle('hermes:acp-readiness', (_event, force?: boolean) => hermesAcpReadiness(force ?? false))
+
+  // Warm the asynchronous readiness state before the first chat can route. Errors are encoded in
+  // the readiness result; a rejected probe must never make IPC registration fail.
+  void hermesAcpReadiness().catch(() => {})
 }
 
 export async function checkCliOnStartup(): Promise<CliInstallStatus> {

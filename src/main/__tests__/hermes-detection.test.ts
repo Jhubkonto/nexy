@@ -21,8 +21,11 @@ vi.mock('os', async (importOriginal) => {
   return { ...actual, homedir: () => fakeHome }
 })
 
-import { listHermesProfiles, hermesAcpReadiness, getCliModels } from '../cli-detection'
+import { getHermesProfileDiscovery, listHermesProfiles, hermesAcpReadiness, getCliModels, validateHermesHome } from '../cli-detection'
+import { getDatabase } from '../database'
 import { clearCliPathCache } from '../cli-adapters/utils'
+
+const getDatabaseMock = vi.mocked(getDatabase)
 
 function writeProfile(name: string, files: Record<string, string>): void {
   const dir = join(fakeHome, '.hermes', 'profiles', name)
@@ -48,6 +51,7 @@ describe('listHermesProfiles', () => {
     if (savedHermesHome === undefined) delete process.env['HERMES_HOME']
     else process.env['HERMES_HOME'] = savedHermesHome
     execFileMock.mockReset()
+    getDatabaseMock.mockReset()
   })
 
   it('synthesizes a default entry when no profiles dir exists', () => {
@@ -87,7 +91,7 @@ describe('listHermesProfiles', () => {
     writeProfile('default', { 'config.yaml': 'model:\n  default: ignored\n' })
     mkdirSync(join(fakeHome, '.hermes', 'profiles'), { recursive: true })
     writeFileSync(join(fakeHome, '.hermes', 'profiles', 'stray.txt'), 'not a profile')
-    writeProfile('real', {})
+    writeProfile('real', { 'config.yaml': '' })
 
     const profiles = listHermesProfiles()
     expect(profiles.map((p) => p.name)).toEqual(['default', 'real'])
@@ -116,11 +120,60 @@ describe('listHermesProfiles', () => {
     const root = join(fakeHome, 'AppData', 'Local', 'hermes')
     for (const name of ['localllm', 'localllm-iso']) {
       mkdirSync(join(root, 'profiles', name), { recursive: true })
+      writeFileSync(join(root, 'profiles', name, 'config.yaml'), '')
     }
     process.env['HERMES_HOME'] = join(root, 'profiles', 'localllm')
 
     const profiles = listHermesProfiles()
     expect(profiles.map((p) => p.name)).toEqual(['default', 'localllm', 'localllm-iso'])
+  })
+
+  it('ignores invalid names, tombstones, markerless directories, and files with diagnostics', () => {
+    writeProfile('valid', { 'profile.yaml': 'description: A valid profile\n' })
+    writeProfile('empty', {})
+    writeProfile('deleted', { 'config.yaml': '', '.deleted': '' })
+    writeProfile('invalid name', { 'config.yaml': '' })
+    mkdirSync(join(fakeHome, '.hermes', 'profiles'), { recursive: true })
+    writeFileSync(join(fakeHome, '.hermes', 'profiles', 'not-a-directory'), 'ignore me')
+
+    const discovery = getHermesProfileDiscovery()
+
+    expect(discovery.profiles.map((p) => p.name)).toEqual(['default', 'valid'])
+    expect(discovery.profiles.find((p) => p.name === 'valid')?.description).toBe('A valid profile')
+    expect(discovery.namedProfileCount).toBe(1)
+    expect(discovery.ignoredEntries).toEqual(expect.arrayContaining([
+      { name: 'empty', reason: 'markerless' },
+      { name: 'deleted', reason: 'tombstone' },
+      { name: 'invalid name', reason: 'invalid-name' },
+      { name: 'not-a-directory', reason: 'not-directory' },
+    ]))
+  })
+
+  it('reports the resolved root and source without exposing profile contents', () => {
+    const root = join(fakeHome, 'relocated-hermes')
+    process.env['HERMES_HOME'] = root
+    const discovery = getHermesProfileDiscovery()
+
+    expect(discovery.root).toBe(root)
+    expect(discovery.rootSource).toBe('environment')
+    expect(discovery.profilesDirectory).toBe(join(root, 'profiles'))
+    expect(discovery.profiles).toEqual([{ name: 'default', isDefault: true }])
+  })
+
+  it('uses the persisted Hermes home override and validates the profiles directory', () => {
+    const configuredRoot = join(fakeHome, 'shared-hermes-assets')
+    mkdirSync(join(configuredRoot, 'profiles', 'localllm'), { recursive: true })
+    writeFileSync(join(configuredRoot, 'profiles', 'localllm', 'config.yaml'), '')
+    getDatabaseMock.mockReturnValue({
+      prepare: vi.fn().mockReturnValue({ get: vi.fn().mockReturnValue({ value: configuredRoot }) }),
+    } as never)
+
+    const discovery = getHermesProfileDiscovery()
+    expect(discovery.root).toBe(configuredRoot)
+    expect(discovery.rootSource).toBe('configured')
+    expect(discovery.profiles.map((profile) => profile.name)).toEqual(['default', 'localllm'])
+    expect(validateHermesHome(configuredRoot)).toMatchObject({ valid: true, profilesDirectory: join(configuredRoot, 'profiles') })
+    expect(validateHermesHome(join(fakeHome, 'not-a-hermes-home'))).toMatchObject({ valid: false, reason: 'profiles-directory-missing' })
   })
 })
 
@@ -236,6 +289,7 @@ describe('hermesAcpReadiness', () => {
     })
     const readiness = await hermesAcpReadiness(true)
     expect(readiness.ready).toBe(false)
+    expect(readiness.status).toBe('authentication')
     expect(readiness.version).toBe('hermes 0.17.0')
     expect(readiness.detail).toBe('no provider credentials configured')
   })

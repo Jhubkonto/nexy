@@ -305,8 +305,8 @@ const api = {
     typedInvoke('conversation:search', query),
   renameConversation: (id: string, title: string) =>
     typedInvoke('conversation:rename', id, title),
-  setConversationModel: (id: string, model: string | null, cliBackend?: string | null) =>
-    typedInvoke('conversation:set-model', id, model, cliBackend),
+  setConversationModel: (id: string, model: string | null, cliBackend?: string | null, hermesProfile?: string | null) =>
+    typedInvoke('conversation:set-model', id, model, cliBackend, hermesProfile),
   setConversationMode: (id: string, mode: { thinkingEffortOverride?: 'low' | 'medium' | 'high' | 'max' | 'disabled' | null; fullAutoApproveOverride?: boolean | null; agenticModeOverride?: boolean | null; terminalSandboxOverride?: boolean | null; cliModeOverride?: import('../shared/types').CliModeOverride | null; codexExecutionModeOverride?: import('../shared/types').CodexExecutionModeOverride | null }) =>
     typedInvoke('conversation:set-mode', id, mode),
   setConversationPinned: (id: string, pinned: boolean) =>
@@ -364,6 +364,8 @@ const api = {
   detectAllClis: () => typedInvoke('cli:detect-all'),
   getCliModels: (backend: string, hermesProfile?: string) => typedInvoke('cli:get-models', backend, hermesProfile),
   listHermesProfiles: () => typedInvoke('hermes:list-profiles'),
+  getHermesProfileDiscovery: () => typedInvoke('hermes:profile-discovery'),
+  validateHermesHome: (home: string) => typedInvoke('hermes:validate-home', home),
   getHermesAcpReadiness: (force?: boolean) => typedInvoke('hermes:acp-readiness', force),
 
   // Agents
@@ -588,8 +590,8 @@ const api = {
   deleteProject: (id: string, deleteChats?: boolean) => typedInvoke('project:delete', id, deleteChats),
   setConversationProject: (conversationId: string, projectId: string | null) =>
     typedInvoke('project:set-conversation', conversationId, projectId),
-  setProjectDefaultModel: (id: string, model: string | null) =>
-    typedInvoke('project:set-default-model', id, model),
+  setProjectDefaultModel: (id: string, model: string | null, hermesProfile?: string | null) =>
+    typedInvoke('project:set-default-model', id, model, hermesProfile),
 
   // Project Agents
   listProjectAgents: (projectId: string) => typedInvoke('project:list-agents', projectId),

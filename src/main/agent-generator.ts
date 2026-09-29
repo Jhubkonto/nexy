@@ -14,6 +14,7 @@ import {
 import { dispatchToProvider } from './chat-provider-dispatch'
 import { getAdapter } from './cli-adapters/registry'
 import { getCliModels } from './cli-detection'
+import { isClaudeCliModelOrCandidate } from './cli-adapters/claude-model-probe'
 import { ClaudeAdapter } from './cli-adapters/claude'
 import { CodexAdapter } from './cli-adapters/codex'
 import type { ProviderMessage } from './provider-core-types'
@@ -88,7 +89,7 @@ export function getAgentGeneratorModel(): string {
   if (isProviderConfigured(savedProvider.provider)) return savedModel
 
   // If the saved model ID matches a CLI model, route it via that CLI
-  if (ClaudeAdapter.isAvailable() && getCliModels('claude-cli').some((m) => m.id === savedModel)) {
+  if (ClaudeAdapter.isAvailable() && isClaudeCliModelOrCandidate(savedModel)) {
     return `claude-cli:${savedModel}`
   }
   if (CodexAdapter.isAvailable() && getCliModels('codex-cli').some((m) => m.id === savedModel)) {
@@ -202,7 +203,7 @@ async function runAgentGeneratorProviderChat(
       cliModel = selectedModel.slice(colonIdx + 1)
     }
   } else {
-    if (ClaudeAdapter.isAvailable() && getCliModels('claude-cli').some((m) => m.id === selectedModel)) {
+    if (ClaudeAdapter.isAvailable() && isClaudeCliModelOrCandidate(selectedModel)) {
       cliBackend = 'claude-cli'
     } else if (CodexAdapter.isAvailable() && getCliModels('codex-cli').some((m) => m.id === selectedModel)) {
       cliBackend = 'codex-cli'

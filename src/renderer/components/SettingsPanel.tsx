@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { NexyIcon, type NexyIconName } from './ui/icons/NexyIcon'
 import { useAppStore } from '../store/app-store'
 import { getAvailableModelIds } from '../../shared/models'
-import type { AdbDevice, AndroidBuildCommandName, AndroidFirebaseClientStatus, AndroidSigningConfig, AndroidUpdateManifest, AndroidWorkspaceInfo, BuildCommandName, BuildRecord, BuildStatus, LocalUpdateFeed, PreflightCheck, PromptLibraryEntry, PromptLibraryInput, PromptLibraryVersion, PublishedEntry, WorkspaceInfo, WsUrlProfile } from '../../shared/types'
+import type { AdbDevice, AndroidBuildCommandName, AndroidFirebaseClientStatus, AndroidSigningConfig, AndroidUpdateManifest, AndroidWorkspaceInfo, BuildCommandName, BuildRecord, BuildStatus, HermesProfileInfo, LocalUpdateFeed, PreflightCheck, PromptLibraryEntry, PromptLibraryInput, PromptLibraryVersion, PublishedEntry, WorkspaceInfo, WsUrlProfile } from '../../shared/types'
 import { extractPromptVariables } from '../../shared/prompt-variables'
 import { isApiError } from '../../shared/types'
 import { ModalShell } from './ui/primitives'
@@ -104,7 +104,11 @@ export function SettingsPanel() {
   const [testResult, setTestResult] = useState<{ valid: boolean; error?: string } | null>(null)
   const [testing, setTesting] = useState(false)
   const [cliRefreshing, setCliRefreshing] = useState(false)
+  const [hermesHome, setHermesHome] = useState('')
+  const [hermesHomeError, setHermesHomeError] = useState<string | null>(null)
   const [defaultModel, setDefaultModel] = useState('gpt-5-mini')
+  const [globalHermesProfile, setGlobalHermesProfile] = useState('')
+  const [hermesProfiles, setHermesProfiles] = useState<HermesProfileInfo[]>([])
   const [defaultModelSearch, setDefaultModelSearch] = useState('')
   const [showDefaultModelMenu, setShowDefaultModelMenu] = useState(false)
   const [defaultModelMenuRect, setDefaultModelMenuRect] = useState<DOMRect | null>(null)
@@ -210,10 +214,13 @@ export function SettingsPanel() {
       setRunInBackground(settings['runInBackground'] === 'true')
       setAutoClipboard(settings['autoClipboard'] === 'true')
       setDefaultModel(settings['default_model'] || 'gpt-5-mini')
+      setGlobalHermesProfile(settings['global_default_hermes_profile'] || '')
       setTemperature(Number.parseFloat(settings['temperature'] || '0.7') || 0.7)
       setMaxTokens(Number.parseInt(settings['max_tokens'] || '4096', 10) || 4096)
       setWhisperCppPath(settings['whisper_cpp_path'] || '')
       setWhisperModelPath(settings['whisper_model_path'] || '')
+      setHermesHome(settings['hermes_home'] || '')
+      setHermesHomeError(null)
       try {
         const parsed = settings['ws_url_profiles'] ? (JSON.parse(settings['ws_url_profiles']) as WsUrlProfile[]) : []
         setUrlProfiles(Array.isArray(parsed) ? parsed : [])
@@ -719,6 +726,11 @@ export function SettingsPanel() {
     }
   }
 
+  useEffect(() => {
+    if (!visible) return
+    void window.api.getHermesProfileDiscovery().then((result) => setHermesProfiles(result.profiles ?? [])).catch(() => setHermesProfiles([]))
+  }, [visible])
+
   const latestAdbInstallRecord = androidBuildRecords
     .filter((r) =>
       (r.command === 'assembleDebug' || r.command === 'assembleRelease') &&
@@ -807,6 +819,39 @@ export function SettingsPanel() {
     }
   }
 
+  const handlePickHermesHome = async () => {
+    setHermesHomeError(null)
+    try {
+      const directories = await window.api.openDirectoryDialog()
+      const candidate = directories[0]?.trim()
+      if (!candidate) return
+      const validation = await window.api.validateHermesHome(candidate)
+      if (!validation.valid) {
+        const message = validation.reason === 'not-directory'
+          ? 'Choose a directory.'
+          : 'Choose the Hermes root containing a profiles folder (profiles/<name>).'
+        setHermesHomeError(message)
+        return
+      }
+      await window.api.setSetting('hermes_home', validation.path)
+      setHermesHome(validation.path)
+      addToast('Hermes home saved. New Hermes sessions will use it.', 'success')
+    } catch {
+      setHermesHomeError('Could not save the Hermes home setting.')
+    }
+  }
+
+  const handleClearHermesHome = async () => {
+    try {
+      await window.api.setSetting('hermes_home', '')
+      setHermesHome('')
+      setHermesHomeError(null)
+      addToast('Hermes home override cleared.', 'success')
+    } catch {
+      setHermesHomeError('Could not clear the Hermes home setting.')
+    }
+  }
+
   const handleSaveKey = async () => {
     if (!editingProvider || !apiKeyInput.trim()) return
     try {
@@ -861,6 +906,8 @@ export function SettingsPanel() {
       const safeTemp = Math.min(2, Math.max(0, temperature))
       const safeMaxTokens = Math.min(16384, Math.max(256, maxTokens))
       await window.api.setSetting('default_model', defaultModel)
+      const isHermesModel = availableModelGroups.some((group) => group.sourceKey === 'hermes-cli' && group.models.some((model) => model.id === defaultModel))
+      await window.api.setSetting('global_default_hermes_profile', isHermesModel ? globalHermesProfile.trim() : '')
       await window.api.setSetting('temperature', String(safeTemp))
       await window.api.setSetting('max_tokens', String(safeMaxTokens))
       setGlobalDefaultModel(defaultModel)
@@ -949,6 +996,8 @@ export function SettingsPanel() {
             runInBackground={runInBackground}
             autoClipboard={autoClipboard}
             defaultModel={defaultModel}
+            globalHermesProfile={globalHermesProfile}
+            hermesProfiles={hermesProfiles}
             defaultModelSearch={defaultModelSearch}
             showDefaultModelMenu={showDefaultModelMenu}
             defaultModelMenuRect={defaultModelMenuRect}
@@ -961,6 +1010,7 @@ export function SettingsPanel() {
             onToggleRunInBackground={() => void handleRunInBackgroundToggle()}
             onToggleAutoClipboard={() => void handleAutoClipboardToggle()}
             onSetDefaultModel={setDefaultModel}
+            onSetGlobalHermesProfile={setGlobalHermesProfile}
             onSetDefaultModelSearch={setDefaultModelSearch}
             onSetShowDefaultModelMenu={setShowDefaultModelMenu}
             onSetDefaultModelMenuRect={setDefaultModelMenuRect}
@@ -1012,6 +1062,10 @@ export function SettingsPanel() {
           <CliTab
             installedClis={installedClis}
             cliRefreshing={cliRefreshing}
+            hermesHome={hermesHome}
+            hermesHomeError={hermesHomeError}
+            onPickHermesHome={handlePickHermesHome}
+            onClearHermesHome={handleClearHermesHome}
             onRefresh={async () => {
               setCliRefreshing(true)
               await checkAuth()
