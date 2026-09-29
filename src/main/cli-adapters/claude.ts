@@ -9,6 +9,7 @@ import { consumeChainDepthHint } from '../deferred-callbacks'
 import type { CliAgentAdapter, CliAdapterRequest } from './types'
 import { resolveCliPath, killProcess, createLineBuffer, createOpenBlockTracker, buildCliChildEnv, createInactivityWatchdog, CLI_INACTIVITY_TIMEOUT_MS } from './utils'
 import { extractCitations } from '../../shared/citations'
+import { isClaudeCliLegacyCandidate, validateClaudeCliLegacyCandidate } from './claude-model-probe'
 
 type ClaudeContentBlock =
   | { type: 'text'; text?: string }
@@ -161,6 +162,17 @@ export const ClaudeAdapter: CliAgentAdapter = {
     onEvent?: Parameters<CliAgentAdapter['send']>[3],
     signal?: AbortSignal
   ): Promise<string> {
+    // Claude Code has no machine-readable entitlement endpoint for full legacy IDs. The picker
+    // labels these official candidates clearly; the user's first real use opts into this small,
+    // tool-free verification request. Only a success promotes the candidate into the normal
+    // Claude CLI model cache, and an explicit rejection removes it from future picker results.
+    if (req.model && isClaudeCliLegacyCandidate(req.model)) {
+      const validation = await validateClaudeCliLegacyCandidate(req.model)
+      if (validation.changed) _window?.webContents.send('model:cli-models-updated')
+      if (!validation.ok) {
+        throw new Error(`Claude Code could not verify ${req.model}: ${validation.reason ?? 'this model is unavailable for your account'}`)
+      }
+    }
     // Bypass mode must not install Nexy's PermissionRequest hook: Claude invokes hooks as
     // policy gates, so retaining one here can reintroduce an approval/denial path even though
     // the user explicitly selected "Bypass".

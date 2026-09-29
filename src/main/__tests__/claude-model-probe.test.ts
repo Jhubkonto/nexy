@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-const { mockDb, resolveCliPathMock, ptySpawnMock } = vi.hoisted(() => {
+const { mockDb, resolveCliPathMock, ptySpawnMock, execFileMock } = vi.hoisted(() => {
   const store = new Map<string, string>()
   const mockDb = {
     prepare: vi.fn((sql: string) => ({
@@ -18,12 +18,13 @@ const { mockDb, resolveCliPathMock, ptySpawnMock } = vi.hoisted(() => {
     })),
     _store: store,
   }
-  return { mockDb, resolveCliPathMock: vi.fn(), ptySpawnMock: vi.fn() }
+  return { mockDb, resolveCliPathMock: vi.fn(), ptySpawnMock: vi.fn(), execFileMock: vi.fn() }
 })
 
 vi.mock('../database', () => ({ getDatabase: () => mockDb }))
 vi.mock('../cli-adapters/utils', () => ({ resolveCliPath: resolveCliPathMock, buildCliChildEnv: () => ({}) }))
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp' } }))
+vi.mock('child_process', () => ({ execFile: execFileMock }))
 
 // Fake terminal: `write` is a no-op; the module's polling logic reads the grid via `getLine`,
 // which is backed by `gridState.text` that each test sets directly to simulate a rendered frame.
@@ -56,7 +57,11 @@ vi.mock('module', () => ({
 import {
   probeClaudeCliModels,
   cacheClaudeCliPtyModels,
+  cacheClaudeCliDiscovery,
   getCachedClaudeCliPtyModels,
+  getCachedClaudeCliModelSnapshot,
+  getClaudeCliModelChoices,
+  validateClaudeCliLegacyCandidate,
   __setProbeTimingForTests,
 } from '../cli-adapters/claude-model-probe'
 
@@ -92,10 +97,10 @@ afterEach(() => {
 })
 
 describe('probeClaudeCliModels', () => {
-  it('returns [] when claude CLI is not found', async () => {
+  it('reports a failed result when claude CLI is not found', async () => {
     resolveCliPathMock.mockReturnValue(null)
     const result = await probeClaudeCliModels()
-    expect(result).toEqual([])
+    expect(result).toMatchObject({ status: 'failed', models: [], reason: 'Claude CLI was not found' })
     expect(ptySpawnMock).not.toHaveBeenCalled()
   })
 
@@ -115,7 +120,7 @@ describe('probeClaudeCliModels', () => {
 
     // Model menu renders
     gridState.text = [
-      'Select model',
+      'More models',
       '    1. Default (recommended)  Sonnet 5 · Efficient for routine tasks',
       '  ❯ 2. Sonnet ✔               Sonnet 5 · Efficient for routine tasks',
       '    3. Fable                  Fable 5 · Most capable for your hardest and longest-running tasks',
@@ -126,13 +131,51 @@ describe('probeClaudeCliModels', () => {
     await wait(80)
 
     const result = await promise
-    expect(result).toEqual([
+    expect(result).toMatchObject({ status: 'success', models: [
       { id: 'sonnet', label: 'Sonnet 5' },
       { id: 'fable', label: 'Fable 5' },
       { id: 'opus', label: 'Opus 4.8' },
       { id: 'haiku', label: 'Haiku 4.5' },
-    ])
+    ] })
     expect(fakePty.kill).toHaveBeenCalled()
+  })
+
+  it('discovers the current > prompt menu, including its selected row, without offering disabled models', async () => {
+    resolveCliPathMock.mockReturnValue('/usr/local/bin/claude')
+    const fakePty = makeFakePty()
+    ptySpawnMock.mockReturnValue(fakePty)
+
+    const promise = probeClaudeCliModels()
+
+    // Claude Code 2.1.252+ replaced the old `❯` composer prompt with `>`.
+    gridState.text = 'Claude Code v2.1.252\n> Try "write a test"'
+    fakePty._emitData('banner')
+    await wait(80)
+    expect(fakePty._written).toContain('/model\r')
+
+    gridState.text = [
+      'Select model',
+      '    1. Default (recommended)  Sonnet 5 · Efficient for routine tasks',
+      '    2. Sonnet                 Sonnet 5 · Efficient for routine tasks',
+      '    3. Fable                  Fable 5 · Most capable for long-running tasks',
+      '  > 4. Opus √                 Opus 5 · Best for everyday, complex tasks',
+      '    5. Haiku                  Haiku 4.5 · Fastest for quick answers',
+      '    6. Fable 5.1 (disabled)   Update to 2.1.255+ to use Fable 5.1',
+    ].join('\n')
+    fakePty._emitData('menu')
+    await wait(80)
+
+    const result = await promise
+    expect(result).toMatchObject({
+      status: 'success',
+      cliVersion: '2.1.252',
+      models: [
+        { id: 'sonnet', label: 'Sonnet 5' },
+        { id: 'fable', label: 'Fable 5' },
+        { id: 'opus', label: 'Opus 5' },
+        { id: 'haiku', label: 'Haiku 4.5' },
+      ],
+    })
   })
 
   it('navigates into the "More models" flyout and merges its entries with the top-level menu', async () => {
@@ -160,7 +203,7 @@ describe('probeClaudeCliModels', () => {
     expect(fakePty._written).toContain('4\r')
 
     gridState.text = [
-      'Select model',
+      'More models',
       '  ❯ 1. Opus                   Opus 4.8 · Best for everyday, complex tasks',
       '    2. Sonnet ✔               Sonnet 5 · Efficient for routine tasks',
     ].join('\n')
@@ -168,11 +211,11 @@ describe('probeClaudeCliModels', () => {
     await wait(80)
 
     const result = await promise
-    expect(result).toEqual([
+    expect(result).toMatchObject({ status: 'success', models: [
       { id: 'sonnet', label: 'Sonnet 5' },
       { id: 'haiku', label: 'Haiku 4.5' },
       { id: 'opus', label: 'Opus 4.8' },
-    ])
+    ] })
   })
 
   it('re-requests the "More models" flyout once when it stalls, then merges its entries', async () => {
@@ -215,11 +258,11 @@ describe('probeClaudeCliModels', () => {
     await wait(60)
 
     const result = await promise
-    expect(result).toEqual([
+    expect(result).toMatchObject({ status: 'success', models: [
       { id: 'sonnet', label: 'Sonnet 5' },
       { id: 'haiku', label: 'Haiku 4.5' },
       { id: 'opus', label: 'Opus 4.8' },
-    ])
+    ] })
   })
 
   it('falls back to top-level models when the flyout never opens after a retry', async () => {
@@ -251,11 +294,11 @@ describe('probeClaudeCliModels', () => {
     await wait(140)
 
     const result = await promise
-    // Falls back to the top-level entries rather than an empty result.
-    expect(result).toEqual([
+    // An incomplete flyout is useful diagnostic data, but never a complete snapshot.
+    expect(result).toMatchObject({ status: 'partial', models: [
       { id: 'sonnet', label: 'Sonnet 5' },
       { id: 'haiku', label: 'Haiku 4.5' },
-    ])
+    ] })
   })
 
   it('accepts the workspace trust dialog before continuing', async () => {
@@ -280,7 +323,7 @@ describe('probeClaudeCliModels', () => {
     await wait(80)
 
     const result = await promise
-    expect(result).toEqual([{ id: 'sonnet', label: 'Sonnet 5' }])
+    expect(result).toMatchObject({ status: 'success', models: [{ id: 'sonnet', label: 'Sonnet 5' }] })
   })
 
   it('declines the MCP server prompt via Escape', async () => {
@@ -304,10 +347,10 @@ describe('probeClaudeCliModels', () => {
     await wait(80)
 
     const result = await promise
-    expect(result).toEqual([{ id: 'sonnet', label: 'Sonnet 5' }])
+    expect(result).toMatchObject({ status: 'success', models: [{ id: 'sonnet', label: 'Sonnet 5' }] })
   })
 
-  it('resolves to [] on hard timeout when the CLI never settles', async () => {
+  it('reports a failure on hard timeout when the CLI never settles', async () => {
     resolveCliPathMock.mockReturnValue('/usr/local/bin/claude')
     const fakePty = makeFakePty()
     ptySpawnMock.mockReturnValue(fakePty)
@@ -317,10 +360,10 @@ describe('probeClaudeCliModels', () => {
     fakePty._emitData('stuck')
 
     const result = await promise
-    expect(result).toEqual([])
+    expect(result).toMatchObject({ status: 'failed', models: [] })
   }, 2000)
 
-  it('resolves to [] when the pty process exits early', async () => {
+  it('reports a failure when the pty process exits early', async () => {
     resolveCliPathMock.mockReturnValue('/usr/local/bin/claude')
     const fakePty = makeFakePty()
     ptySpawnMock.mockReturnValue(fakePty)
@@ -329,7 +372,7 @@ describe('probeClaudeCliModels', () => {
     fakePty._emitExit()
 
     const result = await promise
-    expect(result).toEqual([])
+    expect(result).toMatchObject({ status: 'failed', models: [] })
   })
 
   it('coalesces concurrent calls into a single in-flight probe', async () => {
@@ -355,17 +398,39 @@ describe('claude CLI PTY model cache', () => {
     expect(getCachedClaudeCliPtyModels()).toEqual([])
   })
 
+  it('does not trust a version-1 cache produced by the obsolete prompt parser', () => {
+    mockDb._store.set('claude_cli_pty_models_cache', JSON.stringify({
+      version: 1,
+      models: [{ id: 'obsolete', label: 'Obsolete result' }],
+      completedAt: null,
+    }))
+    expect(getCachedClaudeCliPtyModels()).toEqual([])
+    expect(getCachedClaudeCliModelSnapshot().completedAt).toBeNull()
+  })
+
+  it('migrates a version-2 confirmed snapshot without showing legacy candidates as validated', () => {
+    mockDb._store.set('claude_cli_pty_models_cache', JSON.stringify({
+      version: 2,
+      models: [{ id: 'sonnet', label: 'Sonnet 5' }],
+      completedAt: '2026-01-01T00:00:00.000Z', lastAttemptAt: '2026-01-01T00:00:00.000Z',
+      cliVersion: '2.1.263', lastFailure: null,
+    }))
+    expect(getCachedClaudeCliPtyModels()).toEqual([{ id: 'sonnet', label: 'Sonnet 5' }])
+    expect(getClaudeCliModelChoices().find((model) => model.id === 'claude-opus-4-8')).toMatchObject({ source: 'legacy-candidate' })
+  })
+
   it('round-trips cached models through the settings table', () => {
     cacheClaudeCliPtyModels([{ id: 'opus', label: 'Opus 4.8' }])
     expect(getCachedClaudeCliPtyModels()).toEqual([{ id: 'opus', label: 'Opus 4.8' }])
   })
 
-  it('does not write cache for an empty probe result', () => {
-    cacheClaudeCliPtyModels([])
-    expect(mockDb._store.has('claude_cli_pty_models_cache')).toBe(false)
+  it('records a failed probe without inventing selectable models', () => {
+    cacheClaudeCliDiscovery({ status: 'failed', models: [], source: 'pty-menu', attemptedAt: '2026-01-01T00:00:00.000Z', reason: 'timeout' })
+    expect(getCachedClaudeCliPtyModels()).toEqual([])
+    expect(getCachedClaudeCliModelSnapshot().lastFailure).toMatchObject({ status: 'failed', reason: 'timeout' })
   })
 
-  it('does not regress a cached model list when a later probe finds fewer models', () => {
+  it('replaces a confirmed snapshot when a later complete probe removes a model', () => {
     cacheClaudeCliPtyModels([
       { id: 'sonnet', label: 'Sonnet 5' },
       { id: 'fable', label: 'Fable 5' },
@@ -373,7 +438,7 @@ describe('claude CLI PTY model cache', () => {
       { id: 'haiku', label: 'Haiku 4.5' },
     ])
 
-    // A subsequent probe that raced the "more models" submenu and only saw 3 entries.
+    // A later complete model menu no longer exposes Opus.
     cacheClaudeCliPtyModels([
       { id: 'sonnet', label: 'Sonnet 5' },
       { id: 'fable', label: 'Fable 5' },
@@ -383,9 +448,15 @@ describe('claude CLI PTY model cache', () => {
     expect(getCachedClaudeCliPtyModels()).toEqual([
       { id: 'sonnet', label: 'Sonnet 5' },
       { id: 'fable', label: 'Fable 5' },
-      { id: 'opus', label: 'Opus 4.8' },
       { id: 'haiku', label: 'Haiku 4.5' },
     ])
+  })
+
+  it('preserves a confirmed snapshot when a later probe is partial', () => {
+    cacheClaudeCliPtyModels([{ id: 'sonnet', label: 'Sonnet 5' }, { id: 'opus', label: 'Opus 4.8' }])
+    cacheClaudeCliDiscovery({ status: 'partial', models: [{ id: 'sonnet', label: 'Sonnet 5' }], source: 'pty-menu', attemptedAt: '2026-01-01T00:00:00.000Z', reason: 'submenu timeout' })
+    expect(getCachedClaudeCliPtyModels()).toEqual([{ id: 'sonnet', label: 'Sonnet 5' }, { id: 'opus', label: 'Opus 4.8' }])
+    expect(getCachedClaudeCliModelSnapshot().lastFailure?.status).toBe('partial')
   })
 
   it('adds newly discovered models to an existing cache', () => {
@@ -396,5 +467,27 @@ describe('claude CLI PTY model cache', () => {
       { id: 'sonnet', label: 'Sonnet 5' },
       { id: 'opus', label: 'Opus 4.8' },
     ])
+  })
+
+  it('promotes an official legacy candidate only after Claude Code accepts a tool-free request', async () => {
+    resolveCliPathMock.mockReturnValue('/usr/local/bin/claude')
+    execFileMock.mockImplementation((_path: string, args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      expect(args).toEqual(expect.arrayContaining(['--print', '--strict-mcp-config', '--model', 'claude-opus-4-8']))
+      callback(null, '{"result":"OK"}', '')
+    })
+
+    await expect(validateClaudeCliLegacyCandidate('claude-opus-4-8')).resolves.toMatchObject({ ok: true, changed: true })
+    expect(getCachedClaudeCliPtyModels()).toContainEqual({ id: 'claude-opus-4-8', label: 'Claude Opus 4.8' })
+    expect(getClaudeCliModelChoices().find((model) => model.id === 'claude-opus-4-8')).toMatchObject({ source: 'validated' })
+  })
+
+  it('hides a legacy candidate after Claude Code explicitly rejects the model entitlement', async () => {
+    resolveCliPathMock.mockReturnValue('/usr/local/bin/claude')
+    execFileMock.mockImplementation((_path: string, _args: string[], _options: unknown, callback: (error: Error, stdout: string, stderr: string) => void) => {
+      callback(new Error('command failed'), '', 'Error: model claude-opus-4-8 is not available for this account')
+    })
+
+    await expect(validateClaudeCliLegacyCandidate('claude-opus-4-8')).resolves.toMatchObject({ ok: false, changed: true })
+    expect(getClaudeCliModelChoices().some((model) => model.id === 'claude-opus-4-8')).toBe(false)
   })
 })

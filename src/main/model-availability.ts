@@ -1,4 +1,5 @@
 import { detectCli, getCliModels } from './cli-detection'
+import { getClaudeCliModelChoices } from './cli-adapters/claude-model-probe'
 import {
   PROVIDERS,
   isProviderConfigured,
@@ -32,7 +33,7 @@ export async function getAvailableModelGroups(hermesProfile?: string): Promise<A
   ])
 
   if (claude.installed) {
-    const models = getCliModels('claude-cli')
+    const models = getClaudeCliModelChoices()
     if (models.length > 0) {
       groups.push({ sourceKey: 'claude-cli', sourceLabel: 'Claude CLI', sourceType: 'cli', models })
     }

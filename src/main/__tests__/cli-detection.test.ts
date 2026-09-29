@@ -80,6 +80,15 @@ describe('CLI Detection', () => {
     expect(result.path).toBeNull()
   })
 
+  it('registers and serves Hermes profile discovery over IPC', async () => {
+    mockExistsSync.mockReturnValue(false)
+
+    await expect(invokeHandler('hermes:profile-discovery')).resolves.toMatchObject({
+      profiles: [{ name: 'default', isDefault: true }],
+      namedProfileCount: 0,
+    })
+  })
+
   it('cli:status returns installed when CLI found via which/where', async () => {
     mockExecFile.mockImplementation((command: string, args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
       if ((command.includes('where') || command.includes('which')) && args[0] === 'copilot') {
@@ -254,26 +263,20 @@ describe('CLI Detection', () => {
     ])
   })
 
-  it('getCliModels returns static fallback for claude-cli when no PTY or Anthropic cache', () => {
+  it('getCliModels returns no invented models for Claude CLI before its probe completes', () => {
     getCachedClaudeCliPtyModelsMock.mockReturnValue([])
     getCachedAnthropicModelsMock.mockReturnValue([])
 
-    expect(getCliModels('claude-cli')).toEqual([
-      { id: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
-      { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-      { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
-    ])
+    expect(getCliModels('claude-cli')).toEqual([])
   })
 
-  it('getCliModels prefers cached Anthropic models for claude-cli when PTY cache is empty', () => {
+  it('getCliModels never treats BYOK Anthropic models as Claude CLI entitlement', () => {
     getCachedClaudeCliPtyModelsMock.mockReturnValue([])
     getCachedAnthropicModelsMock.mockReturnValue([
       { id: 'claude-opus-4-9', label: 'Claude Opus 4.9' },
     ])
 
-    expect(getCliModels('claude-cli')).toEqual([
-      { id: 'claude-opus-4-9', label: 'Claude Opus 4.9' },
-    ])
+    expect(getCliModels('claude-cli')).toEqual([])
   })
 
   it('getCliModels prefers PTY-probed models over the Anthropic API cache', () => {
