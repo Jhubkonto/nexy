@@ -152,9 +152,9 @@ describe('SettingsTab — Hermes profile picker', () => {
       { name: 'localllm-iso', isDefault: false, model: 'qwen2.5', description: 'Isolated local' },
     ])
     render(<SettingsTab {...defaultProps(makeConfig({ backend: 'hermes-cli' }))} />)
-    await waitFor(() =>
-      expect(screen.getByRole('option', { name: /localllm-iso.*qwen2\.5.*Isolated local/i })).toBeInTheDocument(),
-    )
+    const profilePicker = await screen.findByRole('button', { name: /default \(normal Hermes profile\)/i })
+    await user.click(profilePicker)
+    expect(screen.getByRole('option', { name: /localllm-iso.*qwen2\.5.*Isolated local/i })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: /default \(normal Hermes profile\)/i })).toBeInTheDocument()
   })
 
@@ -165,8 +165,9 @@ describe('SettingsTab — Hermes profile picker', () => {
       { name: 'localllm', isDefault: false },
     ])
     render(<SettingsTab {...defaultProps(makeConfig({ backend: 'hermes-cli' }), onUpdateField)} />)
-    const select = await screen.findByDisplayValue(/default \(normal Hermes profile\)/i)
-    await user.selectOptions(select, 'localllm')
+    const profilePicker = await screen.findByRole('button', { name: /default \(normal Hermes profile\)/i })
+    await user.click(profilePicker)
+    await user.click(screen.getByRole('option', { name: /localllm/i }))
     expect(onUpdateField).toHaveBeenCalledWith('hermesProfile', 'localllm')
   })
 
@@ -181,9 +182,9 @@ describe('SettingsTab — Hermes profile picker', () => {
   it('shows an unknown-profile warning option when the stored profile is not in the list', async () => {
     api.listHermesProfiles.mockResolvedValue([{ name: 'default', isDefault: true }])
     render(<SettingsTab {...defaultProps(makeConfig({ backend: 'hermes-cli', hermesProfile: 'ghost' }))} />)
-    await waitFor(() =>
-      expect(screen.getByRole('option', { name: /ghost.*unknown profile.*fall back to default/i })).toBeInTheDocument(),
-    )
+    const profilePicker = await screen.findByRole('button', { name: /ghost.*unknown profile.*fall back to default/i })
+    await user.click(profilePicker)
+    expect(screen.getByRole('option', { name: /ghost.*unknown profile.*fall back to default/i })).toBeInTheDocument()
   })
 
   it('surfaces the profile-inheritance disclosure', async () => {
@@ -201,5 +202,22 @@ describe('SettingsTab — Hermes profile picker', () => {
     await waitFor(() =>
       expect(screen.getByText(/not ACP-ready.*no provider credentials/i)).toBeInTheDocument(),
     )
+  })
+
+  it('explains where named profiles must exist when discovery finds only default', async () => {
+    api.getHermesProfileDiscovery.mockResolvedValue({
+      profiles: [{ name: 'default', isDefault: true }],
+      root: 'C:\\Users\\tester\\AppData\\Local\\hermes',
+      rootSource: 'platform-default',
+      profilesDirectory: 'C:\\Users\\tester\\AppData\\Local\\hermes\\profiles',
+      profilesDirectoryExists: false,
+      namedProfileCount: 0,
+      ignoredEntries: [],
+    })
+    render(<SettingsTab {...defaultProps(makeConfig({ backend: 'hermes-cli' }))} />)
+    await waitFor(() =>
+      expect(screen.getByText(/found only the default profile/i)).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/AppData\\Local\\hermes\\profiles/i)).toBeInTheDocument()
   })
 })
