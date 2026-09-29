@@ -27,6 +27,7 @@ import { NEXY_HELP_CONTENT } from './nexy-help'
 import { broadcastToMobile } from './ws-server'
 import { estimateTextTokens } from '../shared/token-estimate'
 import { createArtifactFromPath } from './artifacts'
+import { extractPdfText } from './pdf-text'
 
 export type InlineHandler = (
   args: Record<string, unknown>
@@ -329,10 +330,19 @@ export async function buildChatContext(
         }
       } else {
         try {
-          const fileContent = readFileSync(att.path, 'utf-8')
-          fileContext += `File: ${att.name}\n\`\`\`\n${fileContent}\n\`\`\`\n\n`
+          if (ext === 'pdf') {
+            const extracted = extractPdfText(readFileSync(att.path))
+            fileContext += extracted.text
+              ? `PDF: ${att.name} (locally extracted text)\n\`\`\`text\n${extracted.text}\n\`\`\`\n\n`
+              : `PDF: ${att.name} (no selectable text was found; this may be a scanned/image-only PDF and needs page rendering or OCR)\n\n`
+          } else {
+            const fileContent = readFileSync(att.path, 'utf-8')
+            fileContext += `File: ${att.name}\n\`\`\`\n${fileContent}\n\`\`\`\n\n`
+          }
         } catch {
-          fileContext += `File: ${att.name} (could not read file)\n\n`
+          fileContext += ext === 'pdf'
+            ? `PDF: ${att.name} (could not extract text)\n\n`
+            : `File: ${att.name} (could not read file)\n\n`
         }
       }
     }
