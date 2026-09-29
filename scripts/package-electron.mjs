@@ -8,6 +8,7 @@
 // installer. Building sequentially avoids the race, and checking the exit
 // code after each step means a failed arch actually stops the build.
 import { spawn } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
@@ -26,10 +27,27 @@ function currentPlatform() {
 }
 
 const platform = process.argv[2] || currentPlatform()
-const archs = ARCHS_BY_PLATFORM[platform]
+const configuredArchs = process.env.NEXY_PACKAGE_ARCHS
+  ?.split(',')
+  .map((value) => value.trim())
+  .filter(Boolean)
+const hostArch = process.arch === 'arm64' ? 'arm64' : 'x64'
+const archs = configuredArchs?.length
+  ? configuredArchs
+  : platform === currentPlatform()
+    ? ARCHS_BY_PLATFORM[platform].filter((arch) => arch === hostArch || platform === 'linux')
+    : ARCHS_BY_PLATFORM[platform]
 if (!archs) {
   console.error(`Unknown platform "${platform}"`)
   process.exit(1)
+}
+const unsupportedArchs = archs.filter((arch) => !ARCHS_BY_PLATFORM[platform].includes(arch))
+if (unsupportedArchs.length > 0) {
+  console.error(`Unsupported ${platform} architecture(s): ${unsupportedArchs.join(', ')}`)
+  process.exit(1)
+}
+if (!configuredArchs && ARCHS_BY_PLATFORM[platform].length > archs.length) {
+  console.log(`Packaging the host architecture (${hostArch}). Set NEXY_PACKAGE_ARCHS=x64,arm64 for a multi-architecture release.`)
 }
 
 const lockDir = path.join(process.cwd(), 'node_modules', '.cache')
@@ -96,8 +114,11 @@ process.on('SIGTERM', () => stopActiveChild('SIGTERM'))
 process.on('exit', cleanupLock)
 
 const builderCli = path.join(process.cwd(), 'node_modules', 'electron-builder', 'out', 'cli', 'cli.js')
+const sandboxBuilder = path.join(process.cwd(), 'scripts', 'build-mcp-sandbox.mjs')
 
 for (const arch of archs) {
+  execFileSync(process.execPath, [sandboxBuilder, platform, arch], { stdio: 'inherit' })
+  execFileSync(process.execPath, [path.join(process.cwd(), 'scripts', 'check-mcp-sandbox-helper.mjs'), platform, arch], { stdio: 'inherit' })
   console.log(`\n> electron-builder ${PLATFORM_FLAG[platform]} --${arch}`)
   activeChild = spawn(process.execPath, [builderCli, PLATFORM_FLAG[platform], `--${arch}`], {
     stdio: 'inherit',

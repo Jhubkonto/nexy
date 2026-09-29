@@ -13,6 +13,7 @@
     "package:win": "electron-vite build && node scripts/package-electron.mjs win",
     "package:mac": "electron-vite build && node scripts/package-electron.mjs mac",
     "package:linux": "electron-vite build && node scripts/package-electron.mjs linux",
+    "build:mcp-sandbox": "node scripts/build-mcp-sandbox.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "lint": "eslint src/",
     "test": "vitest run",
