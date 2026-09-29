@@ -124,8 +124,12 @@ describe('prompt handlers', () => {
     })
 
     const prompts = await invoke<PromptLibraryEntry[]>('prompt:list', 'project-a')
+    const projectlessPrompts = await invoke<PromptLibraryEntry[]>('prompt:list', null)
+    const blankProjectPrompts = await invoke<PromptLibraryEntry[]>('prompt:list', '  ')
 
     expect(prompts.map((prompt) => prompt.title).sort()).toEqual(['Global', 'Project A'])
+    expect(projectlessPrompts.map((prompt) => prompt.title)).toEqual(['Global'])
+    expect(blankProjectPrompts.map((prompt) => prompt.title)).toEqual(['Global'])
   })
 
   it('updates and deletes prompts', async () => {

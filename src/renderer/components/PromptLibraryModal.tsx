@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BookOpen, Loader2, Plus, Save } from 'lucide-react'
 import type { PromptLibraryEntry, PromptLibraryInput } from '../../shared/types'
 import { extractPromptVariables, resolvePromptVariables } from '../../shared/prompt-variables'
@@ -84,6 +84,8 @@ export function PromptLibraryModal({
   onAttachInstruction,
   onClose,
 }: PromptLibraryModalProps) {
+  const draftContentRef = useRef(draftContent)
+  draftContentRef.current = draftContent
   const [prompts, setPrompts] = useState<PromptLibraryEntry[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [values, setValues] = useState<Record<string, string>>({})
@@ -111,7 +113,7 @@ export function PromptLibraryModal({
       ])
       setPrompts(entries)
       setDefaults(savedDefaults)
-      setSelectedId((current) => current ?? entries[0]?.id ?? null)
+      setSelectedId((current) => entries.some((entry) => entry.id === current) ? current : entries[0]?.id ?? null)
     } finally {
       setLoading(false)
     }
@@ -120,6 +122,24 @@ export function PromptLibraryModal({
   useEffect(() => {
     void loadPrompts()
   }, [loadPrompts])
+
+  useEffect(() => {
+    // A modal can remain mounted while the chat changes project. Do not carry a
+    // selection, edit form, or project scope across that boundary.
+    setSelectedId(null)
+    setValues({})
+    setEditingId(null)
+    setDraft({
+      ...EMPTY_DRAFT,
+      body: draftContentRef.current.trim(),
+      title: titleFromBody(draftContentRef.current),
+      scope: projectId ? 'project' : 'global',
+      project_id: projectId,
+    })
+    setTagInput('')
+    setError(null)
+    setMode(initialMode)
+  }, [initialMode, projectId])
 
   const selectedPrompt = useMemo(
     () => prompts.find((prompt) => prompt.id === selectedId) ?? null,
@@ -187,6 +207,16 @@ export function PromptLibraryModal({
 
   const handleSave = useCallback(async () => {
     const scope = draft.scope === 'project' ? 'project' : 'global'
+    const activeProjectId = projectId?.trim() || null
+    const editingPrompt = editingId ? prompts.find((prompt) => prompt.id === editingId) ?? null : null
+    if (editingId && !editingPrompt) {
+      setError('The selected prompt is no longer available in this project.')
+      return
+    }
+    if (editingPrompt?.scope === 'project' && (editingPrompt.project_id?.trim() || null) !== activeProjectId) {
+      setError('The project changed while this prompt was being edited. Reload it before saving.')
+      return
+    }
     const payload: PromptLibraryInput = {
       ...draft,
       title: String(draft.title ?? '').trim(),
@@ -195,7 +225,7 @@ export function PromptLibraryModal({
       category: String(draft.category ?? 'Custom').trim() || 'Custom',
       tags: inputToTags(tagInput),
       scope,
-      project_id: scope === 'project' ? projectId : null,
+      project_id: scope === 'project' ? activeProjectId : null,
     }
     if (!payload.title || !payload.body.trim()) {
       setError('Title and prompt body are required.')
@@ -221,7 +251,7 @@ export function PromptLibraryModal({
     } finally {
       setSaving(false)
     }
-  }, [draft, editingId, loadPrompts, projectId, tagInput])
+  }, [draft, editingId, loadPrompts, projectId, prompts, tagInput])
 
   const handleInsert = useCallback(async () => {
     if (!selectedPrompt) return

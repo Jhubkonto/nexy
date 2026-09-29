@@ -24,6 +24,16 @@ type PromptVersionRow = PromptRow & {
   source: string
 }
 
+export function isPromptVisibleForProject(
+  prompt: { scope: string; project_id: string | null },
+  projectId?: string | null,
+): boolean {
+  if (prompt.scope === 'global') return true
+  const requestedProjectId = typeof projectId === 'string' ? projectId.trim() : ''
+  const promptProjectId = typeof prompt.project_id === 'string' ? prompt.project_id.trim() : ''
+  return prompt.scope === 'project' && Boolean(requestedProjectId) && promptProjectId === requestedProjectId
+}
+
 function parseTags(value: string): string[] {
   try {
     const parsed = JSON.parse(value) as unknown
@@ -262,10 +272,9 @@ export function registerPromptHandlers(): void {
   safeHandle('prompt:list', (_event, projectId?: string | null) => {
     const rows = db.prepare(
       `SELECT * FROM prompt_library_entries
-       WHERE scope = 'global' OR (scope = 'project' AND project_id = ?)
        ORDER BY category COLLATE NOCASE ASC, updated_at DESC`
-    ).all(projectId ?? null) as PromptRow[]
-    return rows.map(parseRow)
+    ).all() as PromptRow[]
+    return rows.filter((row) => isPromptVisibleForProject(row, projectId)).map(parseRow)
   })
 
   safeHandle('prompt:create', (_event, input: PromptLibraryInput) => {

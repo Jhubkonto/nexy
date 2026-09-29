@@ -8,7 +8,7 @@ import { ModelPicker } from './ModelPicker'
 import { CliLockedModelBadge } from './CliLockedModelBadge'
 import { ChatModePicker } from './ChatModePicker'
 import { NexyIcon } from '../ui/icons/NexyIcon'
-import type { AgentConfig, AvailableModelEntry, AvailableModelGroup, CliBackend, CliModeOverride, CodexExecutionModeOverride, SkillConfig } from '../../../shared/types'
+import type { AgentConfig, AvailableModelEntry, AvailableModelGroup, CliBackend, CliModeOverride, CodexExecutionModeOverride, HermesProfileInfo, SkillConfig } from '../../../shared/types'
 import type { AtContextOption, ChatMessage, ContextRef, LocalAttachment, PastedImage } from '../../hooks/chat-types'
 import type { SlashCommandDef } from '../../slash-commands'
 import { useAppStore } from '../../store/app-store'
@@ -83,6 +83,10 @@ interface ChatComposerProps {
   onSetPendingModel: (model: string | null) => void
   availableGroups: AvailableModelGroup[]
   onSelectAvailableModel: (group: AvailableModelGroup, model: AvailableModelEntry) => void
+  showHermesProfile?: boolean
+  hermesProfile?: string | null
+  hermesProfiles?: HermesProfileInfo[]
+  onSetHermesProfile?: (profile: string) => void
   isEditingMessage: boolean
   onCancelEdit: () => void
   onStop: () => void | Promise<void>
@@ -169,6 +173,10 @@ export function ChatComposer({
   onSetPendingModel,
   availableGroups,
   onSelectAvailableModel,
+  showHermesProfile = false,
+  hermesProfile = null,
+  hermesProfiles = [],
+  onSetHermesProfile,
   isEditingMessage,
   onCancelEdit,
   onStop,
@@ -344,6 +352,18 @@ export function ChatComposer({
                     }}
                     onSelectAvailableModel={onSelectAvailableModel}
                   />
+                )}
+                {showHermesProfile && !isCliLocked && (
+                  <select
+                    aria-label="Conversation Hermes profile"
+                    value={hermesProfile ?? ''}
+                    onChange={(event) => onSetHermesProfile?.(event.target.value)}
+                    className="ml-1 max-w-[130px] rounded border border-nexy-border bg-nexy-recessed px-1 py-1 text-[10px] text-nexy-text"
+                    title="Hermes profile for this model target"
+                  >
+                    <option value="">Hermes default</option>
+                    {hermesProfiles.map((profile) => <option key={profile.name} value={profile.name}>{profile.name}</option>)}
+                  </select>
                 )}
                 {onSetConversationMode && (
                   <ChatModePicker

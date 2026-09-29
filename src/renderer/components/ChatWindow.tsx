@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle, ChevronDown, ChevronRight, Download, ListChecks, Loader2, Lock, MoreHorizontal, Pin, PinOff, Sparkles, Star, Upload, Users, X, Zap } from 'lucide-react'
 import { getModelLabel, modelIdSupportsTools } from '../../shared/models'
-import { isApiError, type AgentConfig, type ArtifactPromotionRequest, type AvailableModelEntry, type AvailableModelGroup, type CliBackend, type CliModeOverride, type CodexExecutionModeOverride, type ConversationExportPackFormat, type AutomatedWorkflowRunDetail, type AutomatedWorkflowRunStep, type WikiCandidate } from '../../shared/types'
+import { isApiError, type AgentConfig, type ArtifactPromotionRequest, type AvailableModelEntry, type AvailableModelGroup, type CliBackend, type CliModeOverride, type CodexExecutionModeOverride, type ConversationExportPackFormat, type AutomatedWorkflowRunDetail, type AutomatedWorkflowRunStep, type HermesProfileInfo, type WikiCandidate } from '../../shared/types'
 import type { ContextRef, ToastType } from '../hooks/chat-types'
 import { useAtMenu } from '../hooks/useAtMenu'
 import { useAutoScroll } from '../hooks/useAutoScroll'
@@ -125,6 +125,8 @@ export function ChatWindow() {
   const availableGroups = useAppStore((state) => state.availableModelGroups)
   const availableModelsLoaded = useAppStore((state) => state.availableModelsLoaded)
   const [profileAvailableGroups, setProfileAvailableGroups] = useState<AvailableModelGroup[] | null>(null)
+  const [hermesProfiles, setHermesProfiles] = useState<HermesProfileInfo[]>([])
+  const [globalHermesProfile, setGlobalHermesProfile] = useState('')
   const pendingComposerPrefill = useAppStore((state) => state.pendingComposerPrefill)
   const setPendingComposerPrefill = useAppStore((state) => state.setPendingComposerPrefill)
   const [pendingModel, setPendingModel] = useState<string | null>(null)
@@ -251,6 +253,10 @@ export function ChatWindow() {
   const ensureConversationForCapability = useCallback(async () => {
     const created = await window.api.createConversation(activeAgentId ?? undefined, activeProjectId ?? undefined)
     if (!('error' in created)) {
+      // Materializing a new chat changes the draft owner from null to the new
+      // conversation. Preserve the unsaved new-chat draft so the owner-change
+      // effect restores it instead of loading an empty draft for that chat.
+      conversationDraftCache.set(created.id, inputValueRef.current)
       await conversationCreated(created.id)
       return created.id
     }
@@ -292,6 +298,7 @@ export function ChatWindow() {
   const chatAgentId = isNewChat ? activeAgentId : (currentConversation?.agent_id ?? null)
   const chatAgent = chatAgentId ? (agents.find((agent) => agent.id === chatAgentId) ?? null) : null
   const projectDefaultModel = chatProject?.default_model ?? null
+  const projectDefaultHermesProfile = chatProject?.project_hermes_profile ?? null
   const displayedThinkingEffort = pendingModeFields.has('thinkingEffortOverride')
     ? pendingThinkingEffortOverride
     : (currentConversation?.thinking_effort_override ?? projectDefaultThinkingEffort)
@@ -303,7 +310,18 @@ export function ChatWindow() {
     v && v !== 'default' ? v : null
   const chatAgentBackend = chatAgent?.backend
   const chatAgentCliModel = nonDefault(chatAgent?.cliModel ?? null)
-  const hermesProfile = chatAgentBackend === 'hermes-cli' ? chatAgent?.hermesProfile : undefined
+  const targetHermesProfile = chatAgentBackend === 'hermes-cli' && typeof chatAgent?.hermesProfile === 'string'
+    ? chatAgent.hermesProfile
+    : currentConversation?.model
+      ? currentConversation.conversation_hermes_profile ?? null
+      : projectDefaultModel
+        ? projectDefaultHermesProfile
+        : globalHermesProfile || null
+  const hermesProfile = targetHermesProfile || undefined
+  useEffect(() => {
+    void window.api.getSetting('global_default_hermes_profile').then((value) => setGlobalHermesProfile(value ?? '')).catch(() => {})
+    void window.api.getHermesProfileDiscovery().then((result) => setHermesProfiles(result.profiles ?? [])).catch(() => setHermesProfiles([]))
+  }, [])
   useEffect(() => {
     if (!hermesProfile) {
       setProfileAvailableGroups(null)
@@ -368,6 +386,7 @@ export function ChatWindow() {
   } else {
     effectiveModel = 'default'
   }
+  const isHermesTarget = chatAgentBackend === 'hermes-cli' || chatAvailableGroups.some((group) => group.sourceKey === 'hermes-cli' && group.models.some((model) => model.id === effectiveModel))
 
   // If the agent requires tool calling, auto-fallback to 'default' (GPT-4o)
   // when the resolved model is not known to support tools. This prevents
@@ -1253,17 +1272,21 @@ export function ChatWindow() {
         // Store as a per-conversation override — does not mutate the agent config.
         if (group.sourceKey !== chatAgentBackend) return
         if (conversationId) {
-          void actions.handleSetConversationModel(model.id)
+          if (group.sourceKey === 'hermes-cli') {
+            void actions.handleSetCliBackendAndModel('hermes-cli', model.id, targetHermesProfile ?? null)
+          } else {
+            void actions.handleSetConversationModel(model.id)
+          }
         }
         return
       }
       if (group.sourceType === 'cli') {
-        void actions.handleSetCliBackendAndModel(group.sourceKey as CliBackend, model.id)
+        void actions.handleSetCliBackendAndModel(group.sourceKey as CliBackend, model.id, group.sourceKey === 'hermes-cli' ? (targetHermesProfile ?? null) : null)
         // Also update the UI immediately when there is no conversation yet;
         // the backend is staged for the first send inside useChatWindowActions.
       } else {
         if (conversationId) {
-          void actions.handleSetConversationModel(model.id)
+          void actions.handleSetConversationModel(model.id, group.sourceKey === 'hermes-cli' ? (targetHermesProfile ?? null) : null)
         }
       }
     },
@@ -1541,8 +1564,16 @@ export function ChatWindow() {
           : null
       }
       onSetConversationMode={handleSetConversationMode}
-      availableGroups={availableGroups}
+      availableGroups={chatAvailableGroups}
       onSelectAvailableModel={handleSelectAvailableModel}
+      showHermesProfile={isHermesTarget}
+      hermesProfile={targetHermesProfile}
+      hermesProfiles={hermesProfiles}
+      onSetHermesProfile={(profile) => {
+        if (conversationId && effectiveModel !== 'default') {
+          void actions.handleSetCliBackendAndModel('hermes-cli', effectiveModel, profile || null)
+        }
+      }}
       isEditingMessage={chat.isEditingMessage}
       onCancelEdit={handleCancelEdit}
       onStop={actions.handleStop}
@@ -1557,7 +1588,7 @@ export function ChatWindow() {
           ? (modelId) => {
               setPendingModel(modelId)
               setPendingModelDirty(true)
-              if (conversationId) void actions.handleSetConversationModel(modelId)
+              if (conversationId) void actions.handleSetConversationModel(modelId, targetHermesProfile ?? null)
             }
           : undefined
       }

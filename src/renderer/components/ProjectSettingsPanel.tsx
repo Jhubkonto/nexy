@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAppStore } from '../store/app-store'
 import type { Milestone, ProjectConfig, ScopeRule } from '../store/types'
+import type { HermesProfileInfo } from '../../shared/types'
 import { DEFAULT_PROJECT_CONFIG } from '../store/types'
 import { GeneralTab } from './project-settings/GeneralTab'
 import { ScopeTab } from './project-settings/ScopeTab'
@@ -67,6 +68,7 @@ export function ProjectSettingsPanel(props: Props) {
   const availableModelGroups = useAppStore((s) => s.availableModelGroups)
   const catalogModels = useAppStore((s) => s.catalogModels)
   const globalDefaultModel = useAppStore((s) => s.globalDefaultModel)
+  const [hermesProfiles, setHermesProfiles] = useState<HermesProfileInfo[]>([])
 
   const projectId = isDraft ? null : (props as EditProps).projectId
   const project = projectId ? projects.find((p) => p.id === projectId) : null
@@ -93,6 +95,14 @@ export function ProjectSettingsPanel(props: Props) {
   const [milestones, setMilestones] = useState<Milestone[]>(cfg?.milestones ?? [])
   const [draftAgentIds, setDraftAgentIds] = useState<string[]>([])
   const [draftPrimaryAgentId, setDraftPrimaryAgentId] = useState<string | null>(null)
+  const projectHermesProfile = project?.project_hermes_profile ?? ''
+
+  useEffect(() => {
+    if (isDraft) return
+    void window.api.getHermesProfileDiscovery()
+      .then((result) => setHermesProfiles(result.profiles ?? []))
+      .catch(() => setHermesProfiles([]))
+  }, [isDraft, projectId])
   const [agentPickerQuery, setAgentPickerQuery] = useState('')
   const [showAgentPicker, setShowAgentPicker] = useState(false)
   const [teamDraggingId, setTeamDraggingId] = useState<string | null>(null)
@@ -540,6 +550,8 @@ export function ProjectSettingsPanel(props: Props) {
             showModeDropdown={showModeDropdown}
             hasVarErrors={hasVarErrors}
             defaultModel={project?.default_model ?? null}
+            projectHermesProfile={projectHermesProfile}
+            hermesProfiles={hermesProfiles}
             defaultThinkingEffort={projectConfig.defaultThinkingEffort ?? null}
             availableModelGroups={availableModelGroups}
             catalogModels={catalogModels}
@@ -565,7 +577,13 @@ export function ProjectSettingsPanel(props: Props) {
             onRemoveVariable={handleRemoveVariable}
             onVarChange={handleVarChange}
             onDefaultModelChange={(model) => {
-              if (projectId) void setProjectDefaultModel(projectId, model)
+              if (projectId) {
+                const isHermesModel = availableModelGroups.some((group) => group.sourceKey === 'hermes-cli' && group.models.some((entry) => entry.id === model))
+                void setProjectDefaultModel(projectId, model, isHermesModel ? projectHermesProfile : undefined)
+              }
+            }}
+            onProjectHermesProfileChange={(profile) => {
+              if (projectId) void setProjectDefaultModel(projectId, project?.default_model ?? null, profile)
             }}
             onDefaultThinkingEffortChange={(value) => debounceSave({ defaultThinkingEffort: value })}
           />

@@ -48,6 +48,8 @@ export function createMockApi() {
       { id: 'gpt-5.4-mini', label: 'GPT-5.4-Mini' },
     ]),
     listHermesProfiles: vi.fn().mockResolvedValue([{ name: 'default', isDefault: true }]),
+    getHermesProfileDiscovery: vi.fn().mockResolvedValue(null),
+    validateHermesHome: vi.fn().mockResolvedValue({ valid: true, path: 'C:\\hermes', profilesDirectory: 'C:\\hermes\\profiles' }),
     getHermesAcpReadiness: vi.fn().mockResolvedValue({ ready: true }),
 
     // Chat

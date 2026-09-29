@@ -112,6 +112,27 @@ describe("ChatWindow — Empty State", () => {
     await user.click(sendButton);
     expect(mockApi.sendMessage).not.toHaveBeenCalled();
   });
+
+  it("preserves a new chat draft when opening capabilities materializes a conversation", async () => {
+    const user = userEvent.setup();
+    mockApi.createConversation.mockResolvedValue({ id: "conv-capabilities" });
+    mockStore = createMockAppStore({
+      authState: { authenticated: true, user: null },
+    });
+    mockStore.conversationCreated.mockImplementation(async (id: string) => {
+      (mockStore as { currentConversationId: string | null }).currentConversationId = id;
+    });
+    setupStoreMock(useAppStore, mockStore);
+
+    const view = render(<ChatWindow />);
+    const textarea = screen.getByRole("textbox", { name: /message input/i });
+    await user.type(textarea, "Keep this draft");
+    await user.click(screen.getByRole("button", { name: "Chat capabilities" }));
+
+    view.rerender(<ChatWindow />);
+    await waitFor(() => expect(textarea).toHaveValue("Keep this draft"));
+    expect(mockStore.conversationCreated).toHaveBeenCalledWith("conv-capabilities");
+  });
 });
 
 describe("ChatWindow — Sending Messages", () => {
