@@ -36,6 +36,7 @@ interface McpServerStatus extends McpServerConfig {
   status: 'connecting' | 'connected' | 'error' | 'disconnected'
   error?: string
   toolCount: number
+  managed?: boolean
   sandbox?: McpSandboxRuntimeStatus
 }
 
@@ -1435,17 +1436,18 @@ export function McpServerPanel() {
                           <h4 className="truncate text-xs font-bold text-nexy-text">{server.name}</h4>
                           <span className="rounded-full border border-nexy-border bg-nexy-recessed px-1.5 py-0.5 text-[10px] font-bold text-nexy-muted">{statusLabel}</span>
                           <span className="text-[10px] text-nexy-muted">{server.toolCount} tool{server.toolCount !== 1 ? 's' : ''}</span>
+                          {server.managed && <span className="rounded-full border border-nexy-border bg-nexy-recessed px-1.5 py-0.5 text-[10px] font-bold text-nexy-muted">Built in</span>}
                           <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 dark:text-emerald-300"><ShieldCheck className="h-3 w-3" /> {server.sandbox?.status === 'unavailable' ? 'Sandbox unavailable' : 'Sandboxed'}</span>
                           {assignedAgentCount > 0 && <span className="text-[10px] text-nexy-muted">· {assignedAgentCount} agent{assignedAgentCount === 1 ? '' : 's'}</span>}
                         </div>
                         {server.error ? <p className="mt-1 truncate text-[11px] text-nexy-error">{server.error}</p> : <p className="mt-1 text-[11px] text-nexy-muted">Ready to use in a chat or assign to an agent.</p>}
                       </div>
-                      <div className="flex shrink-0 items-center gap-1">
+                      {!server.managed && <div className="flex shrink-0 items-center gap-1">
                         <button onClick={() => handleToggle(server)} className={`rounded-full border-2 px-2 py-1 text-[10px] font-bold ${server.enabled ? 'border-nexy-success bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-300' : 'border-nexy-border bg-nexy-recessed text-nexy-muted'}`} title={server.enabled ? 'Disable' : 'Enable'}>{server.enabled ? 'ON' : 'OFF'}</button>
                         <button onClick={() => handleRestart(server.id)} className="rounded-nexy-sm border-2 border-transparent p-1.5 text-nexy-muted hover:border-nexy-border hover:bg-nexy-recessed hover:text-nexy-text" title="Restart" aria-label="Restart server"><RefreshCw className="h-3.5 w-3.5" /></button>
                         <button onClick={() => handleEdit(server)} className="rounded-nexy-sm border-2 border-transparent p-1.5 text-nexy-muted hover:border-nexy-border hover:bg-nexy-recessed hover:text-nexy-text" title="Edit" aria-label="Edit server"><Settings className="h-3.5 w-3.5" /></button>
                         <button onClick={() => handleDelete(server.id)} className="rounded-nexy-sm border-2 border-transparent p-1.5 text-nexy-muted hover:border-nexy-error hover:bg-red-50 hover:text-nexy-error dark:hover:bg-red-950/30" title="Remove" aria-label="Remove server"><Trash2 className="h-3.5 w-3.5" /></button>
-                      </div>
+                      </div>}
                     </div>
                     <button type="button" onClick={() => setExpandedServerDetails((previous) => { const next = new Set(previous); if (next.has(server.id)) next.delete(server.id); else next.add(server.id); return next })} className="flex w-full items-center gap-1 border-t-2 border-nexy-border bg-nexy-surface px-3 py-2 text-left text-[10px] font-bold text-nexy-muted hover:bg-nexy-recessed" aria-expanded={detailsOpen}>
                       {detailsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />} Technical details

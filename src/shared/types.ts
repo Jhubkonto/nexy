@@ -2041,6 +2041,8 @@ export interface McpServerWithStatus extends McpServerConfig {
   toolCount: number
   resourceCount: number
   promptCount: number
+  /** True for Nexy-owned in-process bridges such as Desktop Navigator. */
+  managed?: boolean
   capabilities?: Record<string, unknown>
   serverVersion?: { name: string; version: string }
   instructions?: string
@@ -2057,6 +2059,8 @@ export interface McpServerStatus {
   serverVersion?: { name: string; version: string }
   instructions?: string
   sandbox?: McpSandboxRuntimeStatus
+  /** True for Nexy-owned in-process bridges such as Desktop Navigator. */
+  managed?: boolean
 }
 
 export interface McpToolOverrideRow {

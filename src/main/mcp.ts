@@ -95,6 +95,7 @@ function broadcastServerStatus(id: string): void {
     status: instance?.status ?? 'disconnected',
     error: instance?.error,
     toolCount: instance?.tools.length ?? 0,
+    managed: Boolean(instance?.inProcessHandler),
     ...(instance?.sandbox ? { sandbox: instance.sandbox } : {}),
   }
   let windows: BrowserWindow[]
@@ -665,6 +666,7 @@ export function getMcpServersWithStatus(): (McpServerConfig & { status: string; 
       toolCount: instance?.tools.length ?? 0,
       resourceCount: instance?.resources?.length ?? 0,
       promptCount: instance?.prompts?.length ?? 0,
+      managed: Boolean(instance?.inProcessHandler),
       ...(instance?.capabilities ? { capabilities: instance.capabilities } : {}),
       ...(instance?.serverVersion ? { serverVersion: instance.serverVersion } : {}),
       ...(instance?.instructions ? { instructions: instance.instructions } : {}),
@@ -680,6 +682,7 @@ export function getMcpServersWithStatus(): (McpServerConfig & { status: string; 
         toolCount: instance.tools.length,
         resourceCount: instance.resources?.length ?? 0,
         promptCount: instance.prompts?.length ?? 0,
+        managed: true,
         ...(instance.capabilities ? { capabilities: instance.capabilities } : {}),
         ...(instance.serverVersion ? { serverVersion: instance.serverVersion } : {}),
         ...(instance.instructions ? { instructions: instance.instructions } : {}),
@@ -737,6 +740,8 @@ export async function removeMcpServer(id: string): Promise<void> {
 }
 
 export async function restartMcpServer(id: string): Promise<boolean> {
+  // Nexy-owned bridges do not have a user launch configuration to restart.
+  if (id === DESKTOP_NAVIGATOR_ID) return false
   const configs = loadServerConfigs()
   const config = configs.find((c) => c.id === id)
   if (!config || !config.enabled) return false
