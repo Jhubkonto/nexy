@@ -1202,6 +1202,10 @@ fun parseWsEvent(
                         command = s.optString("command"),
                         args = args,
                         enabled = s.optBoolean("enabled", false),
+                        status = s.nullableString("status"),
+                        error = s.nullableString("error"),
+                        toolCount = s.optInt("toolCount", 0),
+                        managed = s.optBoolean("managed", false),
                         sandbox = parseMcpSandboxStatus(s.optJSONObject("sandbox")),
                         sandboxProfile = parseMcpSandboxProfile(s.optJSONObject("sandboxProfile")),
                     )
@@ -1328,14 +1332,14 @@ fun parseWsEvent(
             "mcp:server-added" -> {
                 val s = data?.optJSONObject("server") ?: return
                 val server = parseMcpServerWithStatus(s)
-                mcpServers.value = mcpServers.value + McpServerInfo(id = server.id, name = server.name, description = server.description, command = server.command, args = server.args, enabled = server.enabled, sandbox = server.sandbox, sandboxProfile = server.sandboxProfile)
+                mcpServers.value = mcpServers.value + McpServerInfo(id = server.id, name = server.name, description = server.description, command = server.command, args = server.args, enabled = server.enabled, status = server.status, error = server.error, toolCount = server.toolCount, managed = server.managed, sandbox = server.sandbox, sandboxProfile = server.sandboxProfile)
                 WsEvent.McpServerAdded(server)
             }
 
             "mcp:server-updated" -> {
                 val s = data?.optJSONObject("server") ?: return
                 val server = parseMcpServerWithStatus(s)
-                mcpServers.value = mcpServers.value.map { if (it.id == server.id) McpServerInfo(id = server.id, name = server.name, description = server.description, command = server.command, args = server.args, enabled = server.enabled, sandbox = server.sandbox, sandboxProfile = server.sandboxProfile) else it }
+                mcpServers.value = mcpServers.value.map { if (it.id == server.id) McpServerInfo(id = server.id, name = server.name, description = server.description, command = server.command, args = server.args, enabled = server.enabled, status = server.status, error = server.error, toolCount = server.toolCount, managed = server.managed, sandbox = server.sandbox, sandboxProfile = server.sandboxProfile) else it }
                 WsEvent.McpServerUpdated(server)
             }
 
@@ -2853,6 +2857,7 @@ private fun parseMcpServerWithStatus(s: JSONObject): McpServerWithStatus {
         status = s.optString("status", "disconnected"),
         error = s.nullableString("error"),
         toolCount = s.optInt("toolCount", 0),
+        managed = s.optBoolean("managed", false),
         sandbox = parseMcpSandboxStatus(s.optJSONObject("sandbox")),
         sandboxProfile = parseMcpSandboxProfile(s.optJSONObject("sandboxProfile")),
     )

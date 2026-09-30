@@ -172,7 +172,7 @@ fun McpAndCliScreen(onBack: () -> Unit) {
                 mcpServers.forEach { server ->
                     McpServerCard(
                         server = server,
-                        status = serverToStatus[server.id],
+                        status = serverToStatus[server.id] ?: server.status,
                         onEdit = { editingServer = server },
                         onDelete = { deleteTarget = server },
                         onRestart = { WsRepository.restartMcpServer(server.id); WsRepository.getMcpServerStatus(server.id) },
@@ -253,10 +253,12 @@ private fun McpServerCard(
                 if (server.command.isNotBlank()) Text(server.command, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 if (status != null) Text(status, style = MaterialTheme.typography.labelSmall, color = statusColor)
             }
-            Row {
-                IconButton(onClick = onRestart) { NexyIcon(NexyIconName.Tool, contentDescription = "Restart", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                IconButton(onClick = onEdit) { NexyIcon(NexyIconName.Edit, contentDescription = "Edit") }
-                IconButton(onClick = onDelete) { NexyIcon(NexyIconName.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error) }
+            if (!server.managed) {
+                Row {
+                    IconButton(onClick = onRestart) { NexyIcon(NexyIconName.Tool, contentDescription = "Restart", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    IconButton(onClick = onEdit) { NexyIcon(NexyIconName.Edit, contentDescription = "Edit") }
+                    IconButton(onClick = onDelete) { NexyIcon(NexyIconName.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error) }
+                }
             }
         }
     }

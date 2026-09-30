@@ -693,6 +693,7 @@ data class McpServerWithStatus(
     val status: String,
     val error: String? = null,
     val toolCount: Int = 0,
+    val managed: Boolean = false,
     val sandbox: McpSandboxStatus? = null,
     val sandboxProfile: McpSandboxProfile = McpSandboxProfile(),
 )
@@ -1008,6 +1009,10 @@ data class McpServerInfo(
     val command: String,
     val args: List<String> = emptyList(),
     val enabled: Boolean,
+    val status: String? = null,
+    val error: String? = null,
+    val toolCount: Int = 0,
+    val managed: Boolean = false,
     val sandbox: McpSandboxStatus? = null,
     val sandboxProfile: McpSandboxProfile = McpSandboxProfile(),
 )

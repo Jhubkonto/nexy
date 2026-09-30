@@ -80,6 +80,8 @@ import io.nexy.android.ui.components.NexyTopAppBar
 import io.nexy.android.ui.icons.NexyIcon
 import io.nexy.android.ui.icons.NexyIconName
 
+private val McpServerCardHeight = 136.dp
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun McpServersScreen(onBack: () -> Unit, onOpenProjectWiki: (String) -> Unit = {}) {
@@ -95,6 +97,7 @@ fun McpServersScreen(onBack: () -> Unit, onOpenProjectWiki: (String) -> Unit = {
     var deleteTarget by remember { mutableStateOf<McpServerInfo?>(null) }
     var detailServer by remember { mutableStateOf<McpServerInfo?>(null) }
     var serverToStatus by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var serverToError by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var tools by remember { mutableStateOf<List<McpToolInfo>>(emptyList()) }
     var refreshing by remember { mutableStateOf(false) }
     var testingConnection by remember { mutableStateOf(false) }
@@ -114,15 +117,28 @@ fun McpServersScreen(onBack: () -> Unit, onOpenProjectWiki: (String) -> Unit = {
     LaunchedEffect(Unit) {
         WsRepository.events.collect { event ->
             when (event) {
-                is WsEvent.McpList -> refreshing = false
-                is WsEvent.McpServerAdded -> { refreshing = false; WsRepository.getMcpServers() }
+                is WsEvent.McpList -> {
+                    refreshing = false
+                    serverToStatus = event.servers.mapNotNull { server -> server.status?.let { server.id to it } }.toMap()
+                    serverToError = event.servers.mapNotNull { server -> server.error?.let { server.id to it } }.toMap()
+                }
+                is WsEvent.McpServerAdded -> {
+                    refreshing = false
+                    serverToStatus = serverToStatus + (event.server.id to event.server.status)
+                    serverToError = event.server.error?.let { serverToError + (event.server.id to it) } ?: (serverToError - event.server.id)
+                    WsRepository.getMcpServers()
+                }
                 is WsEvent.McpServerUpdated -> {
                     serverToStatus = serverToStatus + (event.server.id to event.server.status)
+                    serverToError = event.server.error?.let { serverToError + (event.server.id to it) } ?: (serverToError - event.server.id)
                     refreshing = false
                     WsRepository.getMcpServers()
                 }
                 is WsEvent.McpServerRemoved -> Unit
-                is WsEvent.McpServerStatus -> serverToStatus = serverToStatus + (event.id to event.status)
+                is WsEvent.McpServerStatus -> {
+                    serverToStatus = serverToStatus + (event.id to event.status)
+                    serverToError = event.error?.let { serverToError + (event.id to it) } ?: (serverToError - event.id)
+                }
                 is WsEvent.McpToolList -> tools = event.tools
                 is WsEvent.McpTestResult -> { testingConnection = false; testResult = event }
                 is WsEvent.McpRegistryResults -> {
@@ -180,7 +196,8 @@ fun McpServersScreen(onBack: () -> Unit, onOpenProjectWiki: (String) -> Unit = {
         McpServerDetailSheet(
             server = server,
             description = server.description.ifBlank { catalogDescription(server, mcpCatalog) },
-            status = serverToStatus[server.id],
+            status = serverToStatus[server.id] ?: server.status,
+            error = serverToError[server.id] ?: server.error,
             tools = tools.filter { it.serverId == server.id },
             managed = isManagedMcpServer(server),
             onDismiss = { detailServer = null },
@@ -283,7 +300,7 @@ fun McpServersScreen(onBack: () -> Unit, onOpenProjectWiki: (String) -> Unit = {
                     items(mcpServers, key = { it.id }) { server ->
                         McpServerRow(
                             server = server,
-                            status = serverToStatus[server.id],
+                            status = serverToStatus[server.id] ?: server.status,
                             toolCount = tools.count { it.serverId == server.id },
                             description = server.description.ifBlank { catalogDescription(server, mcpCatalog) },
                             onOpen = { WsRepository.listMcpTools(listOf(server.id)); detailServer = server },
@@ -378,7 +395,7 @@ private fun ProjectWikiMcpGroup(
 ) {
     val runningCount = projects.count { statuses[it.id]?.running == true }
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().heightIn(min = McpServerCardHeight),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         shape = RectangleShape,
@@ -513,7 +530,7 @@ internal fun McpServerRow(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .height(136.dp)
+            .height(McpServerCardHeight)
             .clickable(onClick = onOpen),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -613,7 +630,7 @@ private fun catalogDescription(server: McpServerInfo, catalog: List<McpCatalogEn
     catalog.firstOrNull { entry -> entry.name.equals(server.name, ignoreCase = true) }?.description.orEmpty()
 
 private fun isManagedMcpServer(server: McpServerInfo): Boolean =
-    server.id == "__desktop-navigator__"
+    server.managed || server.id == "__desktop-navigator__"
 
 private fun fullServerCommand(server: McpServerInfo): String =
     (listOf(server.command) + server.args).filter { it.isNotBlank() }.joinToString(" ")
@@ -624,6 +641,7 @@ private fun McpServerDetailSheet(
     server: McpServerInfo,
     description: String,
     status: String?,
+    error: String?,
     tools: List<McpToolInfo>,
     managed: Boolean,
     onDismiss: () -> Unit,
@@ -655,9 +673,19 @@ private fun McpServerDetailSheet(
                 }
             }
             item {
-                Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RectangleShape) {
+                Surface(
+                    color = if (status == "error") MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RectangleShape,
+                ) {
                     Column(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        if (managed) {
+                        if (status == "error") {
+                            Text("Startup error", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onErrorContainer)
+                            Text(
+                                error ?: "The desktop could not start this MCP server and returned no diagnostic details.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                        } else if (managed) {
                             Text("Managed by Nexy", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                             Text(
                                 "This server is built into the desktop app. Its tools are available automatically; no command or arguments are required.",
@@ -682,7 +710,11 @@ private fun McpServerDetailSheet(
                 item {
                     NexyEmptyState(
                         title = "No tools available",
-                        detail = if (status == "connected") "This server is connected but did not expose any tools." else "Connect the server to discover its tools.",
+                        detail = when {
+                            status == "error" -> "The server could not start, so no tools were discovered."
+                            status == "connected" -> "This server is connected but did not expose any tools."
+                            else -> "Connect the server to discover its tools."
+                        },
                     )
                 }
             } else {
