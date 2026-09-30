@@ -107,7 +107,7 @@ class McpServersScreenRowTest {
     fun builtInDesktopNavigatorDoesNotExposeShellEditing() {
         composeRule.setContent {
             McpServerRow(
-                server = McpServerInfo(id = "__desktop-navigator__", name = "Desktop Navigator", command = "", enabled = true),
+                server = McpServerInfo(id = "desktop-navigator", name = "Desktop Navigator", command = "", enabled = true, managed = true),
                 status = "connected",
                 onEdit = {},
                 onDelete = {},
