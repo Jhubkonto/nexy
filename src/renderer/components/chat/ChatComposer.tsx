@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent, type ClipboardEvent, type KeyboardEvent, type RefObject } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type ClipboardEvent, type MutableRefObject, type RefObject } from 'react'
 import { Loader2, UnfoldVertical } from 'lucide-react'
 import { ContextInspector } from '../ContextInspector'
 import { AttachmentBar } from './AttachmentBar'
@@ -9,18 +9,22 @@ import { CliLockedModelBadge } from './CliLockedModelBadge'
 import { ChatModePicker } from './ChatModePicker'
 import { NexyIcon } from '../ui/icons/NexyIcon'
 import type { AgentConfig, AvailableModelEntry, AvailableModelGroup, CliBackend, CliModeOverride, CodexExecutionModeOverride, HermesProfileInfo, SkillConfig } from '../../../shared/types'
-import type { AtContextOption, ChatMessage, ContextRef, LocalAttachment, PastedImage } from '../../hooks/chat-types'
+import type { AtContextOption, ChatMessage, ComposerKeyEvent, ContextRef, LocalAttachment, PastedImage } from '../../hooks/chat-types'
 import type { SlashCommandDef } from '../../slash-commands'
 import { useAppStore } from '../../store/app-store'
 import { ResizableChatInput } from './ResizableChatInput'
 import { ComposerActionsMenu } from './ComposerActionsMenu'
 import { useEmergencyStop } from '../../hooks/useEmergencyStop'
 import { CapabilityPopover } from '../CapabilityPopover'
+import type { ComposerMarkdownViewMode } from '../../store/types'
+import { RichTextComposerInput, type RichTextComposerHandle } from './RichTextComposerInput'
 
 
 interface ChatComposerProps {
   input: string
   inputRef: RefObject<HTMLTextAreaElement | null>
+  /** Receives a focuser for whichever composer surface the current mode renders. */
+  composerFocusRef?: MutableRefObject<(() => void) | null>
   messages: ChatMessage[]
   activeAgent: AgentConfig | null
   authenticated: boolean
@@ -57,7 +61,8 @@ interface ChatComposerProps {
   atOptions: AtContextOption[]
   modelPickerRef: RefObject<HTMLButtonElement | null>
   onInputChange: (event: ChangeEvent<HTMLTextAreaElement>) => void
-  onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void
+  onInputValueChange: (value: string) => void
+  onKeyDown: (event: ComposerKeyEvent) => void
   onPaste: (event: ClipboardEvent<HTMLTextAreaElement>) => void | Promise<void>
   onAttachFiles: () => void | Promise<void>
   onAttachFolder: () => void | Promise<void>
@@ -88,6 +93,8 @@ interface ChatComposerProps {
   hermesProfiles?: HermesProfileInfo[]
   onSetHermesProfile?: (profile: string) => void
   isEditingMessage: boolean
+  composerMarkdownViewMode: ComposerMarkdownViewMode
+  onComposerMarkdownViewModeChange: (mode: ComposerMarkdownViewMode) => void
   onCancelEdit: () => void
   onStop: () => void | Promise<void>
   onSend: () => void | Promise<void>
@@ -114,6 +121,7 @@ interface ChatComposerProps {
 export function ChatComposer({
   input,
   inputRef,
+  composerFocusRef,
   messages,
   activeAgent,
   authenticated,
@@ -147,6 +155,7 @@ export function ChatComposer({
   atOptions,
   modelPickerRef,
   onInputChange,
+  onInputValueChange,
   onKeyDown,
   onPaste,
   onAttachFiles,
@@ -178,6 +187,8 @@ export function ChatComposer({
   hermesProfiles = [],
   onSetHermesProfile,
   isEditingMessage,
+  composerMarkdownViewMode,
+  onComposerMarkdownViewModeChange,
   onCancelEdit,
   onStop,
   onSend,
@@ -195,10 +206,43 @@ export function ChatComposer({
 }: ChatComposerProps) {
   const emergencyStop = useEmergencyStop()
   const [showModePicker, setShowModePicker] = useState(false)
+  const richTextRef = useRef<RichTextComposerHandle>(null)
   const catalogModels = useAppStore((state) => state.catalogModels)
   const globalDefaultModel = useAppStore((state) => state.globalDefaultModel)
   const agentBackend = activeAgent?.backend
   const isCliLocked = lockModelToAgentBackend && (agentBackend === 'claude-cli' || agentBackend === 'codex-cli' || agentBackend === 'hermes-cli')
+  // Editing always needs a textarea. Keep the stored preference intact so leaving edit mode
+  // restores the user's chosen presentation.
+  const effectiveComposerMarkdownViewMode = isEditingMessage ? 'raw' : composerMarkdownViewMode
+  const isRenderedPreview = effectiveComposerMarkdownViewMode === 'rendered'
+  const composerInputDisabled = emergencyStop.active || !isOnline || !authenticated || rateLimitRemainingSec > 0
+
+  const composerPlaceholder =
+    emergencyStop.active ? 'Emergency stop active — resume conversations from the sidebar'
+    : !authenticated ? 'Sign in to start chatting'
+    : !isOnline ? 'Offline — reconnect to send messages'
+    : isRenderedPreview ? 'Type or paste formatted text…'
+    : 'Type a message... (paste images with Ctrl+V)'
+
+  const focusActiveSurface = () => {
+    if (isRenderedPreview) richTextRef.current?.focus()
+    else inputRef.current?.focus()
+  }
+
+  useEffect(() => {
+    if (!composerFocusRef) return
+    composerFocusRef.current = focusActiveSurface
+    return () => { composerFocusRef.current = null }
+  }, [composerFocusRef, inputRef, isRenderedPreview])
+
+  const setComposerMarkdownViewMode = (mode: ComposerMarkdownViewMode) => {
+    onComposerMarkdownViewModeChange(mode)
+    // Whichever surface mounts in place of the other needs the caret.
+    setTimeout(() => {
+      if (mode === 'rendered') richTextRef.current?.focus()
+      else inputRef.current?.focus()
+    }, 0)
+  }
 
   return (
     <div className="border-t-2 border-nexy-border bg-nexy-surface relative">
@@ -252,7 +296,7 @@ export function ChatComposer({
             filter={slashFilter}
             selectedIndex={selectedSlashIndex}
             commands={slashCommands}
-            onSelect={onSelectSlashCommand}
+            onSelect={(command) => { onSelectSlashCommand(command); focusActiveSurface() }}
             onClose={onCloseSlashMenu}
           />
 
@@ -261,7 +305,7 @@ export function ChatComposer({
             filter={atFilter}
             selectedIndex={selectedAtIndex}
             options={atOptions}
-            onSelect={onSelectAtOption}
+            onSelect={(option) => { onSelectAtOption(option); focusActiveSurface() }}
             onClose={onCloseAtMenu}
           />
 
@@ -271,16 +315,19 @@ export function ChatComposer({
             onChange={onInputChange}
             onKeyDown={onKeyDown}
             onPaste={onPaste}
-            placeholder={
-              emergencyStop.active
-                ? 'Emergency stop active — resume conversations from the sidebar'
-                : !authenticated
-                ? 'Sign in to start chatting'
-                : isOnline
-                  ? 'Type a message... (paste images with Ctrl+V)'
-                  : 'Offline — reconnect to send messages'
-            }
-            disabled={emergencyStop.active || !isOnline || !authenticated || rateLimitRemainingSec > 0}
+            editor={isRenderedPreview ? (
+              <RichTextComposerInput
+                ref={richTextRef}
+                value={input}
+                onValueChange={onInputValueChange}
+                onKeyDown={onKeyDown}
+                disabled={composerInputDisabled}
+                aria-label="Message input"
+                placeholder={composerPlaceholder}
+              />
+            ) : undefined}
+            placeholder={composerPlaceholder}
+            disabled={composerInputDisabled}
             aria-label="Message input"
             aria-expanded={showSlashMenu || showAtMenu || undefined}
             aria-controls={showSlashMenu ? 'slash-command-menu' : showAtMenu ? 'at-context-menu' : undefined}
@@ -290,16 +337,33 @@ export function ChatComposer({
               undefined
             }
             leftActions={
-              <ComposerActionsMenu
-                disabled={isGenerating}
-                showContextInspector={showContextInspector}
-                onAttachFiles={onAttachFiles}
-                onAttachFolder={onAttachFolder}
-                onPasteClipboardImage={onPasteClipboardImage}
-                onOpenPromptLibrary={onOpenPromptLibrary}
-                onAttachArtifact={onAttachArtifact}
-                onToggleContextInspector={onToggleContextInspector}
-              />
+              <>
+                <ComposerActionsMenu
+                  disabled={isGenerating}
+                  showContextInspector={showContextInspector}
+                  onAttachFiles={onAttachFiles}
+                  onAttachFolder={onAttachFolder}
+                  onPasteClipboardImage={onPasteClipboardImage}
+                  onOpenPromptLibrary={onOpenPromptLibrary}
+                  onAttachArtifact={onAttachArtifact}
+                  onToggleContextInspector={onToggleContextInspector}
+                />
+                <div className="ml-1 inline-flex rounded-nexy-sm border border-nexy-border bg-nexy-recessed p-0.5" role="group" aria-label="Chat input display mode">
+                  {(['raw', 'rendered'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      disabled={isEditingMessage}
+                      aria-pressed={effectiveComposerMarkdownViewMode === mode}
+                      title={mode === 'raw' ? 'Raw Markdown — type and edit source' : 'Rendered editor — type or paste formatted content'}
+                      onClick={() => setComposerMarkdownViewMode(mode)}
+                      className={`rounded px-1.5 py-0.5 text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${effectiveComposerMarkdownViewMode === mode ? 'bg-nexy-accent text-nexy-on-accent' : 'text-nexy-muted hover:text-nexy-text'}`}
+                    >
+                      {mode === 'raw' ? 'Raw' : 'Rendered'}
+                    </button>
+                  ))}
+                </div>
+              </>
             }
             rightActions={
               <>

@@ -318,6 +318,45 @@ body {
   cursor: default;
 }
 
+/* Rendered (WYSIWYG) chat composer. The caret must read as an editable surface,
+ * which is the whole point of this mode over the previous read-only preview. */
+.chat-rich-input {
+  caret-color: var(--nexy-accent, currentColor);
+  cursor: text;
+}
+
+.chat-rich-input > :first-child {
+  margin-top: 0;
+}
+
+.chat-rich-input > :last-child {
+  margin-bottom: 0;
+}
+
+/* Tiptap's Placeholder extension marks the first empty block. */
+.chat-rich-input p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: var(--nexy-muted, #9ca3af);
+}
+
+.chat-rich-input ul[data-type='taskList'] {
+  list-style: none;
+  padding-left: 0;
+}
+
+.chat-rich-input ul[data-type='taskList'] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.375rem;
+}
+
+.chat-rich-input ul[data-type='taskList'] li > div {
+  flex: 1 1 auto;
+}
+
 /* Nexy intentionally uses no visual motion. This is unconditional so component-level
  * utility classes and third-party widgets cannot reintroduce animation or smooth scroll. */
 *,
