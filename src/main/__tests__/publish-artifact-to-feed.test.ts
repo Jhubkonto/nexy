@@ -39,11 +39,12 @@ vi.mock('../ws-server', () => ({
   setWakelockEnabled: vi.fn(),
 }))
 
-const { spawnMockFn, execFileMockFn } = vi.hoisted(() => ({
+const { spawnMockFn, execFileMockFn, execMockFn } = vi.hoisted(() => ({
   spawnMockFn: vi.fn(),
   execFileMockFn: vi.fn(),
+  execMockFn: vi.fn(),
 }))
-vi.mock('child_process', () => ({ spawn: spawnMockFn, execFile: execFileMockFn }))
+vi.mock('child_process', () => ({ spawn: spawnMockFn, execFile: execFileMockFn, exec: execMockFn }))
 
 // ---------------------------------------------------------------------------
 // fs mocks — so we can control existsSync / readdirSync / statSync / readFile

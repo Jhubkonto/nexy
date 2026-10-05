@@ -49,4 +49,31 @@ describe('ResizableChatInput', () => {
 
     expect(textarea.style.height).toBe('120px')
   })
+
+  it('renders the editor slot in place of the textarea while retaining action slots', () => {
+    const inputRef = { current: null }
+    render(
+      <ResizableChatInput
+        inputRef={inputRef}
+        value="**draft**"
+        editor={<div data-testid="rich-editor">Rendered draft</div>}
+        onChange={() => {}}
+        leftActions={<button type="button">Attach</button>}
+        rightActions={<button type="button">Send</button>}
+      />,
+    )
+
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.queryByTestId('resize-handle')).toBeNull()
+    expect(screen.getByTestId('rich-editor')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Attach' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Send' })).toBeTruthy()
+  })
+
+  it('keeps the textarea surface for callers that pass no editor slot', () => {
+    render(<TestInput value="plain draft" />)
+
+    expect(screen.getByRole('textbox', { name: 'Test message' })).toHaveValue('plain draft')
+    expect(screen.getByTestId('resize-handle')).toBeTruthy()
+  })
 })

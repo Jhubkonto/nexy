@@ -27,6 +27,20 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/**
+ * Process teardown here is inherently asynchronous (on Windows `killTree` shells out to
+ * `taskkill`), so a fixed sleep turns into a load-dependent flake on a busy machine. Poll the
+ * condition up to a generous deadline instead.
+ */
+async function waitUntil(predicate: () => boolean, timeoutMs = 8_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return true
+    await wait(50)
+  }
+  return predicate()
+}
+
 afterEach(() => {
   for (const bridge of bridges.splice(0)) bridge.close()
   state.created.length = 0
@@ -87,7 +101,7 @@ describe('nexy_defer MCP bridge', () => {
       }),
     )
 
-    await wait(400)
+    await waitUntil(() => vi.mocked(resolveDeferredCallback).mock.calls.length > 0)
     expect(resolveDeferredCallback).toHaveBeenCalledWith(
       'process',
       expect.any(String),
@@ -100,7 +114,7 @@ describe('nexy_defer MCP bridge', () => {
     bridges.push(bridge)
 
     await post(bridge, '/call', { toolName: 'run_and_notify', args: { command: 'exit 3', label: 'bad job' } })
-    await wait(400)
+    await waitUntil(() => vi.mocked(resolveDeferredCallback).mock.calls.length > 0)
 
     expect(resolveDeferredCallback).toHaveBeenCalledWith(
       'process',
@@ -127,17 +141,17 @@ describe('nexy_defer MCP bridge', () => {
     // A rejected binding must not leave the process running unsupervised — nothing would ever
     // hear it finish. Confirm it actually died rather than just checking the HTTP response shape.
     expect(capturedPid).toBeGreaterThan(0)
-    await wait(500)
-    const stillAlive = (() => {
+    const isAlive = () => {
       try {
         process.kill(capturedPid!, 0)
         return true
       } catch {
         return false
       }
-    })()
-    expect(stillAlive).toBe(false)
-  })
+    }
+    await waitUntil(() => !isAlive())
+    expect(isAlive()).toBe(false)
+  }, 15_000)
 
   it('kills the process and reports a timeout when timeoutMs elapses', async () => {
     const bridge = await startDeferMcpBridge({ conversationId: 'conv-1', cwd: process.cwd() })
@@ -147,12 +161,12 @@ describe('nexy_defer MCP bridge', () => {
       toolName: 'run_and_notify',
       args: { command: SLEEP_30, label: 'slow job', timeoutMs: 200 },
     })
-    await wait(800)
+    await waitUntil(() => vi.mocked(resolveDeferredCallback).mock.calls.length > 0)
 
     expect(resolveDeferredCallback).toHaveBeenCalledWith(
       'process',
       expect.any(String),
       expect.objectContaining({ status: 'timeout' }),
     )
-  }, 10_000)
+  }, 15_000)
 })

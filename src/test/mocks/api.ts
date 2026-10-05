@@ -434,6 +434,15 @@ export function createMockApi() {
     }),
     deleteWikiEntry: vi.fn().mockResolvedValue(true),
     extractWikiLearnings: vi.fn().mockResolvedValue({ candidates: [] }),
+    startDevelopmentMcp: vi.fn().mockResolvedValue({
+      url: 'http://127.0.0.1:12345',
+      token: 'test-token',
+      command: 'node',
+      args: ['bridge.cjs'],
+      env: {},
+    }),
+    stopDevelopmentMcp: vi.fn().mockResolvedValue(true),
+    getDevelopmentMcpStatus: vi.fn().mockResolvedValue({ workspacePath: null, running: false, url: null, stdio: null }),
     onTeamActivity: vi.fn().mockReturnValue(() => {}),
     onTeamStepStream: vi.fn().mockReturnValue(() => {}),
     onWikiInjected: vi.fn().mockReturnValue(() => {}),
@@ -469,6 +478,10 @@ export function createMockApi() {
     buildLaunchDev: vi.fn().mockResolvedValue({ launched: true }),
     onBuildLogChunk: vi.fn().mockReturnValue(() => {}),
     onBuildCommandDone: vi.fn().mockReturnValue(() => {}),
+    selfTestList: vi.fn().mockResolvedValue([]),
+    selfTestGet: vi.fn().mockResolvedValue(null),
+    selfTestCancel: vi.fn().mockResolvedValue({ cancelled: true }),
+    selfTestRerun: vi.fn().mockResolvedValue({ runId: 'rerun-1', status: 'running', startedAt: Date.now() }),
 
     // Window controls
     minimizeWindow: vi.fn().mockResolvedValue(undefined),

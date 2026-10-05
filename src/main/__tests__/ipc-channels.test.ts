@@ -132,9 +132,9 @@ const ALL_CHANNELS = [
   'wiki:delete-entry',
   'wiki:list-entries',
   'wiki:update-entry',
-  'wiki:mcp-start',
-  'wiki:mcp-stop',
-  'wiki:mcp-status'
+  'development:mcp-start',
+  'development:mcp-stop',
+  'development:mcp-status'
 ] as const satisfies readonly IpcChannels[]
 
 describe('IpcChannels', () => {

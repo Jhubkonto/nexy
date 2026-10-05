@@ -30,6 +30,10 @@ describe('debounced conversation search', () => {
     return useConversationPagination({ type: 'all' }, debouncedQuery)
   }
 
+  function useProjectHistory(freshnessKey: string) {
+    return useConversationPagination({ type: 'project', id: 'project-1' }, '', freshnessKey)
+  }
+
   it('turns a burst of keystrokes into one replacement request', async () => {
     const { rerender } = renderHook(
       ({ query }) => useSearch(query),
@@ -69,6 +73,23 @@ describe('debounced conversation search', () => {
 
     expect(api.listConversationPage).toHaveBeenLastCalledWith(
       expect.objectContaining({ query: undefined }),
+    )
+  })
+
+  it('replaces an already-loaded project page when its active chat is added to the shared cache', async () => {
+    const { rerender } = renderHook(
+      ({ freshnessKey }) => useProjectHistory(freshnessKey),
+      { initialProps: { freshnessKey: '' } },
+    )
+    await act(async () => { await Promise.resolve() })
+    expect(api.listConversationPage).toHaveBeenCalledTimes(1)
+
+    rerender({ freshnessKey: 'new-chat:123456' })
+    await act(async () => { await Promise.resolve() })
+
+    expect(api.listConversationPage).toHaveBeenCalledTimes(2)
+    expect(api.listConversationPage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ scope: { type: 'project', id: 'project-1' }, cursor: null }),
     )
   })
 

@@ -76,9 +76,9 @@ describe('build-runner deferred-callback wiring', () => {
     expect(typeof result.detail).toBe('string')
   })
 
-  it('resolves the callback on cancellation so the conversation is not left armed forever', () => {
+  it('resolves the callback on cancellation so the conversation is not left armed forever', async () => {
     seedBuild('build-cancel')
-    runBuildProcess({
+    const child = runBuildProcess({
       db,
       buildId: 'build-cancel',
       spawnCmd: process.platform === 'win32' ? 'timeout /t 30' : 'sleep 30',
@@ -96,6 +96,17 @@ describe('build-runner deferred-callback wiring', () => {
       'build-cancel',
       expect.objectContaining({ status: 'cancelled' }),
     )
+
+    // The killed shell still emits 'close' asynchronously, and the runner's close handler queries
+    // the database. Let that settle inside the test, otherwise it runs after afterEach() has closed
+    // the connection and surfaces as an unhandled rejection from the sqlite layer.
+    await new Promise<void>((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        setTimeout(resolve, 50)
+        return
+      }
+      child.on('close', () => setTimeout(resolve, 50))
+    })
   })
 
   it('does not fail the build when the deferred resolver throws', async () => {

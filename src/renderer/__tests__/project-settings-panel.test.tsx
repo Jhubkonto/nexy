@@ -70,7 +70,7 @@ describe('ProjectSettingsPanel — tabs', () => {
     expect(tab).toBeInTheDocument()
 
     await user.click(tab)
-    expect(await screen.findByText(/Skills and MCP servers every chat in this project inherits/)).toBeInTheDocument()
+    expect(await screen.findByText(/Set the tools every chat may use in this project/)).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Changes' })).not.toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Code Changes' })).not.toBeInTheDocument()
   })
@@ -141,7 +141,7 @@ describe('ProjectSettingsPanel — tabs', () => {
     await user.click(screen.getByRole('button', { name: /conversation model/i }))
     await user.click(await screen.findByRole('button', { name: /gpt-5 mini/i }))
 
-    expect(mockStore.setProjectDefaultModel).toHaveBeenCalledWith('proj-1', 'gpt-5-mini')
+    expect(mockStore.setProjectDefaultModel).toHaveBeenCalledWith('proj-1', 'gpt-5-mini', undefined)
   })
 
   it('persists the project default thinking effort', async () => {

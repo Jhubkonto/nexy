@@ -458,7 +458,7 @@ describe("ChatWindow — Streaming", () => {
 
     await user.click(screen.getByRole("button", { name: /conversation model/i }));
     await user.click(await screen.findByText("GPT-5 mini"));
-    expect(mockApi.setConversationModel).toHaveBeenCalledWith("conv-1", "gpt-5-mini");
+    expect(mockApi.setConversationModel).toHaveBeenCalledWith("conv-1", "gpt-5-mini", null, null);
 
     await act(async () => {
       resolveActiveTurn({
@@ -1488,7 +1488,7 @@ describe("ChatWindow — Model Dropdown (O.2)", () => {
     await user.click(screen.getByRole("button", { name: /conversation model/i }));
     await user.click(await screen.findByText("GPT-5.5"));
 
-    expect(mockApi.setConversationModel).toHaveBeenCalledWith("conv-1", "gpt-5.5", "codex-cli");
+    expect(mockApi.setConversationModel).toHaveBeenCalledWith("conv-1", "gpt-5.5", "codex-cli", null);
     expect(mockApi.updateAgent).not.toHaveBeenCalled();
   });
 
