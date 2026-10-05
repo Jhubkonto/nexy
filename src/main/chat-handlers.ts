@@ -40,7 +40,7 @@ import { applyRollingContextCompression } from './context-compression'
 import { getAgentConfig } from './agents'
 import { isFullAutoApprove } from './agentic-policy'
 import { buildChatContext, buildStoredAttachments } from './chat-context-builder'
-import { parseProjectConfig } from './project-handlers'
+import { parseProjectConfig, getProjectRootDirectory } from './project-handlers'
 import { getWorkingDirectory } from './file-handlers'
 import { inferProjectAuditTarget, recordProjectAuditChange } from './project-audit'
 import { computeLineDiff } from './diff-utils'
@@ -60,6 +60,7 @@ import { isLegacyPortableOperationalSummary } from '../shared/conversation-porta
 import type { Citation } from '../shared/citations'
 import { mergeCitations } from '../shared/citations'
 import { TurnUsageAccumulator, type TokenCount } from '../shared/token-usage'
+import { callIsolatedRuntimeTool, callRuntimeControlTool, getIsolatedRuntime, getIsolatedRuntimeToolDefinitions } from './isolated-runtime'
 
 export { clearDirListingCache } from './chat-context-builder'
 
@@ -2041,13 +2042,39 @@ export async function dispatchChatSend(
       },
     },
   }
-  toolDefs.push(...wikiToolDefs, ...fileToolDefs, ...skillToolDefs, ...planToolDefs, userInputToolDef)
+  const runtimeCapabilityProfile = effectiveProjectId ? getEffectiveCapabilityProfile(db, conversationId) : null
+  const isolatedRuntimeEnabled = Boolean(effectiveProjectId && effectivePermissionMode !== 'plan' && runtimeCapabilityProfile && isBuiltInToolAllowed(runtimeCapabilityProfile, 'terminal'))
+  const isolatedRuntimeStatus = effectiveProjectId ? getIsolatedRuntime(effectiveProjectId) : null
+  const isolatedRuntimeTools = isolatedRuntimeEnabled
+    ? getIsolatedRuntimeToolDefinitions().filter((tool) => tool.pack === 'build' || isolatedRuntimeStatus?.running === true)
+    : []
+  const isolatedRuntimeToolDefs = isolatedRuntimeTools.map((tool) => ({
+    type: 'function' as const,
+    function: { name: tool.name, description: tool.description, parameters: tool.inputSchema as Record<string, unknown> },
+  }))
+  toolDefs.push(...wikiToolDefs, ...fileToolDefs, ...skillToolDefs, ...planToolDefs, ...isolatedRuntimeToolDefs, userInputToolDef)
   sendContextProgress(
     estimateInputTokens(chatMessages) + estimateInputTokens(toolDefs),
     'Context ready',
   )
 
   const inlineHandlers = new Map([...wikiInlineHandlers, ...fileInlineHandlers, ...skillInlineHandlers, ...planInlineHandlers])
+  for (const tool of isolatedRuntimeTools) {
+    inlineHandlers.set(tool.name, async (args) => {
+      if (tool.mutating && window?.webContents) {
+        const approved = await requestApproval(window.webContents, tool.name, args, tool.description, { noRemember: true, conversationId })
+        if (!approved) return { success: false, error: 'User declined the isolated runtime operation' }
+      }
+      try {
+        const result = tool.pack === 'build'
+          ? await callRuntimeControlTool(effectiveProjectId!, getProjectRootDirectory(effectiveProjectId!) || projectConfig?.rootDirectory || injectedRootDirectory || getWorkingDirectory(), tool.name)
+          : await callIsolatedRuntimeTool(effectiveProjectId!, tool.name, args)
+        return { success: true, result: JSON.stringify(result) }
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    })
+  }
   inlineHandlers.set('nexy_ask_user', async (args) => {
     const questions = userInputQuestionsFromArgs(args)
     if (questions.length === 0) return { success: false, error: 'At least one valid question is required.' }

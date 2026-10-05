@@ -105,6 +105,7 @@ export async function getWorkspaceInfo(db: Database.Database): Promise<Workspace
     version: null,
     isGitRepo: false,
     hasPackageJson: false,
+    isNexyWorkspace: false,
   }
 
   try {
@@ -126,8 +127,9 @@ export async function getWorkspaceInfo(db: Database.Database): Promise<Workspace
     const pkgPath = path.join(workspacePath, 'package.json')
     if (existsSync(pkgPath)) {
       info.hasPackageJson = true
-      const pkg = JSON.parse(await readFile(pkgPath, 'utf8')) as { version?: string }
+      const pkg = JSON.parse(await readFile(pkgPath, 'utf8')) as { version?: string; name?: string }
       info.version = pkg.version ?? null
+      info.isNexyWorkspace = pkg.name === 'nexy'
     }
   } catch {
     // ignore
@@ -368,6 +370,9 @@ export function registerBuildHandlers(mainWindow?: BrowserWindow): void {
   })
 
   safeHandle('build:set-workspace-path', async (_event, workspacePath: string) => {
+    // A copied MCP setup is tied to one checkout; never let it survive a path change.
+    const { stopDevelopmentMcpBridge } = await import('./development-mcp')
+    await stopDevelopmentMcpBridge()
     db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('build_workspace_path', ?)").run(workspacePath)
     return getWorkspaceInfo(db)
   })
@@ -486,11 +491,13 @@ export function registerBuildHandlers(mainWindow?: BrowserWindow): void {
     }
     const workspacePath = getWorkspacePath(db)
     try {
+      const isolatedUserData = path.join(app.getPath('temp'), `nexy-dev-launch-${randomUUID()}`)
+      mkdirSync(isolatedUserData, { recursive: true })
       const child = spawn(process.execPath, ['.'], {
         cwd: workspacePath,
         detached: true,
         stdio: 'ignore',
-        env: { ...process.env, ELECTRON_IS_DEV: '1' },
+        env: { ...process.env, ELECTRON_IS_DEV: '1', NEXY_ISOLATED_USER_DATA: isolatedUserData },
       })
       child.unref()
       return { launched: true }

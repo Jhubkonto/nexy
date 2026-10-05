@@ -2003,6 +2003,41 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       addColumn('conversations', 'conversation_hermes_profile')
     },
   },
+  {
+    version: 99,
+    sql: `
+      CREATE TABLE IF NOT EXISTS test_runs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        status TEXT NOT NULL,
+        goal TEXT NOT NULL,
+        plan_json TEXT NOT NULL,
+        revision_json TEXT,
+        process_json TEXT,
+        artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+        artifact_version_id TEXT REFERENCES artifact_versions(id) ON DELETE SET NULL,
+        error_message TEXT,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_test_runs_project_started
+        ON test_runs(project_id, started_at DESC);
+    `,
+  },
+  {
+    version: 100,
+    sql: `
+      ALTER TABLE test_runs ADD COLUMN result_json TEXT;
+    `,
+  },
+  {
+    version: 101,
+    sql: `
+      ALTER TABLE test_runs ADD COLUMN conversation_id TEXT;
+      CREATE INDEX IF NOT EXISTS idx_test_runs_conversation_started
+        ON test_runs(conversation_id, started_at DESC);
+    `,
+  },
 ];
 
 

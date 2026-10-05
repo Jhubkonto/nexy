@@ -18,7 +18,7 @@ import { registerCredentialVaultHandlers } from './credential-vault'
 import { registerScreenCaptureHandlers } from './screen-capture-handlers'
 import { registerModelCatalogHandlers } from './model-catalog-handlers'
 import { registerWikiHandlers } from './wiki-handlers'
-import { registerProjectWikiMcpHandlers } from './project-wiki-mcp'
+import { registerDevelopmentMcpHandlers } from './development-mcp'
 import { registerPromptHandlers } from './prompt-handlers'
 import { registerCliHandlers } from './cli-detection'
 import { registerWsHandlers } from './ws-handlers'
@@ -52,7 +52,7 @@ export function registerIpcHandlers(mainWindow?: BrowserWindow): void {
   registerProjectHandlers()
   registerProjectAgentHandlers()
   registerWikiHandlers()
-  registerProjectWikiMcpHandlers()
+  registerDevelopmentMcpHandlers()
   registerPromptHandlers()
   registerConversationHandlers()
   registerCapabilityHandlers()

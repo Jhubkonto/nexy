@@ -20,7 +20,9 @@ export function getDatabase(): Database.Database {
 
   const dbPath = join(dbDir, "nexy.db");
 
-  if (!existsSync(dbPath)) {
+  // An isolated runtime profile must start empty. Never migrate the user's database into it:
+  // that could copy or rename the user's production profile into the child instance.
+  if (!existsSync(dbPath) && !process.env.NEXY_ISOLATED_USER_DATA) {
     // 1. Same directory, old filename (rename only, no userData change)
     const sameDirLegacy = join(dbDir, "copilot-hub.db");
     // 2. Old userData directory (app was renamed — Electron switches %AppData% folder)

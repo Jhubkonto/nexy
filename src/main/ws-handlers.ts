@@ -126,7 +126,6 @@ import { getActivitySnapshot, endActivity } from './activity-tracker'
 import { clearUnseenDestination, getNewContentConversations, markAllConversationsRead } from './activity-badge'
 import { getMcpServersForCompanion, getMcpServerStatus, addMcpServer, updateMcpServer, removeMcpServer, restartMcpServer, listMcpTools, listMcpToolsForAgent, testMcpServer } from './mcp'
 import { searchMcpRegistry } from './mcp-registry'
-import { getProjectWikiMcpStatus, startProjectWikiMcpBridge, stopProjectWikiMcpBridge } from './project-wiki-mcp'
 import { MCP_CATALOG } from '../shared/mcp-catalog'
 import { normalizeMcpSandboxProfile } from '../shared/mcp-sandbox'
 import {
@@ -2215,47 +2214,6 @@ export function registerWsHandlers(): void {
       void testMcpServer({ command: command2, args, env: {}, cwd, imageResponses, sandboxProfile }).then((result) => {
         reply({ event: 'mcp:test-result', data: result })
       })
-      return
-    }
-
-    // The project-wiki MCP bridge runs in the desktop process because it owns the
-    // project database and the approval UI. Android can control that bridge over
-    // the authenticated companion connection without receiving direct database
-    // access or pretending that the bridge is an ordinary global MCP server.
-    if (command === 'wiki:mcp-status') {
-      const projectId = typeof data.projectId === 'string' ? data.projectId : ''
-      if (!projectId) return
-      reply({ event: 'wiki:mcp-status', data: getProjectWikiMcpStatus(projectId) })
-      return
-    }
-
-    if (command === 'wiki:mcp-start') {
-      const projectId = typeof data.projectId === 'string' ? data.projectId : ''
-      const win = BrowserWindow.getAllWindows()[0]
-      if (!projectId || !win || win.isDestroyed()) {
-        reply({ event: 'wiki:mcp-error', data: { projectId, message: 'Nexy desktop is not ready to host the project wiki bridge.' } })
-        return
-      }
-      void startProjectWikiMcpBridge(projectId, win.webContents)
-        .then((connection) => reply({
-          event: 'wiki:mcp-status',
-          data: {
-            projectId: connection.projectId,
-            running: true,
-            url: connection.url,
-            stdio: { command: connection.command, args: connection.args, env: connection.env },
-          },
-        }))
-        .catch((error) => reply({ event: 'wiki:mcp-error', data: { projectId, message: error instanceof Error ? error.message : String(error) } }))
-      return
-    }
-
-    if (command === 'wiki:mcp-stop') {
-      const projectId = typeof data.projectId === 'string' ? data.projectId : ''
-      if (!projectId) return
-      void stopProjectWikiMcpBridge(projectId)
-        .then(() => reply({ event: 'wiki:mcp-status', data: getProjectWikiMcpStatus(projectId) }))
-        .catch((error) => reply({ event: 'wiki:mcp-error', data: { projectId, message: error instanceof Error ? error.message : String(error) } }))
       return
     }
 
