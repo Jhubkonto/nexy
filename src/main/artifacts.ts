@@ -210,6 +210,72 @@ export function getStorageRoot(): string {
   return row?.value ?? path.join(app.getPath('userData'), 'artifacts')
 }
 
+export interface ProjectArtifactFileInput {
+  relativePath: string
+  sourcePath: string
+  mediaType: string
+  role?: string
+}
+
+/** Creates a project artifact without inventing a conversation or chat message. */
+export function createProjectArtifact(input: {
+  projectId: string
+  title: string
+  kind: ArtifactKind
+  description: string
+  files: ProjectArtifactFileInput[]
+  manifest?: Record<string, unknown>
+  notes?: string
+}): { artifactId: string; versionId: string; title: string } {
+  if (!input.files.length) throw new Error('A project artifact must contain at least one file')
+  const db = getDatabase()
+  const artifactId = randomUUID()
+  const versionId = randomUUID()
+  const now = Date.now()
+  const storageRoot = getStorageRoot()
+  const versionDir = path.join(storageRoot, 'projects', input.projectId, `${slugify(input.title)}-${artifactId.slice(0, 8)}`, 'v1')
+  const copied = input.files.map((file, index) => {
+    const relativePath = sanitizeRelativeArtifactPath(file.relativePath)
+    const source = statSync(file.sourcePath)
+    if (!source.isFile()) throw new Error(`Artifact source is not a file: ${file.sourcePath}`)
+    if (source.size > 25 * 1024 * 1024) throw new Error(`Artifact file exceeds 25 MB: ${relativePath}`)
+    const destination = path.join(versionDir, ...relativePath.split('/'))
+    mkdirSync(path.dirname(destination), { recursive: true })
+    copyFileSync(file.sourcePath, destination)
+    return {
+      relativePath,
+      absolutePath: destination,
+      mediaType: file.mediaType,
+      role: file.role ?? (index === 0 ? 'primary' : 'supporting'),
+      sizeBytes: source.size,
+      checksum: createHash('sha256').update(readFileSync(destination)).digest('hex'),
+    }
+  })
+  const manifestJson = JSON.stringify({
+    artifactId, versionId, version: 1, title: input.title, kind: input.kind, createdAt: now,
+    ...(input.manifest ?? {}),
+    files: copied.map(({ relativePath, mediaType, role, sizeBytes, checksum }) => ({ relativePath, mediaType, role, sizeBytes, checksum })),
+  })
+  db.transaction(() => {
+    db.prepare(
+      `INSERT INTO artifacts (id, project_id, title, kind, description, storage_root, current_version_id, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)`,
+    ).run(artifactId, input.projectId, input.title, input.kind, input.description, storageRoot, versionId, now, now)
+    db.prepare(
+      `INSERT INTO artifact_versions (id, artifact_id, version_number, title, notes, spec_json, manifest_json, source_conversation_id, source_message_id, created_at)
+       VALUES (?, ?, 1, ?, ?, NULL, ?, NULL, NULL, ?)`,
+    ).run(versionId, artifactId, input.title, input.notes ?? null, manifestJson, now)
+    const insertFile = db.prepare(
+      `INSERT INTO artifact_files (id, version_id, relative_path, absolute_path, media_type, role, size_bytes, checksum)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    copied.forEach((file) => insertFile.run(randomUUID(), versionId, file.relativePath, file.absolutePath, file.mediaType, file.role, file.sizeBytes, file.checksum))
+  })()
+  broadcastArtifactUpdated(artifactId, input.projectId)
+  broadcastToMobile({ event: 'artifact:updated', data: { artifactId, projectId: input.projectId } })
+  return { artifactId, versionId, title: input.title }
+}
+
 function slugify(text: string): string {
   return text
     .toLowerCase()

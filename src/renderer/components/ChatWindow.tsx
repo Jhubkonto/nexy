@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle, ChevronDown, ChevronRight, Download, ListChecks, Loader2, Lock, MoreHorizontal, Pin, PinOff, Sparkles, Star, Upload, Users, X, Zap } from 'lucide-react'
 import { getModelLabel, modelIdSupportsTools } from '../../shared/models'
 import { isApiError, type AgentConfig, type ArtifactPromotionRequest, type AvailableModelEntry, type AvailableModelGroup, type CliBackend, type CliModeOverride, type CodexExecutionModeOverride, type ConversationExportPackFormat, type AutomatedWorkflowRunDetail, type AutomatedWorkflowRunStep, type HermesProfileInfo, type WikiCandidate } from '../../shared/types'
-import type { ContextRef, ToastType } from '../hooks/chat-types'
+import type { ComposerKeyEvent, ContextRef, ToastType } from '../hooks/chat-types'
 import { useAtMenu } from '../hooks/useAtMenu'
 import { useAutoScroll } from '../hooks/useAutoScroll'
 import { useChat } from '../hooks/useChat'
@@ -87,6 +87,8 @@ export function ChatWindow() {
   const theme = useAppStore((state) => state.theme)
   const markdownViewMode = useAppStore((state) => state.markdownViewMode)
   const setMarkdownViewMode = useAppStore((state) => state.setMarkdownViewMode)
+  const composerMarkdownViewMode = useAppStore((state) => state.composerMarkdownViewMode)
+  const setComposerMarkdownViewMode = useAppStore((state) => state.setComposerMarkdownViewMode)
   const skills = useAppStore((state) => state.skills)
   const conversationCreated = useAppStore((state) => state.conversationCreated)
   const loadConversations = useAppStore((state) => state.loadConversations)
@@ -202,10 +204,20 @@ export function ChatWindow() {
   const markConversationIncompleteFn = useAppStore((state) => state.markConversationIncomplete)
   const conversationRatings = useAppStore((state) => state.conversationRatings)
   const submitConversationRatingFn = useAppStore((state) => state.submitConversationRating)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  /** Set by the composer to focus whichever surface (textarea or rich-text editor) is active. */
+  const composerFocusRef = useRef<(() => void) | null>(null)
+  const focusComposer = useCallback(() => {
+    requestAnimationFrame(() => {
+      const focusActiveSurface = composerFocusRef.current
+      if (focusActiveSurface) focusActiveSurface()
+      else inputRef.current?.focus()
+    })
+  }, [])
   const handleVoiceText = useCallback((text: string) => {
     setInput((current) => appendTranscriptToDraft(current, text))
-    requestAnimationFrame(() => inputRef.current?.focus())
-  }, [])
+    focusComposer()
+  }, [focusComposer])
   const handleVoiceError = useCallback((message: string) => addToast(message, 'error'), [addToast])
   const {
     voiceState,
@@ -249,7 +261,6 @@ export function ChatWindow() {
   const pendingSourceMessageIdRef = useRef<string | null>(null)
   const prevGeneratingRef = useRef(false)
   const modelPickerRef = useRef<HTMLButtonElement>(null)
-  const inputRef = useRef<HTMLTextAreaElement>(null)
   const ensureConversationForCapability = useCallback(async () => {
     const created = await window.api.createConversation(activeAgentId ?? undefined, activeProjectId ?? undefined)
     if (!('error' in created)) {
@@ -265,10 +276,10 @@ export function ChatWindow() {
   }, [activeAgentId, activeProjectId, conversationCreated, addToast])
 
   useEffect(() => {
-    const focusComposer = () => requestAnimationFrame(() => inputRef.current?.focus())
-    window.addEventListener('nexy:focus-chat-composer', focusComposer)
-    return () => window.removeEventListener('nexy:focus-chat-composer', focusComposer)
-  }, [])
+    const handleFocusRequest = () => focusComposer()
+    window.addEventListener('nexy:focus-chat-composer', handleFocusRequest)
+    return () => window.removeEventListener('nexy:focus-chat-composer', handleFocusRequest)
+  }, [focusComposer])
 
   useEffect(() => {
     const navigateToMessage = (event: Event) => {
@@ -1298,7 +1309,7 @@ export function ChatWindow() {
   }, [])
 
   const handleKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    (event: ComposerKeyEvent) => {
       void actions.handleKeyDown(event, actions.handleSend)
     },
     [actions],
@@ -1306,8 +1317,8 @@ export function ChatWindow() {
 
   const handleInsertPrompt = useCallback((content: string) => {
     setInput((current) => current.trim() ? `${current.trimEnd()}\n\n${content}` : content)
-    requestAnimationFrame(() => inputRef.current?.focus())
-  }, [])
+    focusComposer()
+  }, [focusComposer])
 
   const handleRunPrompt = useCallback(async (content: string) => {
     setInput(content)
@@ -1449,6 +1460,7 @@ export function ChatWindow() {
     <ChatComposer
       input={input}
       inputRef={inputRef}
+      composerFocusRef={composerFocusRef}
       messages={chat.messages}
       activeAgent={chatAgent as AgentConfig | null}
       authenticated={isReady}
@@ -1482,6 +1494,7 @@ export function ChatWindow() {
       atOptions={actions.visibleAtOptions}
       modelPickerRef={modelPickerRef}
       onInputChange={(event) => actions.handleInputChange(event.target.value)}
+      onInputValueChange={actions.handleInputChange}
       onKeyDown={handleKeyDown}
       onPaste={fileInput.handlePaste}
       onAttachFiles={fileInput.handleFilePick}
@@ -1575,6 +1588,8 @@ export function ChatWindow() {
         }
       }}
       isEditingMessage={chat.isEditingMessage}
+      composerMarkdownViewMode={composerMarkdownViewMode}
+      onComposerMarkdownViewModeChange={setComposerMarkdownViewMode}
       onCancelEdit={handleCancelEdit}
       onStop={actions.handleStop}
       onSend={actions.handleSend}

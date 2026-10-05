@@ -19,21 +19,22 @@ function primaryMarkdownFile(artifact: ArtifactRow) {
 function MarkdownArtifactTab({ artifact }: { artifact: ArtifactRow }) {
   const [content, setContent] = useState<string | null | undefined>(undefined)
   const file = primaryMarkdownFile(artifact)
+  const filePath = file?.relativePath
 
   useEffect(() => {
     let cancelled = false
     setContent(undefined)
-    if (!artifact.currentVersionId || !file) {
+    if (!artifact.currentVersionId || !filePath) {
       setContent(null)
       return () => { cancelled = true }
     }
 
-    window.api.artifactGetFileContent(artifact.currentVersionId, file.relativePath)
+    window.api.artifactGetFileContent(artifact.currentVersionId, filePath)
       .then((result) => { if (!cancelled) setContent(result.content) })
       .catch(() => { if (!cancelled) setContent(null) })
 
     return () => { cancelled = true }
-  }, [artifact.currentVersionId, file?.relativePath])
+  }, [artifact.currentVersionId, filePath])
 
   return (
     <div className="h-full overflow-y-auto p-5">
@@ -44,6 +45,56 @@ function MarkdownArtifactTab({ artifact }: { artifact: ArtifactRow }) {
       ) : (
         <MarkdownRenderer content={content} />
       )}
+    </div>
+  )
+}
+
+function TestReportArtifactTab({ artifact }: { artifact: ArtifactRow }) {
+  const [report, setReport] = useState<Record<string, unknown> | null | undefined>(undefined)
+  const file = artifact.currentVersion?.files?.find((candidate) => candidate.relativePath === 'report.json')
+  const filePath = file?.relativePath
+
+  useEffect(() => {
+    let cancelled = false
+    setReport(undefined)
+    if (!artifact.currentVersionId || !filePath) {
+      setReport(null)
+      return () => { cancelled = true }
+    }
+    window.api.artifactGetFileContent(artifact.currentVersionId, filePath)
+      .then((result) => {
+        if (cancelled) return
+        try { setReport(JSON.parse(result.content) as Record<string, unknown>) } catch { setReport(null) }
+      })
+      .catch(() => { if (!cancelled) setReport(null) })
+    return () => { cancelled = true }
+  }, [artifact.currentVersionId, filePath])
+
+  if (report === undefined) return <p className="p-4 text-xs text-gray-400">Loading test report…</p>
+  if (!report) return <p className="p-4 text-xs text-gray-400">Test report data is unavailable.</p>
+  const status = typeof report.status === 'string' ? report.status : 'unknown'
+  const steps = Array.isArray(report.steps) ? report.steps.filter((step): step is Record<string, unknown> => Boolean(step && typeof step === 'object')) : []
+  const revision = report.revision && typeof report.revision === 'object' ? report.revision as Record<string, unknown> : null
+  return (
+    <div className="h-full overflow-y-auto p-4 space-y-4">
+      <div className="flex items-center gap-2">
+        <span className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase ${status === 'passed' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : status === 'running' ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>{status}</span>
+        <span className="text-[10px] text-gray-400">{typeof report.mode === 'string' ? report.mode : '—'}</span>
+      </div>
+      {typeof report.goal === 'string' && <p className="text-xs text-gray-700 dark:text-gray-300">{report.goal}</p>}
+      {typeof report.error === 'string' && <pre className="whitespace-pre-wrap rounded border border-red-200 bg-red-50 p-2 text-[11px] text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300">{report.error}</pre>}
+      {revision && <div className="text-[10px] text-gray-500 dark:text-gray-400"><span className="font-semibold">Revision:</span> {String(revision.commit ?? 'unknown')} · {String(revision.branch ?? 'unknown')}</div>}
+      <div>
+        <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400">Steps</p>
+        <div className="space-y-1">
+          {steps.length === 0 ? <p className="text-xs text-gray-400">No step results recorded.</p> : steps.map((step, index) => (
+            <div key={`${String(step.id ?? index)}-${index}`} className="rounded border border-gray-200 px-2 py-1.5 dark:border-gray-700">
+              <div className="flex items-center gap-2 text-[11px]"><span className={step.status === 'passed' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}>{String(step.status ?? 'unknown').toUpperCase()}</span><span className="font-mono text-gray-600 dark:text-gray-300">{String(step.id ?? `step-${index + 1}`)}</span></div>
+              {typeof step.detail === 'string' && <p className="mt-1 text-[10px] text-gray-500 dark:text-gray-400">{step.detail}</p>}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }
@@ -421,7 +472,7 @@ export function ArtifactPanel({ artifactId }: { artifactId: string }) {
     window.api.artifactGet(artifactId)
       .then((a) => {
         setArtifact(a)
-        setTab(a?.kind === 'plan' && primaryMarkdownFile(a) ? 'markdown' : 'details')
+        setTab(a && (a.kind === 'plan' || a.kind === 'test-report') && primaryMarkdownFile(a) ? 'markdown' : 'details')
       })
       .catch(() => addToast('Failed to load artifact', 'error'))
       .finally(() => setLoading(false))
@@ -505,7 +556,7 @@ export function ArtifactPanel({ artifactId }: { artifactId: string }) {
 
       {/* Tabs */}
       <div className="flex items-center gap-0 border-b border-gray-200 dark:border-gray-700 shrink-0 px-4">
-        {artifact?.kind === 'plan' && primaryMarkdownFile(artifact) && (
+        {(artifact?.kind === 'plan' || artifact?.kind === 'test-report') && primaryMarkdownFile(artifact) && (
           <button
             onClick={() => setTab('markdown')}
             className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
@@ -514,7 +565,7 @@ export function ArtifactPanel({ artifactId }: { artifactId: string }) {
                 : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
             }`}
           >
-            Markdown
+            {artifact.kind === 'test-report' ? 'Report' : 'Markdown'}
           </button>
         )}
         {([
@@ -542,9 +593,8 @@ export function ArtifactPanel({ artifactId }: { artifactId: string }) {
           <p className="p-4 text-xs text-gray-400">Loading artifact…</p>
         ) : artifact ? (
           <>
-            {tab === 'markdown' && artifact.kind === 'plan' && (
-              <MarkdownArtifactTab artifact={artifact} />
-            )}
+            {tab === 'markdown' && artifact.kind === 'plan' && <MarkdownArtifactTab artifact={artifact} />}
+            {tab === 'markdown' && artifact.kind === 'test-report' && <TestReportArtifactTab artifact={artifact} />}
             {tab === 'details' && (
               <DetailsTab
                 artifact={artifact}

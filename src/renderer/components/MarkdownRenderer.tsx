@@ -114,6 +114,9 @@ interface MarkdownRendererProps {
   content: string
   citations?: Citation[]
   viewMode?: 'rendered' | 'raw'
+  /** Draft previews must show the exact source string, without message-only citation cleanup. */
+  preserveSource?: boolean
+  /** Uses plain semantic DOM suitable for a contenteditable Markdown composer. */
 }
 
 function escapeRegExp(value: string): string {
@@ -168,7 +171,7 @@ function CitationSources({ citations }: { citations: Citation[] }) {
   )
 }
 
-function MarkdownRendererBase({ content, citations = [], viewMode = 'rendered' }: MarkdownRendererProps) {
+function MarkdownRendererBase({ content, citations = [], viewMode = 'rendered', preserveSource = false }: MarkdownRendererProps) {
   if (viewMode === 'raw') {
     return (
       <pre className="my-0 whitespace-pre-wrap break-words font-mono text-sm leading-relaxed text-gray-900 dark:text-gray-100">
@@ -228,6 +231,8 @@ function MarkdownRendererBase({ content, citations = [], viewMode = 'rendered' }
               </code>
             )
           },
+          // Editor DOM is serialized back to Markdown after a rich-text edit, so it
+          // must not contain tooltips, icons, or other message-only presentation text.
           a: ({ href, children }) => <MarkdownLink href={href}>{children}</MarkdownLink>,
           li: ({ className, children, ...props }) => {
             if (className?.includes('task-list-item')) {
@@ -276,7 +281,7 @@ function MarkdownRendererBase({ content, citations = [], viewMode = 'rendered' }
           ),
         }}
       >
-        {citationAwareContent(content, citations)}
+        {preserveSource ? content : citationAwareContent(content, citations)}
       </ReactMarkdown>
       <CitationSources citations={citations} />
     </div>
