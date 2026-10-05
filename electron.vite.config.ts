@@ -1,33 +1,28 @@
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import { resolve } from 'path'
-import { copyFileSync, mkdirSync } from 'fs'
+import { copyFileSync, mkdirSync, readdirSync } from 'fs'
 
-// Rollup plugin that copies static .cjs worker scripts to dist/main/
+// Rollup plugin that copies Nexy's static .cjs worker scripts (the in-process MCP bridges
+// and the desktop-navigator bridge) to dist/main/, where the bundled main process resolves
+// them via `join(__dirname, '<name>.cjs')`.
+//
+// This discovers them by convention instead of listing them: a hand-maintained list silently
+// drops any newly added worker from the packaged build, and the only symptom is the MCP
+// server failing to connect at runtime (the script simply isn't there). Discovery keeps the
+// build and the source tree in sync automatically.
 function copyWorkers(): import('vite').Plugin {
   return {
     name: 'copy-cjs-workers',
     closeBundle() {
-      const src = resolve(__dirname, 'src/main/desktop-navigator-bridge-worker.cjs')
+      const srcDir = resolve(__dirname, 'src/main')
       const outDir = resolve(__dirname, 'dist/main')
       mkdirSync(outDir, { recursive: true })
-      copyFileSync(src, resolve(outDir, 'desktop-navigator-bridge-worker.cjs'))
-      copyFileSync(
-        resolve(__dirname, 'src/main/user-input-mcp-worker.cjs'),
-        resolve(outDir, 'user-input-mcp-worker.cjs'),
-      )
-      copyFileSync(
-        resolve(__dirname, 'src/main/project-wiki-mcp-worker.cjs'),
-        resolve(outDir, 'project-wiki-mcp-worker.cjs'),
-      )
-      copyFileSync(
-        resolve(__dirname, 'src/main/skill-save-mcp-worker.cjs'),
-        resolve(outDir, 'skill-save-mcp-worker.cjs'),
-      )
-      copyFileSync(
-        resolve(__dirname, 'src/main/plan-mcp-worker.cjs'),
-        resolve(outDir, 'plan-mcp-worker.cjs'),
-      )
+      const workers = readdirSync(srcDir).filter((file) => file.endsWith('-worker.cjs'))
+      if (workers.length === 0) throw new Error('copy-cjs-workers: no *-worker.cjs scripts found in src/main')
+      for (const worker of workers) {
+        copyFileSync(resolve(srcDir, worker), resolve(outDir, worker))
+      }
     },
   }
 }

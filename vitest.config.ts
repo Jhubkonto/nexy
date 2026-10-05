@@ -9,6 +9,10 @@ export default defineConfig({
           name: 'main',
           include: ['src/main/__tests__/**/*.test.ts'],
           environment: 'node',
+          // Windows + full-suite parallelism makes git/subprocess-backed main-process
+          // tests far slower than they are in isolation; 5s produced load-only flakes.
+          testTimeout: 30000,
+          hookTimeout: 30000,
           setupFiles: ['src/test/setup-main.ts']
         },
         resolve: {
@@ -26,6 +30,8 @@ export default defineConfig({
             'src/renderer/components/**/__tests__/**/*.test.{ts,tsx}'
           ],
           environment: 'happy-dom',
+          testTimeout: 30000,
+          hookTimeout: 30000,
           setupFiles: ['src/test/setup-renderer.ts']
         },
         esbuild: {
