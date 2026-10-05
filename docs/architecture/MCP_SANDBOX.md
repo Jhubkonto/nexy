@@ -18,4 +18,4 @@ directly as a fallback.
 
 Linux uses `bubblewrap` with a private process/network boundary and explicit bind mounts. macOS uses Seatbelt through `sandbox-exec` with generated file and network rules. Windows uses a signed helper that launches the server in an AppContainer, grants the AppContainer SID only the requested paths for the lifetime of the process, applies the requested network capability, and assigns the process tree to a Job Object with memory/process limits. A missing or unusable backend remains fail-closed; Nexy never silently launches a server unsandboxed.
 
-Application-owned bridges such as Desktop Navigator, project wiki, and user-input remain internal Nexy components and are not third-party MCP processes.
+Application-owned bridges such as Desktop Navigator, the development bridge, and user-input remain internal Nexy components and are not third-party MCP processes.

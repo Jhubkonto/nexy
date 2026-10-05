@@ -125,7 +125,7 @@ The architecture assumes a trusted local user controls the desktop and chooses w
 | IF-MAIN-MOBILE | Desktop WebSocket server | Android | Authenticated WebSocket | Remote commands, sync, and live events |
 | IF-ANDROID-API | Android standalone chat | Anthropic/OpenAI/OpenRouter | HTTPS stream | Direct phone-local provider chat |
 | IF-PROJECT-FILES | Project services | User workspace | Filesystem/Git/process | Read/write project sources and run builds |
-| IF-EXTERNAL-MCP | Nexy loopback bridge | External MCP client | stdio + loopback token | Scoped external project access |
+| IF-EXTERNAL-MCP | Nexy development loopback bridge | External MCP client | stdio + loopback token | Approved access to the Nexy source checkout only |
 
 Important third-party dependencies are Electron, React, Zustand, better-sqlite3, `@modelcontextprotocol/sdk`, `ws`, `node-pty`, `@nut-tree-fork/nut-js`, `electron-updater`, Android Room, Compose, OkHttp, and Android security libraries. Their versions are controlled by `package.json`, Gradle version catalogs, and the build configuration.
 
@@ -236,7 +236,7 @@ Local pairing uses a random token and QR-pinned certificate fingerprint. Externa
 | [Android standalone](../android-standalone.md) | Standalone capability and backup behavior |
 | [Android contract](../android-standalone-contract.md) | Canonical entities, filtering, protocol, conflicts |
 | [Mobile WebSocket](../MOBILE_WEBSOCKET.md) | Pairing and remote managed workflow interface |
-| [Project wiki MCP](../project-wiki-mcp.md) | External scoped MCP bridge and capability packs |
+| [Development MCP](../development-mcp.md) | External developer bridge for the Nexy checkout and disposable test runtime |
 | `src/shared/types.ts` | Cross-process and cross-platform data contracts |
 | `src/main/database-migrations.ts` | Database schema evolution source |
 | `src/main/__tests__/`, `src/renderer/__tests__/` | Desktop verification evidence |
