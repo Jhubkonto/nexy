@@ -7,6 +7,7 @@ import type {
   Theme,
   UiStyle,
   MarkdownViewMode,
+  ComposerMarkdownViewMode,
   Toast,
   ToolApprovalRequest
 } from '../types'
@@ -44,11 +45,13 @@ export interface UiSlice {
   debugLogging: boolean
   androidDebugLog: boolean
   markdownViewMode: MarkdownViewMode
+  composerMarkdownViewMode: ComposerMarkdownViewMode
   setTheme: (theme: Theme) => void
   setUiStyle: (style: UiStyle, persist?: boolean) => void
   setDebugLogging: (enabled: boolean) => void
   setAndroidDebugLog: (enabled: boolean) => void
   setMarkdownViewMode: (mode: MarkdownViewMode) => void
+  setComposerMarkdownViewMode: (mode: ComposerMarkdownViewMode) => void
   toggleTheme: () => void
   toggleSidebar: () => void
   toggleAgentPanel: () => void
@@ -133,6 +136,7 @@ export const createUiSlice: StateCreator<
   debugLogging: false,
   androidDebugLog: false,
   markdownViewMode: 'rendered',
+  composerMarkdownViewMode: 'raw',
   viewingArtifactId: null,
   pendingKeyHandoffProvider: null,
   sectionNewCounts: { projects: 0, agents: 0, skills: 0, scheduled: 0, workflows: 0 },
@@ -376,6 +380,13 @@ export const createUiSlice: StateCreator<
       s.markdownViewMode = mode
     })
     void window.api.setSetting('markdown_view_mode', mode).catch(() => {})
+  },
+
+  setComposerMarkdownViewMode: (mode) => {
+    set((s) => {
+      s.composerMarkdownViewMode = mode
+    })
+    void window.api.setSetting('composer_markdown_view_mode', mode).catch(() => {})
   },
 
   syncUnreadConversationIds: (ids) => {

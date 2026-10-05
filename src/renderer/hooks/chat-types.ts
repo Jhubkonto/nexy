@@ -180,3 +180,18 @@ export const AT_CONTEXT_OPTIONS: AtContextOption[] = [
   },
 ]
 
+
+/**
+ * The subset of a keyboard event the composer key handler actually needs.
+ * Both a React textarea event and ProseMirror's native DOM event satisfy this,
+ * so the raw and rendered composers share one handler without casting.
+ */
+export interface ComposerKeyEvent {
+  key: string
+  shiftKey: boolean
+  altKey: boolean
+  ctrlKey: boolean
+  metaKey: boolean
+  defaultPrevented: boolean
+  preventDefault: () => void
+}

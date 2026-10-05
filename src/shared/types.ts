@@ -1181,7 +1181,7 @@ export interface AutomatedWorkflowTemplateDetail extends AutomatedWorkflowTempla
 export type ArtifactKind =
   | 'document' | 'code' | 'ui' | 'data'
   | 'prompt' | 'agent-config' | 'plan' | 'bundle' | 'other'
-  | 'debrief' | 'quiz' | 'teachback'
+  | 'debrief' | 'quiz' | 'teachback' | 'test-report'
 
 export type ArtifactStatus = 'draft' | 'generating' | 'ready' | 'exported' | 'archived' | 'failed'
 
@@ -1634,8 +1634,7 @@ export interface WikiExtractionResult {
   candidates: WikiCandidate[]
 }
 
-export interface ProjectWikiMcpConnection {
-  projectId: string
+export interface DevelopmentMcpConnection {
   url: string
   token: string
   command: string
@@ -1643,8 +1642,8 @@ export interface ProjectWikiMcpConnection {
   env: Record<string, string>
 }
 
-export interface ProjectWikiMcpStatus {
-  projectId: string
+export interface DevelopmentMcpStatus {
+  workspacePath: string | null
   running: boolean
   url: string | null
   stdio: { command: string; args: string[]; env: Record<string, string> } | null
@@ -1666,6 +1665,8 @@ export interface WorkspaceInfo {
   isGitRepo: boolean
   /** Whether a package.json exists at the path — false usually means the path points at the wrong folder. */
   hasPackageJson: boolean
+  /** True only when package.json identifies this checkout as Nexy. */
+  isNexyWorkspace: boolean
 }
 
 export interface BuildRecord {
@@ -2619,9 +2620,9 @@ export type IpcReturnMap = {
   'wiki:extract-learnings': WikiExtractionResult
   'wiki:list-entries': WikiEntry[]
   'wiki:update-entry': WikiEntry
-  'wiki:mcp-start': ProjectWikiMcpConnection
-  'wiki:mcp-stop': boolean
-  'wiki:mcp-status': ProjectWikiMcpStatus
+  'development:mcp-start': DevelopmentMcpConnection
+  'development:mcp-stop': boolean
+  'development:mcp-status': DevelopmentMcpStatus
   // Provider
   'credential:list': CredentialMetadata[]
   'credential:create': CredentialMetadata
@@ -3068,9 +3069,9 @@ export type IpcChannels =
   | 'wiki:extract-learnings'
   | 'wiki:list-entries'
   | 'wiki:update-entry'
-  | 'wiki:mcp-start'
-  | 'wiki:mcp-stop'
-  | 'wiki:mcp-status'
+  | 'development:mcp-start'
+  | 'development:mcp-stop'
+  | 'development:mcp-status'
   | 'build:get-workspace-info'
   | 'build:set-workspace-path'
   | 'build:start-command'

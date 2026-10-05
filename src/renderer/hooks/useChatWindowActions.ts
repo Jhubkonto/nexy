@@ -12,6 +12,7 @@ import {
 } from '../slash-commands'
 import type {
   AtContextOption,
+  ComposerKeyEvent,
   ChatMessage,
   ContextRef,
   ContextSnapshot,
@@ -1090,7 +1091,7 @@ export function useChatWindowActions({
   ])
 
   const handleKeyDown = useCallback(
-    async (event: React.KeyboardEvent<HTMLTextAreaElement>, onSend: () => Promise<void>) => {
+    async (event: ComposerKeyEvent, onSend: () => Promise<void>) => {
       if (showAtMenu) {
         if (event.key === 'ArrowDown') {
           event.preventDefault()
