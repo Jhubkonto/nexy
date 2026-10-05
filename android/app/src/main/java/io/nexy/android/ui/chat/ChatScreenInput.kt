@@ -1,5 +1,6 @@
 package io.nexy.android.ui.chat
 
+import android.content.ClipboardManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -36,6 +38,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,8 +46,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -86,6 +92,33 @@ fun ChatInputBar(
     var showAttachSheet by remember { mutableStateOf(false) }
     val slashSheetState = rememberModalBottomSheetState()
     var showSlashSheet by remember { mutableStateOf(false) }
+    val inputFocusRequester = remember { FocusRequester() }
+    val context = LocalContext.current
+
+    // Markdown is the only draft format, so a formatted clipboard payload is
+    // converted rather than flattened to plain text by the system paste.
+    val pasteFormattedText = {
+        val clipboard = context.getSystemService(ClipboardManager::class.java)
+        val clip = clipboard?.primaryClip
+        val pasted = clip?.let { data ->
+            buildString {
+                repeat(data.itemCount) { index ->
+                    val item = data.getItemAt(index)
+                    val html = item.coerceToHtmlText(context)
+                    val value = html?.takeIf { it.isNotBlank() }?.let { HtmlToMarkdown.convert(it) }
+                        ?: item.coerceToText(context)?.toString().orEmpty()
+                    if (value.isNotBlank()) {
+                        if (isNotEmpty()) appendLine()
+                        append(value)
+                    }
+                }
+            }
+        }.orEmpty()
+        if (pasted.isNotBlank()) {
+            val separator = if (input.endsWith("\n")) "" else "\n"
+            onInputChange(if (input.isBlank()) pasted else input + separator + pasted)
+        }
+    }
 
     if (showSlashSheet) {
         val query = input.removePrefix("/")
@@ -159,6 +192,12 @@ fun ChatInputBar(
                 leadingContent = { NexyIcon(NexyIconName.Prompt, contentDescription = null) },
                 modifier = Modifier.clickable { showAttachSheet = false; onInsertPrompt() },
             )
+            ListItem(
+                headlineContent = { Text("Paste formatted text") },
+                supportingContent = { Text("Converts rich clipboard content to Markdown") },
+                leadingContent = { NexyIcon(NexyIconName.Prompt, contentDescription = null) },
+                modifier = Modifier.clickable { showAttachSheet = false; pasteFormattedText() },
+            )
             if (showAttachOptions) {
                 ListItem(
                     headlineContent = { Text("Context Inspector") },
@@ -219,7 +258,7 @@ fun ChatInputBar(
                     BasicTextField(
                         value = input,
                         onValueChange = onInputChange,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().focusRequester(inputFocusRequester),
                         textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
                         maxLines = 5,
                         keyboardOptions = KeyboardOptions(

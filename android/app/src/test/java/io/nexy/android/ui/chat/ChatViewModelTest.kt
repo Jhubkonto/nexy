@@ -73,8 +73,8 @@ class ChatViewModelTest {
 
         assertEquals(
             listOf(
-                ChatMessage(id = "m1", text = "Hello", isUser = true, isStreaming = false, timestamp = 1),
-                ChatMessage(id = "m2", text = "Hi", isUser = false, isStreaming = false, timestamp = 2),
+                ChatMessage(id = "m1", text = "Hello", isUser = true, isStreaming = false, rawText = "Hello", timestamp = 1),
+                ChatMessage(id = "m2", text = "Hi", isUser = false, isStreaming = false, rawText = "Hi", timestamp = 2),
             ),
             vm.messages.value,
         )
@@ -351,6 +351,7 @@ class ChatViewModelTest {
                 text = "",
                 isUser = true,
                 isStreaming = false,
+                rawText = "",
                 timestamp = 1,
                 attachments = listOf(AttachmentMeta(id = "m1", name = "photo.png", type = "image", thumbnailDataUrl = null)),
             ),
@@ -449,8 +450,8 @@ class ChatViewModelTest {
         assertTrue(vm.liveThinkingBlocks.value.isEmpty())
         assertEquals(
             listOf(
-                ChatMessage(id = "m1", text = "Hello", isUser = true, isStreaming = false, timestamp = 1),
-                ChatMessage(id = "m2", text = "Done", isUser = false, isStreaming = false, timestamp = 2),
+                ChatMessage(id = "m1", text = "Hello", isUser = true, isStreaming = false, rawText = "Hello", timestamp = 1),
+                ChatMessage(id = "m2", text = "Done", isUser = false, isStreaming = false, rawText = "Done", timestamp = 2),
             ),
             vm.messages.value,
         )
@@ -658,9 +659,9 @@ class ChatViewModelTest {
 
         assertEquals(
             listOf(
-                ChatMessage(id = "m1", text = "Hello", isUser = true, isStreaming = false, timestamp = 1),
-                ChatMessage(id = "m2", text = "Follow up", isUser = true, isStreaming = false, timestamp = 2),
-                ChatMessage(id = "m3", text = "Done from history", isUser = false, isStreaming = false, timestamp = 3),
+                ChatMessage(id = "m1", text = "Hello", isUser = true, isStreaming = false, rawText = "Hello", timestamp = 1),
+                ChatMessage(id = "m2", text = "Follow up", isUser = true, isStreaming = false, rawText = "Follow up", timestamp = 2),
+                ChatMessage(id = "m3", text = "Done from history", isUser = false, isStreaming = false, rawText = "Done from history", timestamp = 3),
             ),
             vm.messages.value,
         )
@@ -967,7 +968,12 @@ class ChatViewModelTest {
         assertEquals(
             SentCommand(
                 "conversation:set-model",
-                mapOf("conversationId" to "conv-1", "model" to "gpt-5.5"),
+                mapOf(
+                    "conversationId" to "conv-1",
+                    "model" to "gpt-5.5",
+                    "cliBackend" to "",
+                    "hermesProfile" to "",
+                ),
             ),
             fakeWs.sentCommands[fakeWs.sentCommands.size - 2],
         )

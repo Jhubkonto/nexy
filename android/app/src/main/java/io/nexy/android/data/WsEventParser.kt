@@ -67,8 +67,6 @@ import io.nexy.android.data.model.McpSandboxGrant
 import io.nexy.android.data.model.McpSandboxProfile
 import io.nexy.android.data.model.McpSandboxStatus
 import io.nexy.android.data.model.McpToolInfo
-import io.nexy.android.data.model.ProjectWikiMcpStatus
-import io.nexy.android.data.model.ProjectWikiMcpStdio
 import io.nexy.android.data.model.WikiExtractionCandidate
 import io.nexy.android.data.model.BuildRecord
 import io.nexy.android.data.model.PreflightCheck
@@ -221,7 +219,6 @@ fun parseWsEvent(
     ratingStats: MutableStateFlow<ConversationRatingStats?>,
     desktopIsPackaged: MutableStateFlow<Boolean?> = MutableStateFlow(null),
     mcpCatalog: MutableStateFlow<List<McpCatalogEntry>> = MutableStateFlow(emptyList()),
-    wikiMcpStatuses: MutableStateFlow<Map<String, ProjectWikiMcpStatus>> = MutableStateFlow(emptyMap()),
     discoveredSkills: MutableStateFlow<List<DiscoveredSkill>> = MutableStateFlow(emptyList()),
 ) {
     // Older desktop builds can send the entire message database in one reconnect frame. Refuse
@@ -1371,38 +1368,6 @@ fun parseWsEvent(
                 }
                 WsEvent.McpToolList(agentId, tools)
             }
-
-            "wiki:mcp-status" -> {
-                val projectId = data?.optString("projectId") ?: ""
-                val stdioObject = data?.optJSONObject("stdio")
-                val args = stdioObject?.optJSONArray("args")?.let { values ->
-                    (0 until values.length()).map { values.optString(it) }
-                } ?: emptyList()
-                val env = stdioObject?.optJSONObject("env")?.let { values ->
-                    buildMap {
-                        values.keys().forEach { key -> put(key, values.optString(key)) }
-                    }
-                } ?: emptyMap()
-                val status = ProjectWikiMcpStatus(
-                    projectId = projectId,
-                    running = data?.optBoolean("running", false) == true,
-                    url = data?.nullableString("url"),
-                    stdio = stdioObject?.let {
-                        ProjectWikiMcpStdio(
-                            command = it.optString("command"),
-                            args = args,
-                            env = env,
-                        )
-                    },
-                )
-                wikiMcpStatuses.value = wikiMcpStatuses.value + (projectId to status)
-                WsEvent.WikiMcpStatus(status)
-            }
-
-            "wiki:mcp-error" -> WsEvent.WikiMcpError(
-                projectId = data?.optString("projectId") ?: "",
-                message = data?.optString("message") ?: "Project wiki MCP bridge failed.",
-            )
 
             "wiki:extraction-candidates" -> {
                 val conversationId = data?.optString("conversationId") ?: ""

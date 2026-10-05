@@ -453,8 +453,6 @@ sealed class WsEvent {
     data class McpServerRemoved(val id: String) : WsEvent()
     data class McpServerStatus(val id: String, val status: String, val error: String?, val toolCount: Int, val sandbox: McpSandboxStatus? = null) : WsEvent()
     data class McpToolList(val agentId: String?, val tools: List<McpToolInfo>) : WsEvent()
-    data class WikiMcpStatus(val status: ProjectWikiMcpStatus) : WsEvent()
-    data class WikiMcpError(val projectId: String, val message: String) : WsEvent()
     data class WikiExtractionCandidates(val conversationId: String, val candidates: List<WikiExtractionCandidate>) : WsEvent()
     data class WikiExtractionError(val message: String) : WsEvent()
     data class BuildRecords(val records: List<BuildRecord>) : WsEvent()
@@ -1071,19 +1069,6 @@ data class McpRegistrySearchResult(
     val servers: List<McpRegistryServer> = emptyList(),
     val fetchedAt: Long = 0L,
     val stale: Boolean = false,
-)
-
-data class ProjectWikiMcpStdio(
-    val command: String,
-    val args: List<String> = emptyList(),
-    val env: Map<String, String> = emptyMap(),
-)
-
-data class ProjectWikiMcpStatus(
-    val projectId: String,
-    val running: Boolean,
-    val url: String? = null,
-    val stdio: ProjectWikiMcpStdio? = null,
 )
 
 data class SkillConfig(

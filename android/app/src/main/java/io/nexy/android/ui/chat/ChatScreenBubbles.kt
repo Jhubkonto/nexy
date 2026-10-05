@@ -292,7 +292,7 @@ private class WidthStableMarkdownTextView(context: Context) : TextView(context) 
  * inline form, keep going through the width-safe Markwon [android.widget.TextView] path.
  */
 @Composable
-private fun ChatMarkdownText(
+internal fun ChatMarkdownText(
     markdown: String,
     streaming: Boolean,
     debugKey: String,

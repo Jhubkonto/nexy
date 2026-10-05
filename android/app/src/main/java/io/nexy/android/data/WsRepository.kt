@@ -27,7 +27,6 @@ import io.nexy.android.data.model.NewContentConversation
 import io.nexy.android.data.model.McpServerInfo
 import io.nexy.android.data.model.McpCatalogEntry
 import io.nexy.android.data.model.McpToolInfo
-import io.nexy.android.data.model.ProjectWikiMcpStatus
 import io.nexy.android.data.model.WikiExtractionCandidate
 import io.nexy.android.data.model.ModelListSource
 import io.nexy.android.data.model.ModelOption
@@ -266,8 +265,6 @@ object WsRepository : WsClient {
     private val _mcpCatalog = MutableStateFlow<List<McpCatalogEntry>>(emptyList())
     val mcpCatalog: StateFlow<List<McpCatalogEntry>> = _mcpCatalog
 
-    private val _wikiMcpStatuses = MutableStateFlow<Map<String, ProjectWikiMcpStatus>>(emptyMap())
-    val wikiMcpStatuses: StateFlow<Map<String, ProjectWikiMcpStatus>> = _wikiMcpStatuses
 
     // One-shot highlight IDs set by config screens when saving a brand-new item
     val pendingHighlightProjectId = MutableStateFlow<String?>(null)
@@ -1608,7 +1605,6 @@ object WsRepository : WsClient {
             providers = _providers,
             mcpServers = _mcpServers,
             mcpCatalog = _mcpCatalog,
-            wikiMcpStatuses = _wikiMcpStatuses,
             skills = _skills,
             skillAgentUsage = _skillAgentUsage,
             discoveredSkills = _discoveredSkills,
@@ -2064,7 +2060,6 @@ object WsRepository : WsClient {
         _providers.value = standaloneProviders?.providers?.value.orEmpty()
         _mcpServers.value = emptyList()
         _mcpCatalog.value = emptyList()
-        _wikiMcpStatuses.value = emptyMap()
         _skillAgentUsage.value = emptyMap()
         _artifacts.value = emptyList()
         _cliStatus.value = emptyMap()
@@ -2899,9 +2894,6 @@ object WsRepository : WsClient {
     fun getMcpServers() { send("mcp:list", emptyMap()) }
     fun getMcpCatalog() { send("mcp:catalog", emptyMap()) }
     fun searchMcpRegistry(query: String) { send("mcp:search-registry", mapOf("query" to query)) }
-    fun getWikiMcpStatus(projectId: String) { send("wiki:mcp-status", mapOf("projectId" to projectId)) }
-    fun startWikiMcp(projectId: String) { send("wiki:mcp-start", mapOf("projectId" to projectId)) }
-    fun stopWikiMcp(projectId: String) { send("wiki:mcp-stop", mapOf("projectId" to projectId)) }
 
     private fun skillPayload(
         name: String,

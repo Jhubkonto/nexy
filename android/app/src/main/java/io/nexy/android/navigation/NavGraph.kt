@@ -499,7 +499,6 @@ fun NavGraph(
         composable("settings/mcp-servers") {
             McpServersScreen(
                 onBack = { navController.popBackStack() },
-                onOpenProjectWiki = { projectId -> navController.navigate("wiki/${Uri.encode(projectId)}") },
             )
         }
 

@@ -1,9 +1,5 @@
 package io.nexy.android.ui.wiki
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import android.content.Intent
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
@@ -63,8 +59,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import io.nexy.android.data.model.WikiEntry
 import io.nexy.android.data.model.WikiExtractionCandidate
 import io.nexy.android.data.WsRepository
-import io.nexy.android.data.ConnectionState
-import io.nexy.android.data.model.ProjectWikiMcpStatus
 import io.nexy.android.ui.components.NexyConfirmDialog
 import io.nexy.android.ui.components.NexyFormSheet
 import io.nexy.android.ui.icons.NexyIcon
@@ -81,14 +75,8 @@ fun WikiScreen(
     vm: WikiViewModel = viewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
-    val connectionState by WsRepository.connectionState.collectAsStateWithLifecycle()
-    val wikiMcpStatus = WsRepository.wikiMcpStatuses.collectAsStateWithLifecycle().value[projectId]
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    val context = LocalContext.current
-    var wikiMcpStatusLoading by remember(projectId) { mutableStateOf(true) }
-    var wikiMcpActionLoading by remember(projectId) { mutableStateOf(false) }
-    var wikiMcpStatusError by remember(projectId) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(state.error) {
         val err = state.error ?: return@LaunchedEffect
@@ -97,32 +85,7 @@ fun WikiScreen(
     }
 
     LaunchedEffect(projectId) {
-        wikiMcpStatusLoading = true
-        wikiMcpStatusError = null
         vm.load(projectId)
-        WsRepository.getWikiMcpStatus(projectId)
-    }
-    LaunchedEffect(projectId) {
-        WsRepository.events.collect { event ->
-            when (event) {
-                is io.nexy.android.data.model.WsEvent.WikiMcpStatus -> {
-                    if (event.status.projectId == projectId) {
-                        wikiMcpStatusLoading = false
-                        wikiMcpStatusError = null
-                        wikiMcpActionLoading = false
-                    }
-                }
-                is io.nexy.android.data.model.WsEvent.WikiMcpError -> {
-                    if (event.projectId == projectId) {
-                        wikiMcpStatusLoading = false
-                        wikiMcpStatusError = event.message
-                        wikiMcpActionLoading = false
-                        snackbarHostState.showSnackbar(event.message)
-                    }
-                }
-                else -> Unit
-            }
-        }
     }
     LaunchedEffect(initialEntryId, state.entries) {
         val entryId = initialEntryId?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
@@ -201,52 +164,10 @@ fun WikiScreen(
         },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            WikiMcpAccessCard(
-                status = wikiMcpStatus,
-                connected = connectionState == ConnectionState.CONNECTED,
-                statusLoading = wikiMcpStatusLoading,
-                actionLoading = wikiMcpActionLoading,
-                statusError = wikiMcpStatusError,
-                onRetry = {
-                    wikiMcpStatusLoading = true
-                    wikiMcpStatusError = null
-                    WsRepository.getWikiMcpStatus(projectId)
-                },
-                onConnect = {
-                    wikiMcpActionLoading = true
-                    wikiMcpStatusError = null
-                    WsRepository.startWikiMcp(projectId)
-                },
-                onDisconnect = {
-                    wikiMcpActionLoading = true
-                    wikiMcpStatusError = null
-                    WsRepository.stopWikiMcp(projectId)
-                },
-                onCopy = { status ->
-                    val config = status.toMcpClientConfig()
-                    if (config != null) {
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("Nexy project wiki MCP", config))
-                        scope.launch { snackbarHostState.showSnackbar("MCP configuration copied") }
-                    }
-                },
-                onShare = { status ->
-                    val config = status.toMcpClientConfig()
-                    if (config != null) {
-                        context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-                            type = "application/json"
-                            putExtra(Intent.EXTRA_TEXT, config)
-                        }, "Share project wiki MCP configuration"))
-                    }
-                },
-            )
             PullToRefreshBox(
                 isRefreshing = state.isLoading,
                 onRefresh = {
                     vm.load(projectId)
-                    wikiMcpStatusLoading = true
-                    wikiMcpStatusError = null
-                    WsRepository.getWikiMcpStatus(projectId)
                 },
                 modifier = Modifier.fillMaxWidth().weight(1f),
             ) {
@@ -277,67 +198,6 @@ fun WikiScreen(
             }
         }
     }
-}
-
-@Composable
-private fun WikiMcpAccessCard(
-    status: ProjectWikiMcpStatus?,
-    connected: Boolean,
-    statusLoading: Boolean,
-    actionLoading: Boolean,
-    statusError: String?,
-    onRetry: () -> Unit,
-    onConnect: () -> Unit,
-    onDisconnect: () -> Unit,
-    onCopy: (ProjectWikiMcpStatus) -> Unit,
-    onShare: (ProjectWikiMcpStatus) -> Unit,
-) {
-    val running = status?.running == true
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-    ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("External LLM access", style = MaterialTheme.typography.titleSmall)
-            Text(
-                if (statusLoading) "Checking whether the project MCP bridge is already running…"
-                else if (statusError != null) "Could not determine the project MCP bridge status."
-                else if (!connected) "Connect to the Nexy desktop to control this project's MCP bridge."
-                else if (running) "The desktop bridge is running. External clients can use this project's capability packs."
-                else "Expose this project to an external MCP client through the paired desktop.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (statusLoading) {
-                    TextButton(onClick = {}, enabled = false) { Text("Checking…") }
-                } else if (statusError != null) {
-                    TextButton(onClick = onRetry) { Text("Retry") }
-                } else if (running) {
-                    TextButton(onClick = onDisconnect, enabled = !actionLoading) { Text(if (actionLoading) "Stopping…" else "Disconnect") }
-                    if (status?.stdio != null) {
-                        TextButton(onClick = { onCopy(status) }) { Text("Copy config") }
-                        TextButton(onClick = { onShare(status) }) { Text("Share") }
-                    }
-                } else {
-                    TextButton(onClick = onConnect, enabled = connected && !actionLoading) { Text(if (actionLoading) "Starting…" else "Connect") }
-                }
-            }
-        }
-    }
-}
-
-private fun ProjectWikiMcpStatus.toMcpClientConfig(): String? {
-    val bridge = stdio ?: return null
-    val envJson = org.json.JSONObject()
-    bridge.env.forEach { (key, value) -> envJson.put(key, value) }
-    val serverJson = org.json.JSONObject()
-        .put("command", bridge.command)
-        .put("args", org.json.JSONArray(bridge.args))
-        .put("env", envJson)
-    return org.json.JSONObject()
-        .put("mcpServers", org.json.JSONObject().put("nexy-project", serverJson))
-        .toString(2)
 }
 
 @OptIn(ExperimentalLayoutApi::class)
