@@ -1,8 +1,8 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useAppStore } from '../../store/app-store'
 import { Button } from '../ui/primitives'
 import { NexyIcon } from '../ui/icons/NexyIcon'
-import type { ProjectWikiMcpStatus, WikiEntry } from '../../../shared/types'
+import type { WikiEntry } from '../../../shared/types'
 
 function parseWikiTags(value: string): string[] {
   return Array.from(new Set(value.split(',').map((tag) => tag.trim()).filter(Boolean)))
@@ -22,12 +22,6 @@ export function WikiTab({ projectId }: { projectId: string }) {
   const [draftBody, setDraftBody] = useState('')
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  const [mcpStatus, setMcpStatus] = useState<ProjectWikiMcpStatus | null>(null)
-  const [mcpStatusLoading, setMcpStatusLoading] = useState(true)
-  const [mcpStatusError, setMcpStatusError] = useState(false)
-  const [mcpStatusRetry, setMcpStatusRetry] = useState(0)
-  const [mcpActionLoading, setMcpActionLoading] = useState(false)
-  const mcpRequestGeneration = useRef(0)
 
   const resetEditor = useCallback(() => {
     setEditingId(null)
@@ -50,31 +44,6 @@ export function WikiTab({ projectId }: { projectId: string }) {
   useEffect(() => {
     void loadEntries()
   }, [loadEntries])
-
-  useEffect(() => {
-    let cancelled = false
-    const requestGeneration = ++mcpRequestGeneration.current
-    setMcpStatus(null)
-    setMcpStatusLoading(true)
-    setMcpStatusError(false)
-    setMcpActionLoading(false)
-
-    void window.api.getWikiMcpStatus(projectId)
-      .then((status) => {
-        if (!cancelled && requestGeneration === mcpRequestGeneration.current) setMcpStatus(status)
-      })
-      .catch(() => {
-        if (!cancelled && requestGeneration === mcpRequestGeneration.current) {
-          setMcpStatusError(true)
-          addToast('Failed to determine external wiki MCP status', 'error')
-        }
-      })
-      .finally(() => {
-        if (!cancelled && requestGeneration === mcpRequestGeneration.current) setMcpStatusLoading(false)
-      })
-
-    return () => { cancelled = true }
-  }, [addToast, mcpStatusRetry, projectId])
 
   const openNewEntry = useCallback(() => {
     setConfirmDeleteId(null)
@@ -131,57 +100,6 @@ export function WikiTab({ projectId }: { projectId: string }) {
   }, [addToast, editingId, resetEditor])
 
   const parsedDraftTags = parseWikiTags(draftTags)
-
-  const startExternalMcp = useCallback(async () => {
-    const requestGeneration = mcpRequestGeneration.current
-    setMcpActionLoading(true)
-    try {
-      const connection = await window.api.startWikiMcp(projectId)
-      if (requestGeneration !== mcpRequestGeneration.current) return
-      setMcpStatus({
-        projectId: connection.projectId,
-        running: true,
-        url: connection.url,
-        stdio: { command: connection.command, args: connection.args, env: connection.env },
-      })
-      addToast('External wiki MCP access is ready', 'success')
-    } catch {
-      if (requestGeneration === mcpRequestGeneration.current) addToast('Failed to start external wiki MCP access', 'error')
-    } finally {
-      if (requestGeneration === mcpRequestGeneration.current) setMcpActionLoading(false)
-    }
-  }, [addToast, projectId])
-
-  const stopExternalMcp = useCallback(async () => {
-    const requestGeneration = mcpRequestGeneration.current
-    setMcpActionLoading(true)
-    try {
-      await window.api.stopWikiMcp(projectId)
-      if (requestGeneration !== mcpRequestGeneration.current) return
-      setMcpStatus({ projectId, running: false, url: null, stdio: null })
-      addToast('External wiki MCP access stopped', 'success')
-    } catch {
-      if (requestGeneration === mcpRequestGeneration.current) addToast('Failed to stop external wiki MCP access', 'error')
-    } finally {
-      if (requestGeneration === mcpRequestGeneration.current) setMcpActionLoading(false)
-    }
-  }, [addToast, projectId])
-
-  const copyExternalMcpConfig = useCallback(async () => {
-    const stdio = mcpStatus?.stdio
-    if (!stdio) return
-    const config = {
-      mcpServers: {
-        nexy_project_wiki: {
-          command: stdio.command,
-          args: stdio.args,
-          env: stdio.env,
-        },
-      },
-    }
-    await navigator.clipboard.writeText(JSON.stringify(config, null, 2))
-    addToast('MCP configuration copied', 'success')
-  }, [addToast, mcpStatus])
 
   const renderEditor = (mode: 'new' | 'edit') => (
     <div className="space-y-3 rounded-nexy-sm border-2 border-nexy-border bg-nexy-recessed p-3 shadow-nexy">
@@ -266,49 +184,6 @@ export function WikiTab({ projectId }: { projectId: string }) {
           <NexyIcon name="add" size={14} />
           New entry
         </button>
-      </div>
-
-      <div className="rounded-nexy-sm border-2 border-nexy-border bg-nexy-recessed p-3 shadow-nexy">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold text-nexy-text">External LLM access</p>
-            <p className="mt-1 text-[11px] text-nexy-muted">
-              Give Codex, Claude, or another MCP client access to this project through the Nexy project MCP server. Changes still require Nexy approval.
-            </p>
-          </div>
-          {mcpStatusLoading ? (
-            <button type="button" disabled className="shrink-0 rounded-lg border border-gray-200 px-2.5 py-1.5 text-[11px] text-nexy-muted disabled:opacity-70 dark:border-gray-600">
-              Checking…
-            </button>
-          ) : mcpStatusError ? (
-            <button type="button" onClick={() => setMcpStatusRetry((value) => value + 1)} className="shrink-0 rounded-lg border border-blue-200 px-2.5 py-1.5 text-[11px] text-blue-600 hover:bg-blue-50 dark:border-blue-900/50 dark:hover:bg-blue-900/20">
-              Retry
-            </button>
-          ) : mcpStatus?.running ? (
-            <button type="button" onClick={() => void stopExternalMcp()} disabled={mcpActionLoading} className="shrink-0 rounded-lg border border-red-200 px-2.5 py-1.5 text-[11px] text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-900/50 dark:hover:bg-red-900/20">
-              {mcpActionLoading ? 'Stopping…' : 'Stop'}
-            </button>
-          ) : (
-            <button type="button" onClick={() => void startExternalMcp()} disabled={mcpActionLoading} className="shrink-0 rounded-lg border border-blue-200 px-2.5 py-1.5 text-[11px] text-blue-600 hover:bg-blue-50 disabled:opacity-50 dark:border-blue-900/50 dark:hover:bg-blue-900/20">
-              {mcpActionLoading ? 'Starting…' : 'Connect'}
-            </button>
-          )}
-        </div>
-        {mcpStatusLoading ? (
-          <p className="mt-3 text-[11px] text-nexy-muted">Checking whether the project MCP bridge is already running…</p>
-        ) : mcpStatusError ? (
-          <p className="mt-3 text-[11px] text-red-600 dark:text-red-400">Could not determine whether the project MCP bridge is running.</p>
-        ) : mcpStatus?.running ? (
-          <div className="mt-3 space-y-2">
-            <p className="text-[11px] text-green-600 dark:text-green-400">Local Nexy project MCP endpoint ready: {mcpStatus.url}</p>
-            <div className="flex items-center gap-2">
-              <button type="button" onClick={() => void copyExternalMcpConfig()} className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-[11px] text-nexy-text hover:bg-white dark:border-gray-600 dark:hover:bg-gray-700">
-                Copy stdio config
-              </button>
-              <span className="text-[10px] text-nexy-muted">The copied config is valid for MCP clients that support stdio servers.</span>
-            </div>
-          </div>
-        ) : null}
       </div>
 
       {editingId == 'new' && renderEditor('new')}

@@ -28,9 +28,22 @@ export function ProjectHistoryPane() {
   const setConversationPinned = useAppStore((s) => s.setConversationPinned)
   const [query, setQuery] = useState('')
   const debouncedQuery = useDebouncedSearchQuery(query)
+  // The project page can initially load just before the first send has created its
+  // conversation record. Once the common cache observes that active record, use
+  // its revision to replace that stale page without requiring navigation away.
+  const activeConversationRevision = useMemo(() => {
+    const activeConversation = cachedConversations.find((conversation) => conversation.id === currentConversationId)
+    const belongsToHistory = historyProjectId === '__none__'
+      ? !activeConversation?.project_id
+      : activeConversation?.project_id === historyProjectId
+    return activeConversation && belongsToHistory
+      ? `${activeConversation.id}:${activeConversation.updated_at}`
+      : ''
+  }, [cachedConversations, currentConversationId, historyProjectId])
   const pagination = useConversationPagination(
     { type: 'project', id: historyProjectId === '__none__' ? null : historyProjectId },
     debouncedQuery,
+    activeConversationRevision,
   )
   const conversations = useMemo(() => {
     const source = pagination.hasLoaded || debouncedQuery

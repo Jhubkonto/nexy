@@ -392,12 +392,41 @@ export function DeveloperTab({
   initialDeveloperTab,
 }: Props) {
   const [developerTab, setDeveloperTab] = useState<DeveloperInnerTab>(initialDeveloperTab ?? 'desktop')
+  const [developmentMcpStatus, setDevelopmentMcpStatus] = useState<Awaited<ReturnType<typeof window.api.getDevelopmentMcpStatus>> | null>(null)
+  const [developmentMcpConnection, setDevelopmentMcpConnection] = useState<Awaited<ReturnType<typeof window.api.startDevelopmentMcp>> | null>(null)
+  const [developmentMcpBusy, setDevelopmentMcpBusy] = useState(false)
+  const [developmentMcpError, setDevelopmentMcpError] = useState<string | null>(null)
 
   // The settings modal (and this tab) can stay mounted across multiple activity-feed clicks —
   // react to a later request to switch sub-tab rather than only honoring the initial mount value.
   useEffect(() => {
     if (initialDeveloperTab) setDeveloperTab(initialDeveloperTab)
   }, [initialDeveloperTab])
+
+  useEffect(() => {
+    if (developerTab !== 'desktop' || !workspaceInfo?.isNexyWorkspace) return
+    void window.api.getDevelopmentMcpStatus().then(setDevelopmentMcpStatus).catch(() => setDevelopmentMcpStatus(null))
+  }, [developerTab, workspaceInfo?.isNexyWorkspace, workspaceInfo?.path])
+
+  const connectDevelopmentMcp = async () => {
+    setDevelopmentMcpBusy(true)
+    setDevelopmentMcpError(null)
+    try { const connection = await window.api.startDevelopmentMcp(); setDevelopmentMcpConnection(connection); setDevelopmentMcpStatus({ workspacePath: workspaceInfo?.path ?? null, running: true, url: connection.url, stdio: { command: connection.command, args: connection.args, env: connection.env } }) }
+    catch (error) { setDevelopmentMcpError(error instanceof Error ? error.message : 'Could not connect the development bridge') }
+    finally { setDevelopmentMcpBusy(false) }
+  }
+  const stopDevelopmentMcp = async () => {
+    setDevelopmentMcpBusy(true)
+    setDevelopmentMcpError(null)
+    try { await window.api.stopDevelopmentMcp(); setDevelopmentMcpConnection(null); setDevelopmentMcpStatus((status) => ({ workspacePath: status?.workspacePath ?? workspaceInfo?.path ?? null, running: false, url: null, stdio: null })) }
+    catch (error) { setDevelopmentMcpError(error instanceof Error ? error.message : 'Could not stop the development bridge') }
+    finally { setDevelopmentMcpBusy(false) }
+  }
+  const copyDevelopmentMcpSetup = async () => {
+    const setup = developmentMcpConnection ?? developmentMcpStatus?.stdio
+    if (!setup) return
+    await navigator.clipboard.writeText(JSON.stringify({ mcpServers: { nexyDevelopment: { command: setup.command, args: setup.args, env: setup.env } } }, null, 2))
+  }
 
   // Console state
   const [consoleEntries, setConsoleEntries] = useState<ErrorLogEntry[]>([])
@@ -574,6 +603,22 @@ export function DeveloperTab({
             </div>
             {workspaceInfo && !workspaceInfo.hasPackageJson && (
               <PathWarning text="No package.json found here — point this at the Nexy source checkout (the folder you run npm from), not the installed app." />
+            )}
+            {workspaceInfo?.isNexyWorkspace && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-900/60 dark:bg-blue-950/30">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-medium text-gray-700 dark:text-gray-200">Agent-assisted testing</p>
+                    <p className="mt-1 text-[11px] text-gray-600 dark:text-gray-400">Connect an external agent to this Nexy checkout. It can build, launch a disposable loopback runtime, use its Playwright tools, and report findings. Every write, command, Git change, build, and runtime action requires approval.</p>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] ${developmentMcpStatus?.running ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>{developmentMcpStatus?.running ? 'Connected' : 'Stopped'}</span>
+                </div>
+                <p className="mt-2 truncate font-mono text-[10px] text-gray-500 dark:text-gray-400">{workspaceInfo.path}</p>
+                {developmentMcpError && <p className="mt-2 text-[11px] text-red-700 dark:text-red-300">{developmentMcpError}</p>}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {developmentMcpStatus?.running ? <><Button variant="secondary" onClick={() => void stopDevelopmentMcp()} disabled={developmentMcpBusy}>Stop access</Button><Button variant="primary" onClick={() => void copyDevelopmentMcpSetup()} disabled={!developmentMcpConnection && !developmentMcpStatus?.stdio}>Copy MCP setup</Button></> : <Button variant="primary" onClick={() => void connectDevelopmentMcp()} disabled={developmentMcpBusy}>{developmentMcpBusy ? 'Connecting…' : 'Connect external agent'}</Button>}
+                </div>
+              </div>
             )}
             {workspaceInfo && (
               <div className="flex flex-wrap gap-1.5 text-xs">

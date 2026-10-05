@@ -68,7 +68,6 @@ import io.nexy.android.data.model.McpCatalogRequiredEnv
 import io.nexy.android.data.model.McpRegistryEnvRequirement
 import io.nexy.android.data.model.McpRegistrySearchResult
 import io.nexy.android.data.model.McpRegistryServer
-import io.nexy.android.data.model.Project
 import io.nexy.android.data.model.WsEvent
 import io.nexy.android.ui.components.NexyConfirmDialog
 import io.nexy.android.ui.components.NexyEmptyState
@@ -84,12 +83,10 @@ private val McpServerCardHeight = 136.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun McpServersScreen(onBack: () -> Unit, onOpenProjectWiki: (String) -> Unit = {}) {
+fun McpServersScreen(onBack: () -> Unit) {
     val connectionState by WsRepository.connectionState.collectAsStateWithLifecycle()
     val mcpServers by WsRepository.mcpServers.collectAsStateWithLifecycle()
     val mcpCatalog by WsRepository.mcpCatalog.collectAsStateWithLifecycle()
-    val projects by WsRepository.projects.collectAsStateWithLifecycle()
-    val wikiMcpStatuses by WsRepository.wikiMcpStatuses.collectAsStateWithLifecycle()
     val disconnected = connectionState != ConnectionState.CONNECTED
 
     var showAddSheet by remember { mutableStateOf(false) }
@@ -102,7 +99,6 @@ fun McpServersScreen(onBack: () -> Unit, onOpenProjectWiki: (String) -> Unit = {
     var refreshing by remember { mutableStateOf(false) }
     var testingConnection by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<WsEvent.McpTestResult?>(null) }
-    var projectMcpExpanded by remember { mutableStateOf(false) }
     var registryResult by remember { mutableStateOf<McpRegistrySearchResult?>(null) }
     var registryLoading by remember { mutableStateOf(false) }
     var registryError by remember { mutableStateOf<String?>(null) }
@@ -278,16 +274,6 @@ fun McpServersScreen(onBack: () -> Unit, onOpenProjectWiki: (String) -> Unit = {
                     )
                 }
 
-                item {
-                    ProjectWikiMcpGroup(
-                        projects = projects,
-                        statuses = wikiMcpStatuses,
-                        expanded = projectMcpExpanded,
-                        onToggle = { projectMcpExpanded = !projectMcpExpanded },
-                        onOpenProjectWiki = onOpenProjectWiki,
-                    )
-                }
-
                 if (mcpServers.isEmpty()) {
                     item {
                         NexyEmptyState(
@@ -382,85 +368,6 @@ private fun McpSectionHeader(title: String, detail: String) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
         Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-@Composable
-private fun ProjectWikiMcpGroup(
-    projects: List<Project>,
-    statuses: Map<String, io.nexy.android.data.model.ProjectWikiMcpStatus>,
-    expanded: Boolean,
-    onToggle: () -> Unit,
-    onOpenProjectWiki: (String) -> Unit,
-) {
-    val runningCount = projects.count { statuses[it.id]?.running == true }
-    Card(
-        modifier = Modifier.fillMaxWidth().heightIn(min = McpServerCardHeight),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = RectangleShape,
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onToggle)
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("Project Wiki MCP", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                    Text(
-                        when {
-                            projects.isEmpty() -> "No project bridges available."
-                            runningCount > 0 -> "$runningCount of ${projects.size} bridge${if (projects.size == 1) "" else "s"} running"
-                            else -> "${projects.size} project bridge${if (projects.size == 1) "" else "s"} · managed from each Wiki"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (runningCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                NexyIcon(
-                    if (expanded) NexyIconName.ChevronDown else NexyIconName.ChevronRight,
-                    contentDescription = if (expanded) "Collapse Project Wiki MCP" else "Expand Project Wiki MCP",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            if (expanded) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                if (projects.isEmpty()) {
-                    Text(
-                        "No projects available.",
-                        modifier = Modifier.padding(14.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    projects.forEachIndexed { index, project ->
-                        if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                                Text(project.name, style = MaterialTheme.typography.bodyMedium)
-                                Text(
-                                    if (statuses[project.id]?.running == true) "Bridge running" else "Bridge stopped",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (statuses[project.id]?.running == true) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            TextButton(onClick = { onOpenProjectWiki(project.id) }) { Text("Open Wiki") }
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
