@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'http'
 import { randomBytes } from 'crypto'
 import { join } from 'path'
+import { nodeWorkerCommand, nodeWorkerEnv } from './node-worker-launch'
 
 export interface PlanMcpBridge {
   server: { id: string; key: string; command: string; args: string[]; env: Record<string, string>; cwd?: string }
@@ -74,9 +75,9 @@ export function startPlanMcpBridge(requestPlanApproval: (plan: string) => Promis
       }
       resolve({
         server: {
-          id: 'nexy-plan', key: 'nexy_plan', command: process.execPath,
+          id: 'nexy-plan', key: 'nexy_plan', command: nodeWorkerCommand(),
           args: [join(__dirname, 'plan-mcp-worker.cjs')],
-          env: { NEXY_PLAN_BRIDGE_PORT: String(address.port), NEXY_PLAN_BRIDGE_SECRET: secret },
+          env: nodeWorkerEnv({ NEXY_PLAN_BRIDGE_PORT: String(address.port), NEXY_PLAN_BRIDGE_SECRET: secret }),
         },
         allowedTool: 'mcp__nexy_plan__exit_plan_mode',
         submittedPlan: () => submittedPlan,

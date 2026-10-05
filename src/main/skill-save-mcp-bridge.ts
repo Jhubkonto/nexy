@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'http'
 import { randomBytes } from 'crypto'
 import { join } from 'path'
+import { nodeWorkerCommand, nodeWorkerEnv } from './node-worker-launch'
 import type { SkillCaptureInput } from './skill-service'
 import { captureSkill, prepareSkillCapture, type PersistedSkillCapture } from './skill-service'
 
@@ -105,9 +106,9 @@ export function startSkillSaveMcpBridge(
         server: {
           id: 'nexy-skill-save',
           key: 'nexy_skill',
-          command: process.execPath,
+          command: nodeWorkerCommand(),
           args: [join(__dirname, 'skill-save-mcp-worker.cjs')],
-          env: { NEXY_SKILL_BRIDGE_PORT: String(address.port), NEXY_SKILL_BRIDGE_SECRET: secret },
+          env: nodeWorkerEnv({ NEXY_SKILL_BRIDGE_PORT: String(address.port), NEXY_SKILL_BRIDGE_SECRET: secret }),
         },
         allowedTool: 'mcp__nexy_skill__save_skill',
         close: () => server.close(),

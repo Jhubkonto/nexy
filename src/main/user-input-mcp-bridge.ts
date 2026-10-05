@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'http'
 import { randomBytes } from 'crypto'
 import { join } from 'path'
+import { nodeWorkerCommand, nodeWorkerEnv } from './node-worker-launch'
 import type { UserInputAnswer, UserInputQuestion } from '../shared/chat-turn-types'
 import { userInputQuestionsFromArgs } from './user-input'
 
@@ -79,9 +80,9 @@ export function startUserInputMcpBridge(
       }
       resolve({
         server: {
-          id: 'nexy-user-input', key: 'nexy_user_input', command: process.execPath,
+          id: 'nexy-user-input', key: 'nexy_user_input', command: nodeWorkerCommand(),
           args: [join(__dirname, 'user-input-mcp-worker.cjs')],
-          env: { NEXY_UI_BRIDGE_PORT: String(address.port), NEXY_UI_BRIDGE_SECRET: secret },
+          env: nodeWorkerEnv({ NEXY_UI_BRIDGE_PORT: String(address.port), NEXY_UI_BRIDGE_SECRET: secret }),
         },
         allowedTool: 'mcp__nexy_user_input__ask_user',
         close: () => server.close(),

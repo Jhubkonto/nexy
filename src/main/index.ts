@@ -1,10 +1,12 @@
 import { app, BrowserWindow, shell, globalShortcut, Tray, Menu, nativeImage, ipcMain, powerMonitor } from 'electron'
 import { join } from 'path'
+import { mkdirSync } from 'fs'
 import { getDatabase, closeDatabase } from './database'
 import { registerIpcHandlers } from './ipc-handlers'
 import { registerAuthHandlers } from './auth'
 import { initMcpServers, shutdownMcpServers } from './mcp'
-import { stopAllProjectWikiMcpBridges } from './project-wiki-mcp'
+import { stopDevelopmentMcpBridge } from './development-mcp'
+import { stopAllIsolatedNexyInstances } from './isolated-runtime'
 import { initAutoUpdater, registerUpdaterHandlers, checkForUpdatesOnStartup } from './updater'
 import { loadModelCatalog } from './model-catalog'
 import { ClaudeAdapter } from './cli-adapters/claude'
@@ -29,6 +31,15 @@ let mobileClientCount = 0
 
 const isDev = !app.isPackaged
 const PROTOCOL = 'nexy'
+const isIsolatedRuntime = process.env.NEXY_ISOLATED_RUNTIME === '1' || process.argv.includes('--nexy-isolated-runtime')
+const isolatedUserData = process.env.NEXY_ISOLATED_USER_DATA
+
+// This must happen before database initialization and before the single-instance lock.
+// An isolated runtime must never attach to the user's normal profile.
+if (isolatedUserData) {
+  mkdirSync(isolatedUserData, { recursive: true })
+  app.setPath('userData', isolatedUserData)
+}
 
 // Register deep link protocol
 if (process.defaultApp) {
@@ -67,20 +78,31 @@ function createWindow(showOnReady = true): void {
 
   // Content Security Policy — relaxed in dev for Vite HMR
   const devCsp = isDev ? " http://localhost:* ws://localhost:*" : ""
+  const isolatedRuntimeCsp = isIsolatedRuntime ? " http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*" : ""
   const scriptSrc = isDev ? "'self' 'unsafe-inline' http://localhost:* ws://localhost:*" : "'self'"
   mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': [
-          `default-src 'self'${devCsp}; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline'${devCsp}; img-src 'self' data: https:; connect-src 'self' https://api.openai.com https://api.anthropic.com https://*.openai.azure.com https://api.github.com${devCsp}; font-src 'self'${devCsp}`
+          `default-src 'self'${devCsp}${isolatedRuntimeCsp}; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline'${devCsp}${isolatedRuntimeCsp}; img-src 'self' data:${isIsolatedRuntime ? '' : ' https:'}; connect-src 'self'${isIsolatedRuntime ? isolatedRuntimeCsp : ' https://api.openai.com https://api.anthropic.com https://*.openai.azure.com https://api.github.com'}${devCsp}; font-src 'self'${devCsp}${isolatedRuntimeCsp}`
         ]
       }
     })
   })
+  if (isIsolatedRuntime) {
+    mainWindow.webContents.session.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] }, (details, callback) => {
+      try {
+        const hostname = new URL(details.url).hostname
+        callback({ cancel: hostname !== '127.0.0.1' && hostname !== 'localhost' && hostname !== '::1' })
+      } catch {
+        callback({ cancel: true })
+      }
+    })
+  }
 
   mainWindow.on('ready-to-show', () => {
-    initializeActivityBadge()
+    if (!isIsolatedRuntime) initializeActivityBadge()
     const db = getDatabase()
     const zoomRow = db.prepare("SELECT value FROM settings WHERE key = 'zoomFactor'").get() as { value: string } | undefined
     if (zoomRow) {
@@ -89,11 +111,11 @@ function createWindow(showOnReady = true): void {
         mainWindow?.webContents.setZoomFactor(factor)
       }
     }
-    if (showOnReady) mainWindow?.show()
-    if (mainWindow) {
+    if (showOnReady && !isIsolatedRuntime) mainWindow?.show()
+    if (mainWindow && !isIsolatedRuntime) {
       void loadModelCatalog(mainWindow).catch(() => {})
     }
-    if (ClaudeAdapter.isAvailable()) {
+    if (!isIsolatedRuntime && ClaudeAdapter.isAvailable()) {
       void probeClaudeCliModels()
         .then((discovery) => {
           // Do not make a partial rendered menu authoritative. The snapshot function preserves
@@ -117,7 +139,7 @@ function createWindow(showOnReady = true): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+    if (!isIsolatedRuntime) shell.openExternal(url)
     return { action: 'deny' }
   })
 
@@ -296,48 +318,47 @@ app.whenReady().then(() => {
 
   // Initialize database
   getDatabase()
-
   // Keep login-item state synchronized and honor background auto-start without flashing a window.
-  applyStoredAutoStartSetting()
+  if (!isIsolatedRuntime) applyStoredAutoStartSetting()
 
   // Start scheduler after DB is ready
-  schedulerEngine.start()
+  if (!isIsolatedRuntime) schedulerEngine.start()
 
   // Sweep deferred callbacks: expire stale bindings, and report any job that was still in flight
   // when the app last closed so an interrupted build surfaces in its conversation instead of
   // silently never being reported.
-  startDeferredCallbackEngine()
+  if (!isIsolatedRuntime) startDeferredCallbackEngine()
 
-  registerAuthHandlers()
-  registerUpdaterHandlers()
+  if (!isIsolatedRuntime) registerAuthHandlers()
+  if (!isIsolatedRuntime) registerUpdaterHandlers()
 
   const startHidden = process.argv.includes('--hidden') || app.getLoginItemSettings().wasOpenedAsHidden === true
-  createWindow(!startHidden)
-  initializeActivityBadge()
+  createWindow(!startHidden && !isIsolatedRuntime)
+  if (!isIsolatedRuntime) initializeActivityBadge()
   registerIpcHandlers(mainWindow ?? undefined)
-  setIpChangeCallback((newUrl) => {
+  if (!isIsolatedRuntime) setIpChangeCallback((newUrl) => {
     void sendIpChangedPush(getDatabase(), newUrl).catch(() => {})
   })
 
-  setClientCountChangeCallback((count) => {
+  if (!isIsolatedRuntime) setClientCountChangeCallback((count) => {
     mobileClientCount = count
     refreshTrayPresentation()
     mainWindow?.webContents.send('ws:client-count', count)
   })
 
-  void autoStartWsServerIfEnabled().then(() => {
+  if (!isIsolatedRuntime) void autoStartWsServerIfEnabled().then(() => {
     const url = getCurrentPairingUrl()
     if (url) void sendDesktopOnlinePush(getDatabase(), url).catch(() => {})
   })
 
-  powerMonitor.on('resume', () => {
+  if (!isIsolatedRuntime) powerMonitor.on('resume', () => {
     void startWsServerIfNeeded().then(() => {
       const url = getCurrentPairingUrl()
       if (url) void sendDesktopOnlinePush(getDatabase(), url).catch(() => {})
     })
   })
-  createTray()
-  registerGlobalHotkey()
+  if (!isIsolatedRuntime) createTray()
+  if (!isIsolatedRuntime) registerGlobalHotkey()
 
   // Window control IPC handlers (use sender to target the correct window)
   const EDIT_ACTIONS = new Set(['undo', 'redo', 'cut', 'copy', 'paste', 'selectAll'])
@@ -385,7 +406,7 @@ app.whenReady().then(() => {
   })
 
   // Forward maximize/restore state changes to the renderer
-  if (mainWindow) {
+  if (mainWindow && !isIsolatedRuntime) {
     const sendMaximizeChange = (maximized: boolean) =>
       mainWindow?.webContents.send('window:maximize-change', maximized)
     mainWindow.on('maximize', () => sendMaximizeChange(true))
@@ -395,7 +416,7 @@ app.whenReady().then(() => {
   }
 
   // Initialize auto-updater
-  if (mainWindow) {
+  if (mainWindow && !isIsolatedRuntime) {
     initDebugMode(mainWindow)
     initErrorLogCapture(mainWindow)
     initAutoUpdater(mainWindow)
@@ -403,7 +424,7 @@ app.whenReady().then(() => {
   }
 
   // Initialize MCP servers
-  initMcpServers().catch((err) => {
+  if (!isIsolatedRuntime) initMcpServers().catch((err) => {
     debugLog('mcp', `init failed at startup: ${err instanceof Error ? err.message : String(err)}`)
     console.error('[mcp] failed to init servers at startup:', err)
   })
@@ -433,6 +454,7 @@ app.on('will-quit', () => {
   cancelAllPendingUserInputs()
   globalShortcut.unregisterAll()
   shutdownMcpServers().catch(() => {})
-  stopAllProjectWikiMcpBridges().catch(() => {})
+  stopDevelopmentMcpBridge().catch(() => {})
+  stopAllIsolatedNexyInstances().catch(() => {})
   closeDatabase()
 })

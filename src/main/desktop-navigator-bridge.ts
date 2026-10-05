@@ -3,6 +3,7 @@ import { randomBytes } from 'crypto'
 import { join } from 'path'
 import { DESKTOP_NAVIGATOR_ID, DESKTOP_NAVIGATOR_TOOLS } from './desktop-navigator-mcp'
 import type { CliMcpServerConfig } from './mcp'
+import { nodeWorkerCommand, nodeWorkerEnv } from './node-worker-launch'
 
 type ToolResult = {
   success: boolean
@@ -122,12 +123,12 @@ export function getDesktopNavigatorCliConfig(): CliMcpServerConfig | null {
   return {
     id: DESKTOP_NAVIGATOR_ID,
     key: BRIDGE_KEY,
-    command: process.execPath, // path to the Electron / Node binary
+    command: nodeWorkerCommand(), // the Electron binary, run as Node
     args: [workerScriptPath()],
-    env: {
+    env: nodeWorkerEnv({
       NEXY_DN_BRIDGE_PORT: String(bridgePort),
       NEXY_DN_BRIDGE_SECRET: bridgeSecret,
-    },
+    }),
   }
 }
 

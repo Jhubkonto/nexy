@@ -2,6 +2,7 @@ import { createServer, type Server } from 'http'
 import { randomBytes, randomUUID } from 'crypto'
 import { spawn, type ChildProcess } from 'child_process'
 import { join } from 'path'
+import { nodeWorkerCommand, nodeWorkerEnv } from './node-worker-launch'
 import { createDeferredCallback, resolveDeferredCallback } from './deferred-callbacks'
 
 /**
@@ -202,9 +203,9 @@ export function startDeferMcpBridge(options: DeferMcpBridgeOptions): Promise<Def
         server: {
           id: 'nexy-defer',
           key: 'nexy_defer',
-          command: process.execPath,
+          command: nodeWorkerCommand(),
           args: [join(__dirname, 'defer-mcp-worker.cjs')],
-          env: { NEXY_DEFER_BRIDGE_PORT: String(address.port), NEXY_DEFER_BRIDGE_SECRET: secret },
+          env: nodeWorkerEnv({ NEXY_DEFER_BRIDGE_PORT: String(address.port), NEXY_DEFER_BRIDGE_SECRET: secret }),
         },
         allowedTool: 'mcp__nexy_defer__run_and_notify',
         close: () => server.close(),

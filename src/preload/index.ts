@@ -44,8 +44,8 @@ import type {
   CliBackend,
   McpServerWithStatus,
   BackgroundActivity,
-  ProjectWikiMcpConnection,
-  ProjectWikiMcpStatus,
+  DevelopmentMcpConnection,
+  DevelopmentMcpStatus,
   CredentialCreateInput,
   CredentialBindingCreateInput,
   CredentialBindingMetadata,
@@ -422,9 +422,9 @@ const api = {
   deleteWikiEntry: (id: string) => typedInvoke('wiki:delete-entry', id),
   extractWikiLearnings: (conversationId: string, projectId: string, model?: string) =>
     typedInvoke('wiki:extract-learnings', conversationId, projectId, model),
-  startWikiMcp: (projectId: string): Promise<ProjectWikiMcpConnection> => typedInvoke('wiki:mcp-start', projectId),
-  stopWikiMcp: (projectId: string): Promise<boolean> => typedInvoke('wiki:mcp-stop', projectId),
-  getWikiMcpStatus: (projectId: string): Promise<ProjectWikiMcpStatus> => typedInvoke('wiki:mcp-status', projectId),
+  startDevelopmentMcp: (): Promise<DevelopmentMcpConnection> => typedInvoke('development:mcp-start'),
+  stopDevelopmentMcp: (): Promise<boolean> => typedInvoke('development:mcp-stop'),
+  getDevelopmentMcpStatus: (): Promise<DevelopmentMcpStatus> => typedInvoke('development:mcp-status'),
 
   // Prompt Library
   listPrompts: (projectId?: string | null) => typedInvoke('prompt:list', projectId ?? null),
