@@ -324,6 +324,25 @@ describe('CLI adapters', () => {
     await expect(sendPromise).rejects.toThrow('Error: not authenticated')
   })
 
+  it('ClaudeAdapter passes a versioned menu selection as Claude Code\'s executable alias', async () => {
+    const proc = makeProc()
+    mockSpawn.mockReturnValue(proc)
+
+    const sendPromise = ClaudeAdapter.send({} as never, {
+      messages: [{ role: 'user', content: 'hello' }],
+      cwd: 'C:\\workspace',
+      model: 'Opus 5.5',
+      conversationId: 'conv-1',
+    }, () => {})
+
+    proc.stdout.emit('data', Buffer.from(`${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } })}\n`))
+    proc.emit('close', 0)
+    await sendPromise
+
+    const args = mockSpawn.mock.calls[0][1] as string[]
+    expect(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2)).toEqual(['--model', 'opus'])
+  })
+
   it('ClaudeAdapter maps permissionMode to --permission-mode and it wins over skipPermissions', async () => {
     const proc = makeProc()
     mockSpawn.mockReturnValue(proc)

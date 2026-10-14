@@ -9,7 +9,7 @@ import { consumeChainDepthHint } from '../deferred-callbacks'
 import type { CliAgentAdapter, CliAdapterRequest } from './types'
 import { resolveCliPath, killProcess, createLineBuffer, createOpenBlockTracker, buildCliChildEnv, createInactivityWatchdog, CLI_INACTIVITY_TIMEOUT_MS } from './utils'
 import { extractCitations } from '../../shared/citations'
-import { isClaudeCliLegacyCandidate, validateClaudeCliLegacyCandidate } from './claude-model-probe'
+import { isClaudeCliLegacyCandidate, resolveClaudeCliLaunchModel, validateClaudeCliLegacyCandidate } from './claude-model-probe'
 
 type ClaudeContentBlock =
   | { type: 'text'; text?: string }
@@ -238,7 +238,7 @@ export const ClaudeAdapter: CliAgentAdapter = {
         args.push('--agents', JSON.stringify(req.agents))
       }
       if (req.model && req.model !== 'default') {
-        args.push('--model', req.model)
+        args.push('--model', resolveClaudeCliLaunchModel(req.model))
       }
       if (req.thinkingEffort && req.thinkingEffort !== 'disabled') {
         const effortMap: Record<string, string> = { low: 'low', medium: 'medium', high: 'high', max: 'max' }

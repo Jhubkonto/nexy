@@ -77,6 +77,53 @@ function snapshotGrid(term: TerminalType): string {
 
 const MORE_MODELS_PATTERN = /^\s*(?:[>❯]\s*)?(\d+)\.\s+(?:more models|show more models|additional models)\b/i
 
+// Claude Code's model picker is a presentation surface, and recent versions have
+// rendered only the descriptive part of a row in the right-hand column. Keep the
+// CLI alias as the label in that case; descriptions are not model names and must
+// never become selectable model labels in Nexy's picker.
+const MODEL_FAMILY_PATTERN = /\b(?:opus|sonnet|haiku|fable)\b/i
+const MODEL_VERSION_PATTERN = /\b\d+(?:\.\d+)*(?:\s*(?:1m|200k))?\b/i
+
+/**
+ * Claude Code's model menu sometimes puts a version in the selectable left-hand
+ * alias (for example, "Opus 5.5"). That text is for people, not a valid
+ * `--model` value: the CLI accepts the family alias (`opus`) or a full canonical
+ * ID. Keep canonical IDs untouched and reduce only menu-style aliases.
+ */
+export function resolveClaudeCliLaunchModel(model: string): string {
+  const candidate = model.trim()
+  if (!candidate || /^claude[-_/]/i.test(candidate)) return candidate
+  const match = /^(?:claude[\s_-]+)?(opus|sonnet|haiku|fable)(?:[\s_-]+\d+(?:\.\d+)*(?:\s*(?:1m|200k))?)?(?:\s*\([^)]*\))?$/i.exec(candidate)
+  return match ? match[1].toLowerCase() : candidate
+}
+
+function fallbackModelLabel(id: string): string {
+  return id
+    .replace(/^claude[-_/]?/i, '')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (character) => character.toUpperCase())
+    .trim() || id
+}
+
+function isModelName(alias: string, candidate: string): boolean {
+  if (!candidate || /^(?:best|fastest|most|efficient|use|update|billed|available)\b/i.test(candidate)) return false
+  // Keep labels such as "Sonnet 4.6" and "Opus 4.6 with 1M context", while
+  // allowing future model families that use a conventional versioned name.
+  if (MODEL_FAMILY_PATTERN.test(candidate) && MODEL_VERSION_PATTERN.test(candidate)) return true
+  // A custom/model-id style label is still useful even when it has no dotted
+  // version, but it must contain an identifier-like separator rather than prose.
+  if (/^[a-z][\w.-]*(?:[-_/][\w.-]+)+$/i.test(candidate)) return true
+  // For an unversioned custom alias, only retain a right-hand label when it is
+  // the alias itself; otherwise the right-hand text is likely a description.
+  return candidate.localeCompare(alias, undefined, { sensitivity: 'accent' }) === 0
+    && MODEL_FAMILY_PATTERN.test(alias)
+}
+
+function safeModelLabel(id: string, label: string): string {
+  const candidate = label.split('·')[0]?.trim() ?? ''
+  return isModelName(id, candidate) ? candidate : fallbackModelLabel(id)
+}
+
 function parseModelMenu(grid: string): { models: CliModelOption[]; moreModelsRow: string | null } {
   const models: CliModelOption[] = []
   let moreModelsRow: string | null = null
@@ -95,8 +142,9 @@ function parseModelMenu(grid: string): { models: CliModelOption[]; moreModelsRow
     if (!match) continue
     const alias = match[1].trim()
     if (/^Default\b/i.test(alias)) continue
-    const label = match[2].split('·')[0]?.trim()
-    if (label) models.push({ id: alias.toLowerCase(), label })
+    const id = resolveClaudeCliLaunchModel(alias)
+    const label = safeModelLabel(alias, match[2])
+    if (label) models.push({ id, label })
   }
   return { models, moreModelsRow }
 }
@@ -186,9 +234,18 @@ async function runProbe(): Promise<ClaudeCliDiscoveryResult> {
 function normalizeModels(value: unknown): CliModelOption[] {
   if (!Array.isArray(value)) return []
   const seen = new Set<string>()
-  return value.filter((entry): entry is CliModelOption => !!entry && typeof entry === 'object'
-    && typeof (entry as CliModelOption).id === 'string' && typeof (entry as CliModelOption).label === 'string')
-    .filter((model) => !!model.id && !seen.has(model.id) && !!seen.add(model.id))
+  const models: CliModelOption[] = []
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue
+    const model = entry as Partial<CliModelOption>
+    if (typeof model.id !== 'string' || typeof model.label !== 'string') continue
+    const rawId = model.id.trim()
+    const id = resolveClaudeCliLaunchModel(rawId)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    models.push({ id, label: safeModelLabel(rawId, model.label) })
+  }
+  return models
 }
 
 function emptySnapshot(): ClaudeCliModelSnapshot {
@@ -268,7 +325,8 @@ export function isClaudeCliLegacyCandidate(model: string): boolean {
 }
 
 export function isClaudeCliModelOrCandidate(model: string): boolean {
-  return getClaudeCliModelChoices().some((candidate) => candidate.id === model)
+  const launchModel = resolveClaudeCliLaunchModel(model)
+  return getClaudeCliModelChoices().some((candidate) => candidate.id === model || candidate.id === launchModel)
 }
 
 /** A complete list replaces prior entries; partial and failed attempts preserve them. */
@@ -299,7 +357,7 @@ function isExplicitModelRejection(reason: string): boolean {
 }
 
 export type ClaudeCliLegacyValidationResult = { ok: boolean; changed: boolean; reason?: string }
-let legacyValidationInFlight = new Map<string, Promise<ClaudeCliLegacyValidationResult>>()
+const legacyValidationInFlight = new Map<string, Promise<ClaudeCliLegacyValidationResult>>()
 
 /**
  * Validates an official legacy candidate only after the user actually tries to use it. The

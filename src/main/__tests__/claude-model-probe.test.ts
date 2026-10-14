@@ -61,6 +61,8 @@ import {
   getCachedClaudeCliPtyModels,
   getCachedClaudeCliModelSnapshot,
   getClaudeCliModelChoices,
+  isClaudeCliModelOrCandidate,
+  resolveClaudeCliLaunchModel,
   validateClaudeCliLegacyCandidate,
   __setProbeTimingForTests,
 } from '../cli-adapters/claude-model-probe'
@@ -176,6 +178,43 @@ describe('probeClaudeCliModels', () => {
         { id: 'haiku', label: 'Haiku 4.5' },
       ],
     })
+  })
+
+  it('uses the alias when Claude renders a description instead of a model name', async () => {
+    resolveCliPathMock.mockReturnValue('/usr/local/bin/claude')
+    const fakePty = makeFakePty()
+    ptySpawnMock.mockReturnValue(fakePty)
+
+    const promise = probeClaudeCliModels()
+
+    gridState.text = 'Claude Code v2.1.285\n> Try "write a test"'
+    fakePty._emitData('banner')
+    await wait(80)
+
+    gridState.text = [
+      'Select model',
+      '    1. Default (recommended)  Use the default model for this session',
+      '    2. Sonnet                 Best for everyday, complex tasks',
+      '  > 3. Opus √                 Most capable for complex work',
+      '    4. Haiku                  Fastest for quick answers',
+    ].join('\n')
+    fakePty._emitData('description-only-menu')
+    await wait(80)
+
+    await expect(promise).resolves.toMatchObject({
+      status: 'success',
+      models: [
+        { id: 'sonnet', label: 'Sonnet' },
+        { id: 'opus', label: 'Opus' },
+        { id: 'haiku', label: 'Haiku' },
+      ],
+    })
+  })
+
+  it('turns versioned menu aliases into the CLI aliases accepted by --model', () => {
+    expect(resolveClaudeCliLaunchModel('Opus 5.5')).toBe('opus')
+    expect(resolveClaudeCliLaunchModel('Sonnet 5')).toBe('sonnet')
+    expect(resolveClaudeCliLaunchModel('claude-opus-4-8')).toBe('claude-opus-4-8')
   })
 
   it('navigates into the "More models" flyout and merges its entries with the top-level menu', async () => {
@@ -422,6 +461,35 @@ describe('claude CLI PTY model cache', () => {
   it('round-trips cached models through the settings table', () => {
     cacheClaudeCliPtyModels([{ id: 'opus', label: 'Opus 4.8' }])
     expect(getCachedClaudeCliPtyModels()).toEqual([{ id: 'opus', label: 'Opus 4.8' }])
+  })
+
+  it('repairs description labels already persisted by the old parser', () => {
+    mockDb._store.set('claude_cli_pty_models_cache', JSON.stringify({
+      version: 3,
+      models: [
+        { id: 'sonnet', label: 'Best for everyday, complex tasks' },
+        { id: 'haiku', label: 'Fastest for quick answers' },
+      ],
+      completedAt: '2026-01-01T00:00:00.000Z', lastAttemptAt: '2026-01-01T00:00:00.000Z',
+      cliVersion: '2.1.285', lastFailure: null,
+    }))
+
+    expect(getCachedClaudeCliPtyModels()).toEqual([
+      { id: 'sonnet', label: 'Sonnet' },
+      { id: 'haiku', label: 'Haiku' },
+    ])
+  })
+
+  it('repairs persisted versioned menu aliases and recognises old saved selections', () => {
+    mockDb._store.set('claude_cli_pty_models_cache', JSON.stringify({
+      version: 3,
+      models: [{ id: 'opus 5.5', label: 'Opus 5.5' }],
+      completedAt: '2026-01-01T00:00:00.000Z', lastAttemptAt: '2026-01-01T00:00:00.000Z',
+      cliVersion: '2.1.289', lastFailure: null,
+    }))
+
+    expect(getCachedClaudeCliPtyModels()).toEqual([{ id: 'opus', label: 'Opus 5.5' }])
+    expect(isClaudeCliModelOrCandidate('opus 5.5')).toBe(true)
   })
 
   it('records a failed probe without inventing selectable models', () => {
