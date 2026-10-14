@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MarkdownRenderer } from '../../renderer/components/MarkdownRenderer'
+import { setupMockApi } from '../../test/mocks/api'
+import { useAppStore } from '../../renderer/store/app-store'
 
 // Mock clipboard API
 beforeEach(() => {
+  setupMockApi()
+  useAppStore.setState({ toasts: [] })
   Object.defineProperty(navigator, 'clipboard', {
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
     writable: true,
@@ -39,6 +43,20 @@ describe('MarkdownRenderer', () => {
     expect(links).toHaveLength(2)
     expect(links[0]).toHaveTextContent('1')
     expect(links[1]).toHaveTextContent('Example source')
+  })
+
+  it('reveals a local generated file and reports when it is unavailable', async () => {
+    const api = setupMockApi()
+    api.appOpenPath.mockResolvedValueOnce({ ok: false, error: 'File or folder not found' })
+    render(<MarkdownRenderer content="[Generated archive](/C:/work/archive.zip)" />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Generated archive — show local file in folder' }))
+
+    await waitFor(() => expect(api.appOpenPath).toHaveBeenCalledWith('C:/work/archive.zip'))
+    expect(useAppStore.getState().toasts).toContainEqual(expect.objectContaining({
+      type: 'error',
+      message: "Couldn't open local file: File or folder not found",
+    }))
   })
 
   it('preserves literal Markdown in raw mode', () => {

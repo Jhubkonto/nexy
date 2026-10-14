@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import { Copy, Check, ExternalLink } from 'lucide-react'
 import { localPathFromHref } from '../lib/link-routing'
+import { useAppStore } from '../store/app-store'
 import type { Citation } from '../../shared/citations'
 
 function CopyButton({ getText }: { getText: () => string }) {
@@ -43,6 +44,7 @@ function linkDestination(href: string): string {
 
 function MarkdownLink({ href, children }: { href?: string; children: ReactNode }) {
   const localPath = localPathFromHref(href)
+  const addToast = useAppStore((state) => state.addToast)
   const label = typeof children === 'string' ? children : 'Link'
 
   // The model sometimes emits a link with no real destination (e.g. `[text]()`).
@@ -55,12 +57,21 @@ function MarkdownLink({ href, children }: { href?: string; children: ReactNode }
   const destination = linkDestination(href)
 
   if (localPath) {
+    const revealLocalPath = async () => {
+      try {
+        const result = await window.api.appOpenPath(localPath)
+        if (!result.ok) addToast(`Couldn't open local file: ${result.error ?? 'Unknown error'}`, 'error')
+      } catch {
+        addToast("Couldn't open the local file. It may no longer exist at that location.", 'error')
+      }
+    }
+
     return (
       <button
         type="button"
-        title={`Open ${localPath}`}
-        aria-label={`${label} — open local file`}
-        onClick={() => void window.api.appOpenPath(localPath)}
+        title={`Show ${localPath} in its folder`}
+        aria-label={`${label} — show local file in folder`}
+        onClick={() => void revealLocalPath()}
         className="!text-blue-500 hover:!text-blue-400 !underline focus-visible:!outline focus-visible:!outline-2 focus-visible:!outline-blue-400"
       >
         {children} <ExternalLink aria-hidden="true" className="inline-block align-[-0.12em]" size={12} />

@@ -104,7 +104,7 @@ describe('MessageBubble', () => {
     const container = screen.getByText('Hello there').closest('.group')!
     fireEvent.mouseEnter(container)
 
-    expect(screen.getByText('Copy')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy' })).toHaveAttribute('title', 'Copy')
   })
 
   it('calls onCopy when copy button clicked', () => {
@@ -113,7 +113,7 @@ describe('MessageBubble', () => {
 
     const container = screen.getByText('Hello there').closest('.group')!
     fireEvent.mouseEnter(container)
-    fireEvent.click(screen.getByText('Copy'))
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
 
     expect(onCopy).toHaveBeenCalledWith('Hello there')
   })
@@ -123,10 +123,8 @@ describe('MessageBubble', () => {
 
     const container = screen.getByText('Hello there').closest('.group')!
     fireEvent.mouseEnter(container)
-    fireEvent.click(screen.getByText('Copy'))
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
 
-    // Label stays "Copy"; button gets green highlight classes
-    expect(screen.getByText('Copy')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Copy' })).toHaveClass('bg-green-50')
   })
 
@@ -286,7 +284,7 @@ describe('MessageBubble', () => {
     const container = screen.getByText('Hello there').closest('.group')!
     fireEvent.mouseEnter(container)
 
-    expect(screen.getByText('Edit')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit' })).toHaveAttribute('title', 'Edit')
   })
 
   it('calls onEdit on user double-click', () => {

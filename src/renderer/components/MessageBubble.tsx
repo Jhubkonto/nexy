@@ -509,9 +509,10 @@ function ActionButton({
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-nexy-sm border-2 whitespace-nowrap transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+      className={`flex h-7 w-7 items-center justify-center rounded-nexy-sm border-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
         highlight
           ? 'bg-green-50 dark:bg-green-900/30 border-nexy-success text-green-600 dark:text-green-400 shadow-nexy'
           : tone === 'danger'
@@ -522,7 +523,6 @@ function ActionButton({
       aria-label={label}
     >
       <Icon className="w-3 h-3" />
-      <span>{label}</span>
     </button>
   )
 }
