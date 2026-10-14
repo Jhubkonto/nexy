@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, shell } from "electron";
-import { existsSync, writeFileSync } from "fs";
+import { existsSync, statSync, writeFileSync } from "fs";
 import path from "path";
 import { safeHandle } from "./safe-handle";
 import { setAutoStartEnabled } from "./app-lifecycle-settings";
@@ -18,6 +18,13 @@ export function registerSystemHandlers(): void {
       return { ok: false, error: 'Only absolute local paths can be opened' };
     }
     if (!existsSync(absolutePath)) return { ok: false, error: 'File or folder not found' };
+    // A generated-file link is most useful when it reveals the result to the
+    // user.  For folders, open the folder itself; for files, select it in the
+    // platform file manager instead of launching it in an arbitrary program.
+    if (statSync(absolutePath).isFile()) {
+      shell.showItemInFolder(absolutePath);
+      return { ok: true };
+    }
     const error = await shell.openPath(absolutePath);
     return error ? { ok: false, error } : { ok: true };
   });

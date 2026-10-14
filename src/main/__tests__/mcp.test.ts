@@ -649,7 +649,24 @@ describe('MCP — Crash recovery', () => {
     })
 
     const result = await invokeHandler('mcp:restart-server', added.id)
-    expect(result).toBe(false)
+    expect(result).toEqual(expect.objectContaining({ attempted: false, connected: false }))
+    expect(servers.has(added.id)).toBe(false)
+  })
+
+  it('diagnoses a saved server without starting its live connection', async () => {
+    const added = await invokeHandler('mcp:add-server', {
+      name: 'Diagnostic Server', command: 'node', args: [], env: {}, enabled: false,
+    })
+
+    const result = await invokeHandler('mcp:diagnose-server', added.id)
+
+    expect(result).toEqual(expect.objectContaining({
+      found: true,
+      enabled: false,
+      status: 'disconnected',
+      test: expect.objectContaining({ ok: true }),
+    }))
+    expect(result.guidance.join(' ')).toContain('Enable the server')
     expect(servers.has(added.id)).toBe(false)
   })
 

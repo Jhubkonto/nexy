@@ -9,7 +9,7 @@ import { DESKTOP_NAVIGATOR_ID, DESKTOP_NAVIGATOR_TOOLS, createDesktopNavigatorHa
 import { startDesktopNavigatorBridge, getDesktopNavigatorCliConfig } from './desktop-navigator-bridge'
 import { debugLog } from './debug-mode'
 import { searchMcpRegistry } from './mcp-registry'
-import type { McpServerConfig, McpSandboxRuntimeStatus } from '../shared/types'
+import type { McpServerConfig, McpSandboxRuntimeStatus, McpRestartResult, McpServerDiagnosis } from '../shared/types'
 import { normalizeMcpSandboxProfile } from '../shared/mcp-sandbox'
 import { createSandboxedMcpTransport, getMcpSandboxProxyConfig, shutdownMcpSandboxBroker, type McpSandboxHandle } from './mcp-sandbox'
 
@@ -366,7 +366,7 @@ export async function testMcpServer(
     }
     return { ok: true, tools, sandbox: { ...sandboxHandle.status, status: 'sandboxed' } }
   } catch (error) {
-    return { ok: false, error: (error as Error).message }
+    return { ok: false, error: (error as Error).message, sandbox: sandboxHandle.status }
   } finally {
     try {
       await sandboxHandle.close()
@@ -739,14 +739,66 @@ export async function removeMcpServer(id: string): Promise<void> {
   removeServerConfig(id)
 }
 
-export async function restartMcpServer(id: string): Promise<boolean> {
+export async function restartMcpServer(id: string): Promise<McpRestartResult> {
   // Nexy-owned bridges do not have a user launch configuration to restart.
-  if (id === DESKTOP_NAVIGATOR_ID) return false
+  if (id === DESKTOP_NAVIGATOR_ID) {
+    return { attempted: false, connected: true, error: 'This Nexy-managed server cannot be restarted here.' }
+  }
   const configs = loadServerConfigs()
   const config = configs.find((c) => c.id === id)
-  if (!config || !config.enabled) return false
+  if (!config) return { attempted: false, connected: false, error: 'Server configuration was not found.' }
+  if (!config.enabled) return { attempted: false, connected: false, error: 'Server is disabled. Enable it to start a connection.' }
   await connectServer(config).catch(() => {})
-  return true
+  const instance = servers.get(id)
+  return {
+    attempted: true,
+    connected: instance?.status === 'connected',
+    ...(instance?.status === 'connected' ? {} : { error: instance?.error ?? 'The server did not establish an MCP connection.' }),
+  }
+}
+
+function connectionGuidance(config: McpServerConfig, test: McpTestResult): string[] {
+  if (test.ok) {
+    return config.enabled
+      ? ['The isolated connection test passed. Retry connection to replace the live process, then check whether another process or policy is closing it.']
+      : ['The isolated connection test passed. Enable the server when you are ready to start its live connection.']
+  }
+
+  const error = `${test.error ?? ''} ${test.sandbox?.diagnostics ?? ''}`.toLowerCase()
+  const guidance: string[] = []
+  if (/enoent|not recognized|command not found|spawn/.test(error)) {
+    guidance.push('Verify that the launch command is installed and available on Nexy’s PATH, then check its spelling.')
+  }
+  if (/connection closed|closed unexpectedly|eof|exited/.test(error)) {
+    guidance.push('The server exited during MCP startup. Check its arguments, required environment variables, and working directory; run the displayed command in a terminal for its own startup output.')
+  }
+  if (/sandbox|access denied|permission/.test(error)) {
+    guidance.push('Review the sandbox diagnostic below and the server’s filesystem, network, or child-process requirements in Edit setup.')
+  }
+  if (config.cwd) guidance.push('Confirm that the configured working directory still exists and is accessible.')
+  if (guidance.length === 0) guidance.push('Review the exact test error and verify the command, arguments, environment variables, and working directory in Edit setup.')
+  return guidance
+}
+
+/**
+ * Safely investigates the persisted configuration without changing its enabled state
+ * or replacing the live connection. Secrets in the environment are never returned.
+ */
+export async function diagnoseMcpServer(id: string): Promise<McpServerDiagnosis> {
+  const config = loadServerConfigs().find((candidate) => candidate.id === id)
+  const instance = servers.get(id)
+  if (!config) {
+    return { found: false, enabled: false, status: 'disconnected', guidance: ['Server configuration was not found. Refresh the list or add the server again.'] }
+  }
+  const test = await testMcpServer(config)
+  return {
+    found: true,
+    enabled: config.enabled,
+    status: instance?.status ?? 'disconnected',
+    ...(instance?.error ? { liveError: instance.error } : {}),
+    test,
+    guidance: connectionGuidance(config, test),
+  }
 }
 
 export function listMcpTools(serverIds?: string[]): McpTool[] {
@@ -882,6 +934,10 @@ export function registerMcpHandlers(): void {
 
   safeHandle('mcp:restart-server', async (_event, id: string) => {
     return await restartMcpServer(id)
+  })
+
+  safeHandle('mcp:diagnose-server', async (_event, id: string) => {
+    return await diagnoseMcpServer(id)
   })
 
   safeHandle('mcp:test-server', async (_event, config: McpLaunchConfig) => {

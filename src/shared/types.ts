@@ -2086,6 +2086,23 @@ export interface McpTestResult {
   sandbox?: McpSandboxRuntimeStatus
 }
 
+/** Result of asking the live runtime to start a configured MCP server. */
+export interface McpRestartResult {
+  attempted: boolean
+  connected: boolean
+  error?: string
+}
+
+/** A safe, temporary connection check of a saved MCP server configuration. */
+export interface McpServerDiagnosis {
+  found: boolean
+  enabled: boolean
+  status: 'connecting' | 'connected' | 'error' | 'disconnected'
+  liveError?: string
+  test?: McpTestResult
+  guidance: string[]
+}
+
 export interface McpRegistryEnvRequirement {
   key: string
   label: string
@@ -2476,7 +2493,8 @@ export type IpcReturnMap = {
   'mcp:list-tools': McpTool[]
   'mcp:list-tools-for-agent': McpTool[]
   'mcp:remove-server': boolean
-  'mcp:restart-server': boolean
+  'mcp:restart-server': McpRestartResult
+  'mcp:diagnose-server': McpServerDiagnosis
   'mcp:server-status-changed': void
   'mcp:test-server': McpTestResult
   'mcp:search-registry': McpRegistrySearchResult
@@ -2937,6 +2955,7 @@ export type IpcChannels =
   | 'mcp:list-tools-for-agent'
   | 'mcp:remove-server'
   | 'mcp:restart-server'
+  | 'mcp:diagnose-server'
   | 'mcp:server-status-changed'
   | 'mcp:test-server'
   | 'mcp:search-registry'
