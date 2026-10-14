@@ -81,6 +81,7 @@ const ALL_CHANNELS = [
   'mcp:list-tools-for-agent',
   'mcp:remove-server',
   'mcp:restart-server',
+  'mcp:diagnose-server',
   'mcp:server-status-changed',
   'mcp:update-server',
   'message:delete',

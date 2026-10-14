@@ -537,6 +537,7 @@ const api = {
   callMcpTool: (serverId: string, toolName: string, args: Record<string, unknown>, agentId?: string) =>
     typedInvoke('mcp:call-tool', serverId, toolName, args, agentId),
   restartMcpServer: (id: string) => typedInvoke('mcp:restart-server', id),
+  diagnoseMcpServer: (id: string) => typedInvoke('mcp:diagnose-server', id),
   testMcpServer: (config: Record<string, unknown>) => typedInvoke('mcp:test-server', config),
   searchMcpRegistry: (query: string) => typedInvoke('mcp:search-registry', query),
   onMcpServerStatusChanged: (callback: (server: McpServerWithStatus) => void) => {
@@ -965,7 +966,7 @@ const api = {
   artifactGetFileContent: (versionId: string, relativePath: string) =>
     typedInvoke('artifact:get-file-content', versionId, relativePath),
 
-  // Opens a validated local path using the operating system's default handler.
+  // Reveals a validated local file in the operating system file manager, or opens a folder.
   appOpenPath: (absolutePath: string) => typedInvoke('app:open-path', absolutePath),
 
   // Artifact generator
