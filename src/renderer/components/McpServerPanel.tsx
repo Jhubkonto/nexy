@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Plug, X, RefreshCw, Settings, Trash2, Plus, ChevronLeft, ChevronDown, ChevronRight, Search, Wrench, ClipboardPaste, ExternalLink, CheckCircle2, AlertCircle, Loader2, Globe2, ShieldCheck, Users, Library, SlidersHorizontal, Database, FileText, TerminalSquare, Eye, LockKeyhole } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
 import { Button, ModalShell } from './ui/primitives'
-import { isApiError, type AgentConfig, type McpRegistrySearchResult, type McpRegistryServer, type McpSandboxProfile, type McpSandboxRuntimeStatus, type McpTool } from '@shared/types'
+import { isApiError, type AgentConfig, type McpRegistrySearchResult, type McpRegistryServer, type McpSandboxProfile, type McpSandboxRuntimeStatus, type McpServerDiagnosis, type McpTool } from '@shared/types'
 import { DEFAULT_MCP_SANDBOX_PROFILE, normalizeMcpSandboxProfile } from '@shared/mcp-sandbox'
 import {
   MCP_CATALOG,
@@ -240,6 +240,8 @@ export function McpServerPanel() {
   const [toolCategory, setToolCategory] = useState<ToolCategory>('all')
   const [expandedToolServers, setExpandedToolServers] = useState<Set<string>>(new Set())
   const [expandedServerDetails, setExpandedServerDetails] = useState<Set<string>>(new Set())
+  const [connectionBusy, setConnectionBusy] = useState<Set<string>>(new Set())
+  const [diagnoses, setDiagnoses] = useState<Record<string, McpServerDiagnosis>>({})
   const [accessAgents, setAccessAgents] = useState<AgentConfig[]>([])
   const [accessAgentId, setAccessAgentId] = useState('')
   const [accessTrust, setAccessTrust] = useState<Record<string, AssignmentTrust>>({})
@@ -318,6 +320,8 @@ export function McpServerPanel() {
       setAccessError(null)
       setAccessAgentId('')
       setAccessTrust({})
+      setConnectionBusy(new Set())
+      setDiagnoses({})
     }
   }, [visible, loadServers, loadTools, loadAccessAgents])
 
@@ -511,19 +515,53 @@ export function McpServerPanel() {
     }
   }
 
-  const handleRestart = async (id: string) => {
+  const handleRestart = async (server: McpServerStatus) => {
+    setConnectionBusy((previous) => new Set(previous).add(server.id))
     try {
-      await window.api.restartMcpServer(id)
-      // Status updates arrive via the mcp:server-status-changed push event.
+      const result = await window.api.restartMcpServer(server.id)
+      await loadServers()
+      if (result.connected) {
+        addToast(`${server.name} connected`, 'success')
+      } else {
+        addToast(`Retry failed: ${result.error || 'server did not connect'}. Run Diagnose connection for next steps.`, 'error')
+      }
     } catch {
       addToast('Failed to restart server', 'error')
+    } finally {
+      setConnectionBusy((previous) => {
+        const next = new Set(previous)
+        next.delete(server.id)
+        return next
+      })
+    }
+  }
+
+  const handleDiagnose = async (server: McpServerStatus) => {
+    setConnectionBusy((previous) => new Set(previous).add(server.id))
+    try {
+      const diagnosis = await window.api.diagnoseMcpServer(server.id)
+      setDiagnoses((previous) => ({ ...previous, [server.id]: diagnosis }))
+      await loadServers()
+    } catch {
+      addToast('Could not diagnose this server connection', 'error')
+    } finally {
+      setConnectionBusy((previous) => {
+        const next = new Set(previous)
+        next.delete(server.id)
+        return next
+      })
     }
   }
 
   const handleToggle = async (server: McpServerStatus) => {
     try {
       await window.api.updateMcpServer(server.id, { enabled: !server.enabled })
-      loadServers()
+      const current = await loadServers()
+      if (!server.enabled) {
+        const updated = current.find((candidate) => candidate.id === server.id)
+        if (updated?.status === 'connected') addToast(`${server.name} enabled and connected`, 'success')
+        else addToast(`${server.name} was enabled but did not connect. Run Diagnose connection for details.`, 'error')
+      }
     } catch {
       addToast('Failed to toggle server', 'error')
     }
@@ -1425,6 +1463,8 @@ export function McpServerPanel() {
               </div>
               {servers.map((server) => {
                 const detailsOpen = expandedServerDetails.has(server.id)
+                const diagnosis = diagnoses[server.id]
+                const connectionActionBusy = connectionBusy.has(server.id)
                 const statusLabel = server.status === 'connected' ? 'Connected' : server.status === 'connecting' ? 'Connecting' : server.status === 'error' ? 'Needs attention' : server.enabled ? 'Offline' : 'Disabled'
                 const assignedAgentCount = agentCountByServer.get(server.id) ?? 0
                 return (
@@ -1443,12 +1483,35 @@ export function McpServerPanel() {
                         {server.error ? <p className="mt-1 truncate text-[11px] text-nexy-error">{server.error}</p> : <p className="mt-1 text-[11px] text-nexy-muted">Ready to use in a chat or assign to an agent.</p>}
                       </div>
                       {!server.managed && <div className="flex shrink-0 items-center gap-1">
-                        <button onClick={() => handleToggle(server)} className={`rounded-full border-2 px-2 py-1 text-[10px] font-bold ${server.enabled ? 'border-nexy-success bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-300' : 'border-nexy-border bg-nexy-recessed text-nexy-muted'}`} title={server.enabled ? 'Disable' : 'Enable'}>{server.enabled ? 'ON' : 'OFF'}</button>
-                        <button onClick={() => handleRestart(server.id)} className="rounded-nexy-sm border-2 border-transparent p-1.5 text-nexy-muted hover:border-nexy-border hover:bg-nexy-recessed hover:text-nexy-text" title="Restart" aria-label="Restart server"><RefreshCw className="h-3.5 w-3.5" /></button>
+                        <button onClick={() => handleToggle(server)} className={`rounded-full border-2 px-2 py-1 text-[10px] font-bold ${server.enabled ? 'border-nexy-success bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-300' : 'border-nexy-border bg-nexy-recessed text-nexy-muted'}`} title={server.enabled ? 'Disable' : 'Enable and connect'}>{server.enabled ? 'ON' : 'OFF'}</button>
+                        {server.enabled && <button onClick={() => handleRestart(server)} disabled={connectionActionBusy} className="rounded-nexy-sm border-2 border-transparent p-1.5 text-nexy-muted hover:border-nexy-border hover:bg-nexy-recessed hover:text-nexy-text disabled:cursor-wait disabled:opacity-50" title="Retry connection" aria-label="Retry connection">{connectionActionBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}</button>}
                         <button onClick={() => handleEdit(server)} className="rounded-nexy-sm border-2 border-transparent p-1.5 text-nexy-muted hover:border-nexy-border hover:bg-nexy-recessed hover:text-nexy-text" title="Edit" aria-label="Edit server"><Settings className="h-3.5 w-3.5" /></button>
                         <button onClick={() => handleDelete(server.id)} className="rounded-nexy-sm border-2 border-transparent p-1.5 text-nexy-muted hover:border-nexy-error hover:bg-red-50 hover:text-nexy-error dark:hover:bg-red-950/30" title="Remove" aria-label="Remove server"><Trash2 className="h-3.5 w-3.5" /></button>
                       </div>}
                     </div>
+                    {!server.managed && server.status !== 'connected' && (
+                      <div className="flex flex-wrap items-center gap-2 border-t-2 border-nexy-border bg-amber-50 px-3 py-2 dark:bg-amber-950/20">
+                        <span className="text-[10px] text-nexy-muted">{server.enabled ? 'Connection unavailable.' : 'Disabled servers are not started.'}</span>
+                        <button type="button" onClick={() => handleDiagnose(server)} disabled={connectionActionBusy} className="inline-flex items-center gap-1 rounded-nexy-sm border border-nexy-border bg-nexy-raised px-2 py-1 text-[10px] font-bold text-nexy-text hover:bg-nexy-recessed disabled:cursor-wait disabled:opacity-50">
+                          {connectionActionBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />}
+                          Diagnose connection
+                        </button>
+                        {!server.enabled && <button type="button" onClick={() => handleToggle(server)} className="text-[10px] font-bold text-nexy-accent hover:underline">Enable &amp; connect</button>}
+                      </div>
+                    )}
+                    {diagnosis && (
+                      <div className={`space-y-2 border-t-2 border-nexy-border px-3 py-2 text-[11px] ${diagnosis.test?.ok ? 'bg-green-50 dark:bg-green-950/20' : 'bg-red-50 dark:bg-red-950/20'}`} role="status">
+                        <p className="font-bold text-nexy-text">Connection diagnosis</p>
+                        {diagnosis.test ? diagnosis.test.ok ? (
+                          <p className="text-nexy-muted">Temporary test connected and found {diagnosis.test.tools?.length ?? 0} tool{diagnosis.test.tools?.length === 1 ? '' : 's'}.</p>
+                        ) : (
+                          <p className="break-words text-nexy-error">Test failed: {diagnosis.test.error || 'The server did not complete its MCP handshake.'}</p>
+                        ) : <p className="text-nexy-error">{diagnosis.guidance[0]}</p>}
+                        {diagnosis.liveError && diagnosis.liveError !== diagnosis.test?.error && <p className="break-words text-nexy-error">Live connection: {diagnosis.liveError}</p>}
+                        {diagnosis.test?.sandbox?.diagnostics && <p className="break-words text-nexy-error">Sandbox: {diagnosis.test.sandbox.diagnostics}</p>}
+                        {diagnosis.guidance.length > 0 && <ul className="list-disc space-y-1 pl-4 text-nexy-muted">{diagnosis.guidance.map((item) => <li key={item}>{item}</li>)}</ul>}
+                      </div>
+                    )}
                     <button type="button" onClick={() => setExpandedServerDetails((previous) => { const next = new Set(previous); if (next.has(server.id)) next.delete(server.id); else next.add(server.id); return next })} className="flex w-full items-center gap-1 border-t-2 border-nexy-border bg-nexy-surface px-3 py-2 text-left text-[10px] font-bold text-nexy-muted hover:bg-nexy-recessed" aria-expanded={detailsOpen}>
                       {detailsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />} Technical details
                     </button>

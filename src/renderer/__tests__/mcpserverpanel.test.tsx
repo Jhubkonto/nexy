@@ -285,10 +285,27 @@ describe('McpServerPanel — CRUD Operations', () => {
 
     await waitFor(() => expect(screen.getByText('GitHub MCP')).toBeInTheDocument())
 
-    const restartButtons = screen.getAllByTitle('Restart')
+    const restartButtons = screen.getAllByTitle('Retry connection')
     await user.click(restartButtons[0])
 
     expect(mockApi.restartMcpServer).toHaveBeenCalledWith('srv-1')
+  })
+
+  it('runs an isolated diagnosis and displays actionable guidance for an offline server', async () => {
+    mockApi.diagnoseMcpServer = vi.fn().mockResolvedValue({
+      found: true,
+      enabled: true,
+      status: 'error',
+      test: { ok: false, error: 'MCP error -32000: Connection closed' },
+      guidance: ['The server exited during MCP startup. Check its arguments, required environment variables, and working directory.'],
+    })
+    render(<McpServerPanel />)
+
+    await user.click(await screen.findByText('Diagnose connection'))
+
+    expect(mockApi.diagnoseMcpServer).toHaveBeenCalledWith('srv-2')
+    expect(await screen.findByText('Connection diagnosis')).toBeInTheDocument()
+    expect(screen.getByText(/The server exited during MCP startup/)).toBeInTheDocument()
   })
 })
 
@@ -358,7 +375,7 @@ describe('McpServerPanel — Error Handling', () => {
     render(<McpServerPanel />)
 
     await waitFor(() => expect(screen.getByText('GitHub MCP')).toBeInTheDocument())
-    await user.click(screen.getAllByTitle('Restart')[0])
+    await user.click(screen.getAllByTitle('Retry connection')[0])
 
     expect(mockStore.addToast).toHaveBeenCalledWith('Failed to restart server', 'error')
   })

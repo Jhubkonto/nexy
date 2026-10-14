@@ -5,6 +5,7 @@ describe('local markdown link routing', () => {
   it('recognizes native Windows paths', () => {
     expect(localPathFromHref('C:\\Users\\Julian\\artifact.md')).toBe('C:\\Users\\Julian\\artifact.md')
     expect(localPathFromHref('C:/Users/Julian/artifact.md')).toBe('C:/Users/Julian/artifact.md')
+    expect(localPathFromHref('/C:/Users/Julian/artifact%20one.md')).toBe('C:/Users/Julian/artifact one.md')
   })
 
   it('converts file URLs into paths', () => {
