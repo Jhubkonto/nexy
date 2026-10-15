@@ -2067,6 +2067,9 @@ export interface McpServerWithStatus extends McpServerConfig {
   serverVersion?: { name: string; version: string }
   instructions?: string
   sandbox?: McpSandboxRuntimeStatus
+  /** Explanation of the last failed live start, when status is 'error'. */
+  failure?: McpLaunchFailure
+  errorLogId?: string
 }
 
 export interface McpServerStatus {
@@ -2081,6 +2084,8 @@ export interface McpServerStatus {
   sandbox?: McpSandboxRuntimeStatus
   /** True for Nexy-owned in-process bridges such as Desktop Navigator. */
   managed?: boolean
+  failure?: McpLaunchFailure
+  errorLogId?: string
 }
 
 export interface McpToolOverrideRow {
@@ -2098,11 +2103,55 @@ export interface McpCallResult {
   error?: string
 }
 
+/** One step of an MCP server start-up, shown to the user as a checklist. */
+export type McpLaunchStageId = 'runtime' | 'sandbox' | 'server' | 'tools' | 'browser'
+export type McpLaunchStageState = 'passed' | 'failed' | 'skipped' | 'not-run'
+
+export interface McpLaunchStage {
+  id: McpLaunchStageId
+  label: string
+  state: McpLaunchStageState
+  detail?: string
+}
+
+export type McpLaunchFailureKind =
+  | 'runtime-missing'
+  | 'runtime-downloading'
+  | 'helper-unavailable'
+  | 'sandbox'
+  | 'filesystem'
+  | 'command-not-found'
+  | 'permission'
+  | 'server-crashed'
+  | 'server-exited'
+  | 'timeout'
+  | 'browser-launch'
+  | 'unknown'
+
+/** Remediations the UI can offer directly next to a failed start. */
+export type McpLaunchAction = 'retry' | 'repair-sandbox' | 'download-browser' | 'edit-setup'
+
+/** A plain-language explanation of why an MCP server did not start. */
+export interface McpLaunchFailure {
+  kind: McpLaunchFailureKind
+  title: string
+  explanation: string
+  actions: McpLaunchAction[]
+}
+
 export interface McpTestResult {
   ok: boolean
   tools?: { name: string; description?: string }[]
+  /** Raw transport/launch error, kept for technical details. */
   error?: string
   sandbox?: McpSandboxRuntimeStatus
+  /** Start-up checklist; absent only for input validation errors. */
+  stages?: McpLaunchStage[]
+  failure?: McpLaunchFailure
+  /** Redacted, bounded tail of the sandbox helper and server error output. */
+  stderr?: string
+  /** Error-log entry holding the full technical report, for "View logs". */
+  errorLogId?: string
 }
 
 /** Result of asking the live runtime to start a configured MCP server. */
