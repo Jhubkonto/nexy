@@ -354,6 +354,69 @@ describe('McpServerPanel — Pre-flight test', () => {
 
     expect(await screen.findByText('spawn ENOENT')).toBeInTheDocument()
   })
+
+  it('explains a failed start with a checklist, error output, and working actions', async () => {
+    const failed = {
+      ok: false,
+      error: 'MCP error -32000: Connection closed',
+      failure: {
+        kind: 'sandbox',
+        title: 'The Windows sandbox could not start the server',
+        explanation: 'Could not create the AppContainer process (Win32 error 203).',
+        actions: ['repair-sandbox', 'retry'],
+      },
+      stages: [
+        { id: 'sandbox', label: 'Sandbox started', state: 'failed', detail: 'The Windows sandbox could not start the server' },
+        { id: 'server', label: 'MCP server started', state: 'not-run' },
+        { id: 'tools', label: 'Tools listed', state: 'not-run' },
+      ],
+      stderr: 'mcp-sandbox: Windows sandbox: could not create the AppContainer process (Win32 error 203)',
+      errorLogId: 'log-42',
+    }
+    mockApi.listMcpServers = vi.fn().mockResolvedValue([])
+    mockApi.testMcpServer = vi.fn()
+      .mockResolvedValueOnce(failed)
+      .mockResolvedValueOnce({ ok: true, tools: [{ name: 'a' }], stages: [] })
+    render(<McpServerPanel />)
+
+    await user.click(await screen.findByText('Custom server'))
+    await user.type(screen.getByPlaceholderText('npx'), 'node')
+    await user.click(screen.getByText('Test connection'))
+
+    expect(await screen.findByText('The Windows sandbox could not start the server')).toBeInTheDocument()
+    expect(screen.getByLabelText('Sandbox started: failed')).toBeInTheDocument()
+    expect(screen.getByLabelText('Tools listed: not reached')).toBeInTheDocument()
+
+    // The raw output is available on demand.
+    await user.click(screen.getByText('Technical details'))
+    expect(screen.getByText(/Win32 error 203\)$/m)).toBeInTheDocument()
+
+    // View logs deep-links into the developer console entry.
+    await user.click(screen.getByText('View logs'))
+    expect(mockStore.setSettingsInitialTab).toHaveBeenCalledWith('developer:console:log-42')
+  })
+
+  it('repairs the sandbox from the report and re-runs the test', async () => {
+    mockApi.listMcpServers = vi.fn().mockResolvedValue([])
+    mockApi.testMcpServer = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        error: 'MCP error -32000: Connection closed',
+        failure: { kind: 'sandbox', title: 'The Windows sandbox could not start the server', explanation: 'x', actions: ['repair-sandbox', 'retry'] },
+        stages: [{ id: 'sandbox', label: 'Sandbox started', state: 'failed' }],
+      })
+      .mockResolvedValueOnce({ ok: true, tools: [{ name: 'a' }, { name: 'b' }, { name: 'c' }], stages: [] })
+    render(<McpServerPanel />)
+
+    await user.click(await screen.findByText('Custom server'))
+    await user.type(screen.getByPlaceholderText('npx'), 'node')
+    await user.click(screen.getByText('Test connection'))
+    await user.click(await screen.findByText('Repair sandbox'))
+
+    expect(mockApi.repairMcpSandbox).toHaveBeenCalled()
+    expect(await screen.findByText(/found 3 tools/)).toBeInTheDocument()
+    expect(mockApi.testMcpServer).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('McpServerPanel — Error Handling', () => {

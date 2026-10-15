@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Plug, X, RefreshCw, Settings, Trash2, Plus, ChevronLeft, ChevronDown, ChevronRight, Search, Wrench, ClipboardPaste, ExternalLink, CheckCircle2, AlertCircle, Loader2, Globe2, ShieldCheck, Users, Library, SlidersHorizontal, Database, FileText, TerminalSquare, Eye, LockKeyhole } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
 import { Button, ModalShell } from './ui/primitives'
-import { isApiError, type AgentConfig, type ManagedBrowserRuntimeStatus, type McpRegistrySearchResult, type McpRegistryServer, type McpSandboxProfile, type McpSandboxRuntimeStatus, type McpServerDiagnosis, type McpTool } from '@shared/types'
+import { isApiError, type AgentConfig, type ManagedBrowserRuntimeStatus, type McpLaunchAction, type McpLaunchFailure, type McpRegistrySearchResult, type McpRegistryServer, type McpSandboxProfile, type McpSandboxRuntimeStatus, type McpServerDiagnosis, type McpTestResult, type McpTool } from '@shared/types'
+import { McpLaunchReport } from './McpLaunchReport'
 import { DEFAULT_MCP_SANDBOX_PROFILE, normalizeMcpSandboxProfile } from '@shared/mcp-sandbox'
 import {
   MCP_CATALOG,
@@ -17,7 +18,7 @@ import {
 type TestState =
   | { status: 'idle' }
   | { status: 'testing' }
-  | { status: 'ok'; toolCount: number }
+  | { status: 'done'; result: McpTestResult }
   | { status: 'error'; message: string }
 
 interface McpServerConfig {
@@ -39,6 +40,8 @@ interface McpServerStatus extends McpServerConfig {
   toolCount: number
   managed?: boolean
   sandbox?: McpSandboxRuntimeStatus
+  failure?: McpLaunchFailure
+  errorLogId?: string
 }
 
 type PanelView = 'gallery' | 'tools' | 'access' | 'form' | 'json' | 'registry' | 'assign'
@@ -252,7 +255,8 @@ export function McpServerPanel() {
   const [accessError, setAccessError] = useState<string | null>(null)
   const [managedBrowser, setManagedBrowser] = useState<ManagedBrowserRuntimeStatus | null>(null)
   const [managedBrowserBusy, setManagedBrowserBusy] = useState(false)
-  const [sandboxRepairBusy, setSandboxRepairBusy] = useState(false)
+  /** Remediation currently running from a launch report (form or a server's diagnosis). */
+  const [remediation, setRemediation] = useState<{ scope: string; action: McpLaunchAction } | null>(null)
 
   const loadServers = useCallback(async () => {
     try {
@@ -440,11 +444,7 @@ export function McpServerPanel() {
         sandboxProfile: sandboxProfileFor(editingServer),
         launch: editingServer.launch,
       })
-      if (result.ok) {
-        setTest({ status: 'ok', toolCount: result.tools?.length ?? 0 })
-      } else {
-        setTest({ status: 'error', message: result.error || 'Connection failed' })
-      }
+      setTest({ status: 'done', result })
     } catch {
       setTest({ status: 'error', message: 'Could not run the test' })
     }
@@ -536,7 +536,7 @@ export function McpServerPanel() {
     return () => clearInterval(timer)
   }, [visible, managedBrowserDownloading, managedBrowserBusy])
 
-  const handleManagedBrowserInstall = async () => {
+  const handleManagedBrowserInstall = async (): Promise<ManagedBrowserRuntimeStatus | null> => {
     setManagedBrowserBusy(true)
     setManagedBrowser((current) => current && { ...current, state: 'downloading', detail: 'Starting download…', errorLogId: undefined })
     try {
@@ -544,6 +544,7 @@ export function McpServerPanel() {
       setManagedBrowser(status)
       if (status.state === 'ready') addToast('Managed Chromium is ready', 'success')
       else addToast(`Chromium download ${status.state}. See the details here, then retry.`, 'error')
+      return status
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
       setManagedBrowser((current) => ({
@@ -553,27 +554,45 @@ export function McpServerPanel() {
         detail: `Could not start the Chromium download: ${detail}. Check that Nexy can write to its application data folder, then retry.`,
       }))
       addToast('Could not start managed Chromium download. See details in the form.', 'error')
+      return null
     } finally {
       setManagedBrowserBusy(false)
     }
   }
 
-  const handleViewManagedBrowserError = () => {
-    if (!managedBrowser?.errorLogId) return
-    setSettingsInitialTab(`developer:console:${managedBrowser.errorLogId}`)
+  const handleViewLog = (errorLogId: string) => {
+    setSettingsInitialTab(`developer:console:${errorLogId}`)
     setShowMcpPanel(false)
     setShowSettings(true)
   }
 
-  const handleSandboxRepair = async () => {
-    setSandboxRepairBusy(true)
+  const handleViewManagedBrowserError = () => {
+    if (managedBrowser?.errorLogId) handleViewLog(managedBrowser.errorLogId)
+  }
+
+  const handleSandboxRepair = async (): Promise<boolean> => {
     try {
       await window.api.repairMcpSandbox()
-      addToast('Nexy sandbox profile repaired. Retry the connection.', 'success')
+      addToast('Nexy sandbox profile repaired', 'success')
+      return true
     } catch {
       addToast('Could not repair the Nexy sandbox profile', 'error')
+      return false
+    }
+  }
+
+  /** Runs a remediation from a launch report, then re-checks so the user sees the outcome. */
+  const runRemediation = async (scope: string, action: McpLaunchAction, recheck: () => Promise<void>) => {
+    setRemediation({ scope, action })
+    try {
+      if (action === 'repair-sandbox' && !(await handleSandboxRepair())) return
+      if (action === 'download-browser') {
+        const status = await handleManagedBrowserInstall()
+        if (status?.state !== 'ready') return
+      }
+      await recheck()
     } finally {
-      setSandboxRepairBusy(false)
+      setRemediation(null)
     }
   }
 
@@ -1483,7 +1502,9 @@ export function McpServerPanel() {
               {test.status === 'testing' ? (
                 <>
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  Testing connection…
+                  {editingServer.launch?.kind === 'managed-playwright' && editingServer.launch.mode === 'launch'
+                    ? 'Testing connection and opening Chromium…'
+                    : 'Testing connection…'}
                 </>
               ) : (
                 <>
@@ -1492,13 +1513,17 @@ export function McpServerPanel() {
                 </>
               )}
             </Button>
-            {test.status === 'ok' && (
-              <div className="flex items-start gap-2 text-xs text-green-600 dark:text-green-500 bg-green-50 dark:bg-green-900/20 rounded-lg px-3 py-2">
-                <CheckCircle2 className="w-4 h-4 shrink-0 mt-px" />
-                <span>
-                  Connected — found {test.toolCount} tool{test.toolCount !== 1 ? 's' : ''}.
-                </span>
-              </div>
+            {test.status === 'done' && (
+              <McpLaunchReport
+                result={test.result}
+                busy={remediation?.scope === 'form'}
+                busyAction={remediation?.scope === 'form' ? remediation.action : undefined}
+                onRetry={() => void handleTestConnection()}
+                onRepairSandbox={() => void runRemediation('form', 'repair-sandbox', handleTestConnection)}
+                onDownloadBrowser={() => void runRemediation('form', 'download-browser', handleTestConnection)}
+                onEditSetup={() => setAdvancedOpen(true)}
+                onViewLog={handleViewLog}
+              />
             )}
             {test.status === 'error' && (
               <div className="flex items-start gap-2 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2">
@@ -1572,7 +1597,12 @@ export function McpServerPanel() {
                           <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 dark:text-emerald-300"><ShieldCheck className="h-3 w-3" /> {server.sandbox?.status === 'unavailable' ? 'Sandbox unavailable' : 'Sandboxed'}</span>
                           {assignedAgentCount > 0 && <span className="text-[10px] text-nexy-muted">· {assignedAgentCount} agent{assignedAgentCount === 1 ? '' : 's'}</span>}
                         </div>
-                        {server.error ? <p className="mt-1 truncate text-[11px] text-nexy-error">{server.error}</p> : <p className="mt-1 text-[11px] text-nexy-muted">Ready to use in a chat or assign to an agent.</p>}
+                        {server.error ? (
+                          <div className="mt-1 flex min-w-0 items-center gap-2">
+                            <p className="min-w-0 truncate text-[11px] text-nexy-error" title={server.error}>{server.failure?.title ?? server.error}</p>
+                            {server.errorLogId && <button type="button" onClick={() => handleViewLog(server.errorLogId!)} className="shrink-0 text-[10px] font-bold text-nexy-accent hover:underline">View logs</button>}
+                          </div>
+                        ) : <p className="mt-1 text-[11px] text-nexy-muted">Ready to use in a chat or assign to an agent.</p>}
                       </div>
                       {!server.managed && <div className="flex shrink-0 items-center gap-1">
                         <button onClick={() => handleToggle(server)} className={`rounded-full border-2 px-2 py-1 text-[10px] font-bold ${server.enabled ? 'border-nexy-success bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-300' : 'border-nexy-border bg-nexy-recessed text-nexy-muted'}`} title={server.enabled ? 'Disable' : 'Enable and connect'}>{server.enabled ? 'ON' : 'OFF'}</button>
@@ -1594,15 +1624,20 @@ export function McpServerPanel() {
                     {diagnosis && (
                       <div className={`space-y-2 border-t-2 border-nexy-border px-3 py-2 text-[11px] ${diagnosis.test?.ok ? 'bg-green-50 dark:bg-green-950/20' : 'bg-red-50 dark:bg-red-950/20'}`} role="status">
                         <p className="font-bold text-nexy-text">Connection diagnosis</p>
-                        {diagnosis.test ? diagnosis.test.ok ? (
-                          <p className="text-nexy-muted">Temporary test connected and found {diagnosis.test.tools?.length ?? 0} tool{diagnosis.test.tools?.length === 1 ? '' : 's'}.</p>
-                        ) : (
-                          <p className="break-words text-nexy-error">Test failed: {diagnosis.test.error || 'The server did not complete its MCP handshake.'}</p>
+                        {diagnosis.test ? (
+                          <McpLaunchReport
+                            result={diagnosis.test}
+                            busy={connectionActionBusy || remediation?.scope === server.id}
+                            busyAction={remediation?.scope === server.id ? remediation.action : undefined}
+                            onRetry={() => void handleDiagnose(server)}
+                            onRepairSandbox={() => void runRemediation(server.id, 'repair-sandbox', () => handleDiagnose(server))}
+                            onDownloadBrowser={() => void runRemediation(server.id, 'download-browser', () => handleDiagnose(server))}
+                            onEditSetup={() => handleEdit(server)}
+                            onViewLog={handleViewLog}
+                          />
                         ) : <p className="text-nexy-error">{diagnosis.guidance[0]}</p>}
-                        {diagnosis.liveError && diagnosis.liveError !== diagnosis.test?.error && <p className="break-words text-nexy-error">Live connection: {diagnosis.liveError}</p>}
-                        {diagnosis.test?.sandbox?.diagnostics && <p className="break-words text-nexy-error">Sandbox: {diagnosis.test.sandbox.diagnostics}</p>}
-                        {/appcontainer|windows sandbox/i.test(`${diagnosis.liveError ?? ''} ${diagnosis.test?.error ?? ''} ${diagnosis.test?.sandbox?.diagnostics ?? ''}`) && <button type="button" onClick={() => void handleSandboxRepair()} disabled={sandboxRepairBusy} className="inline-flex items-center gap-1 rounded-nexy-sm border border-nexy-border bg-nexy-raised px-2 py-1 text-[10px] font-bold text-nexy-text hover:bg-nexy-recessed disabled:opacity-50">{sandboxRepairBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />} Repair sandbox</button>}
-                        {diagnosis.guidance.length > 0 && <ul className="list-disc space-y-1 pl-4 text-nexy-muted">{diagnosis.guidance.map((item) => <li key={item}>{item}</li>)}</ul>}
+                        {diagnosis.liveError && diagnosis.liveError !== diagnosis.test?.error && !(diagnosis.test?.failure && diagnosis.liveError.startsWith(diagnosis.test.failure.title)) && <p className="break-words text-nexy-error">Live connection: {diagnosis.liveError}</p>}
+                        {diagnosis.test && diagnosis.guidance.length > 0 && <ul className="list-disc space-y-1 pl-4 text-nexy-muted">{diagnosis.guidance.map((item) => <li key={item}>{item}</li>)}</ul>}
                       </div>
                     )}
                     <button type="button" onClick={() => setExpandedServerDetails((previous) => { const next = new Set(previous); if (next.has(server.id)) next.delete(server.id); else next.add(server.id); return next })} className="flex w-full items-center gap-1 border-t-2 border-nexy-border bg-nexy-surface px-3 py-2 text-left text-[10px] font-bold text-nexy-muted hover:bg-nexy-recessed" aria-expanded={detailsOpen}>
