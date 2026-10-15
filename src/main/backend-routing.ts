@@ -56,11 +56,13 @@ export function resolveEffectiveBackend(opts: {
   providerName: ProviderName
   projectId?: string | null
   agentId?: string | null
+  conversationId?: string | null
   hermesProfile?: string | null
 }): EffectiveCliBackend {
   const credentialForModel = getProviderCredential(opts.providerName, {
     projectId: opts.projectId,
     agentId: opts.agentId,
+    conversationId: opts.conversationId,
   })
   // A model in the OpenRouter cache is BYOK unless the agent explicitly forces a CLI backend —
   // prevents a stale conversation cli_backend value from hijacking a provider chat.

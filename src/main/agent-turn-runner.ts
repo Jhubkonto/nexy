@@ -12,6 +12,8 @@ export interface AgentTurnOptions {
    *  (skill access is strictly agent-gated; there is no "skills for a bare model" mode). */
   agentId?: string
   projectId?: string | null
+  /** Persisted chat identity for credential authorization; distinct from requestId. */
+  conversationId?: string | null
   fallbackModel: string
   taskContent: string
   /** Used as the provider-request conversation id — must be unique per call. */
@@ -30,7 +32,7 @@ export interface AgentTurnOptions {
  * than each re-implementing provider dispatch + retry-on-empty-stream separately.
  */
 export async function runAgentTurn(opts: AgentTurnOptions): Promise<string> {
-  const { agentId, projectId, fallbackModel, taskContent, requestId, generationOptions, onChunk, systemPromptOverride } = opts
+  const { agentId, projectId, conversationId, fallbackModel, taskContent, requestId, generationOptions, onChunk, systemPromptOverride } = opts
 
   // No agentId → bare-model turn: skip agent/skill config resolution entirely rather than
   // passing a sentinel through getAgentConfig. cfg stays null, and the fallbacks below already
@@ -39,7 +41,7 @@ export async function runAgentTurn(opts: AgentTurnOptions): Promise<string> {
   const cfg = agentId ? getAgentConfig(agentId) : null
   const agentModel = typeof cfg?.model === 'string' && cfg.model !== 'default' ? cfg.model : fallbackModel
   const { provider, model } = getProviderForAgent(agentModel)
-  const credential = getProviderCredential(provider, { projectId, agentId })
+  const credential = getProviderCredential(provider, { projectId, agentId, conversationId })
   if (!credential) {
     throw new Error(NO_PROVIDER_CONFIGURED_MESSAGE)
   }

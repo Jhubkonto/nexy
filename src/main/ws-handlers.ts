@@ -1,5 +1,7 @@
 import { BrowserWindow, ipcMain } from 'electron'
 import { listConversationPage } from './conversation-pagination'
+import { broadcastConversationRenamed } from './conversation-events'
+import { normalizeConversationTitle } from '../shared/conversation-title'
 import type { ConversationPageRequest } from '../shared/types'
 import type { CapabilityTrust } from '../shared/types'
 import type { UserInputAnswer, UserInputRequest } from '../shared/chat-turn-types'
@@ -1448,10 +1450,11 @@ export function registerWsHandlers(): void {
 
     if (command === 'conversation:rename') {
       const id = typeof data.id === 'string' ? data.id : ''
-      const title = typeof data.title === 'string' ? data.title : ''
+      const title = normalizeConversationTitle(data.title)
       if (!id || !title) return
-      db.prepare('UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?').run(title, Date.now(), id)
-      broadcastToMobile({ event: 'conversation:renamed', data: { id, title } })
+      const updatedAt = Date.now()
+      const result = db.prepare('UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?').run(title, updatedAt, id)
+      if (result.changes > 0) broadcastConversationRenamed(id, title, updatedAt)
       return
     }
 

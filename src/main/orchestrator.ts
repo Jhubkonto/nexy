@@ -143,6 +143,7 @@ async function callSpecialist(
   return runAgentTurn({
     agentId,
     projectId,
+    conversationId,
     fallbackModel,
     taskContent,
     // Per-step request ID to avoid collision when multiple specialists run in parallel
@@ -178,6 +179,7 @@ export async function runOrchestration(
   const leaderCredential = getProviderCredential(leaderProvider, {
     projectId: opts.projectId,
     agentId: leaderAgentId,
+    conversationId: opts.conversationId,
   })
 
   const leaderCfg = getAgentConfig(leaderAgentId)

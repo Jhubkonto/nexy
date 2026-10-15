@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'fs'
 import path from 'path'
 import { homedir } from 'os'
 import { getDatabase } from './database'
+import { isPlaceholderConversationTitle } from '../shared/conversation-title'
 import {
   DEFAULT_PROVIDER_MODEL,
   NO_PROVIDER_CONFIGURED_MESSAGE,
@@ -739,6 +740,9 @@ export async function dispatchChatSend(
     const convo = db
       .prepare('SELECT id FROM conversations WHERE id = ?')
       .get(conversationId) as { id: string } | undefined
+    const existingConversationTitle = convo
+      ? (db.prepare('SELECT title FROM conversations WHERE id = ?').get(conversationId) as { title: string } | undefined)?.title
+      : undefined
 
     if (!convo) {
       const now = Date.now()
@@ -807,7 +811,7 @@ export async function dispatchChatSend(
     const msgCount = db
       .prepare('SELECT COUNT(*) as count FROM messages WHERE conversation_id = ?')
       .get(conversationId) as { count: number }
-    if (msgCount.count === 1) {
+    if (msgCount.count === 1 && isPlaceholderConversationTitle(existingConversationTitle)) {
       const title = persistedUserContent.slice(0, 80) + (persistedUserContent.length > 80 ? '...' : '')
       db.prepare('UPDATE conversations SET title = ? WHERE id = ?').run(title, conversationId)
     }
@@ -937,7 +941,7 @@ export async function dispatchChatSend(
     if (CodexAdapter.isAvailable() && getCliModels('codex-cli').some((entry) => entry.id === model)) return true
     if (HermesAdapter.isAvailable() && isHermesAcpReady() && getCliModels('hermes-cli', hermesProfile ?? undefined).some((entry) => entry.id === model)) return true
     const { provider } = getProviderForAgent(model)
-    return !!getProviderCredential(provider, { projectId: terminalSandboxProjectId, agentId: effectiveAgentId })
+    return !!getProviderCredential(provider, { projectId: terminalSandboxProjectId, agentId: effectiveAgentId, conversationId })
   }
   const conversationModelIsAvailable = !!conversationModel &&
     conversationModel !== 'default' &&
@@ -1191,7 +1195,7 @@ export async function dispatchChatSend(
     serverTrust: effectiveMcpTrust,
   } as const
   const agentHasAssignedMcpServers = effectiveMcpServerIds.length > 0
-  const credentialForModel = getProviderCredential(providerName, { projectId: orchProjId, agentId: effectiveAgentId })
+  const credentialForModel = getProviderCredential(providerName, { projectId: orchProjId, agentId: effectiveAgentId, conversationId })
   const fallbackCliBackend = resolveEffectiveBackend({
     cliBackend,
     agentBackend,
@@ -1200,6 +1204,7 @@ export async function dispatchChatSend(
     providerName,
     projectId: orchProjId,
     agentId: effectiveAgentId,
+    conversationId,
     hermesProfile: selectedHermesProfile,
   })
   const hermesWasRequested = cliBackend === 'hermes-cli' || agentBackend === 'hermes-cli' || convRow?.cli_backend === 'hermes-cli'

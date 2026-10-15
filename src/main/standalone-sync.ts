@@ -622,7 +622,7 @@ function buildSnapshot(
     }
   }) as Record<string, unknown>[]
   const credentialBindings: Record<string, unknown>[] = db.prepare(
-    'SELECT id, credential_id, project_id, agent_id, capability, approval_mode, expires_at, created_at, updated_at FROM credential_bindings ORDER BY updated_at, id',
+    'SELECT id, credential_id, project_id, agent_id, conversation_id, capability, approval_mode, expires_at, created_at, updated_at FROM credential_bindings ORDER BY updated_at, id',
   ).all().map((row) => {
     const value = row as Record<string, unknown>
     return {
@@ -630,6 +630,7 @@ function buildSnapshot(
       credentialId: value.credential_id,
       projectId: value.project_id,
       agentId: value.agent_id,
+      conversationId: value.conversation_id,
       capability: value.capability,
       approvalMode: value.approval_mode,
       expiresAt: value.expires_at,

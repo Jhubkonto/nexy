@@ -384,6 +384,7 @@ export async function advanceAutomatedWorkflowRun(runId: string): Promise<Automa
     try {
       output = await runAgentTurn({
         agentId,
+        conversationId: conversation.id,
         fallbackModel: stepModel ?? detail.model ?? getAutomatedWorkflowGeneratorModel(),
         taskContent: prompt,
         requestId: `automated-workflow:${runId}:${next.dbId}:${next.attempt}`,
