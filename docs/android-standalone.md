@@ -80,6 +80,13 @@ provider, use **Request key from desktop** to ask the desktop to hand off its ke
 explicit "Send Key" approval on the desktop side before anything is transmitted, and the key value
 is never included in general sync, backups, or outbox records regardless.
 
+Generic API-key and access-token credentials can also power Android direct provider chat when an
+active **Automatic** access grant matches `provider:anthropic`, `provider:openai`, or
+`provider:openrouter` and the current project, agent, and conversation scope. Those secrets are
+resolved only in the Android request path and are never sent to the paired desktop. **Always ask**
+grants are not used automatically. MCP and workspace capabilities continue to execute on the
+paired desktop.
+
 Inline image limits are 10 MB per image and 20 MB per request. Context construction is
 deterministic, trims old turns to the configured budget, and stores a rolling summary when
 compression is needed. Usage comes from the provider response. Cost is labeled as an estimate and

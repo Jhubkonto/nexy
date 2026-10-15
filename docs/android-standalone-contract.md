@@ -29,7 +29,7 @@ WebSocket handlers, and database migrations on 2026-08-15.
 | Prompt | `id`, title/body/description/category/tags/scope/project ID, timestamps | sync status/version | none |
 | Skill | portable versioned configuration, ID, timestamps | sync status/version | filesystem paths and secrets |
 | Credential metadata | `id`, name, kind, provider, fingerprint, timestamps, revocation state | device-local vault value and local bindings | encrypted payload/value |
-| Credential binding | `id`, credential ID, project/agent scope, capability, approval mode, expiry, timestamps | device-local approval state | credential payload/value |
+| Credential binding | `id`, credential ID, project/agent/conversation scope, capability, approval mode, expiry, timestamps | device-local approval state | credential payload/value |
 | Attachment | attachment/message IDs, display name, MIME type, size, SHA-256 | local path and transfer state | local path; bytes travel only in verified chunks |
 
 Unknown optional JSON fields are retained in canonical payload JSON. Malformed optional JSON is
