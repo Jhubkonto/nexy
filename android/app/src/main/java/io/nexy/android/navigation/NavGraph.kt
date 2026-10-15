@@ -69,6 +69,7 @@ import io.nexy.android.ui.settings.ProvidersScreen
 import io.nexy.android.ui.settings.SettingsScreen
 import io.nexy.android.ui.settings.UpdatesScreen
 import io.nexy.android.ui.settings.BackupRecoveryScreen
+import io.nexy.android.ui.settings.CredentialManagerScreen
 import io.nexy.android.ui.scheduler.ScheduledScreen
 import io.nexy.android.ui.scheduler.SchedulerTaskDetailScreen
 import io.nexy.android.ui.scheduler.SchedulerTaskConfigScreen
@@ -461,6 +462,7 @@ fun NavGraph(
                 onOpenUpdates = { navController.navigate("settings/updates") },
                 onOpenDiagnostics = { navController.navigate("settings/diagnostics") },
                 onOpenProviders = { navController.navigate("providers") },
+                onOpenCredentials = { navController.navigate("settings/credentials") },
                 onOpenPromptLibrary = { navController.navigate("prompts") },
                 onOpenGlobalSettings = { navController.navigate("settings/global") },
                 onOpenMcpServers = { navController.navigate("settings/mcp-servers") },
@@ -487,6 +489,10 @@ fun NavGraph(
 
         composable("settings/backup") {
             BackupRecoveryScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable("settings/credentials") {
+            CredentialManagerScreen(onBack = { navController.popBackStack() })
         }
 
         composable("settings/global") {

@@ -267,8 +267,10 @@ class LocalDataRepository private constructor(
 
     override suspend fun renameConversation(id: String, title: String) {
         val current = database.conversations().get(id) ?: return
+        val normalizedTitle = title.trim().take(MAX_CONVERSATION_TITLE_LENGTH)
+        if (normalizedTitle.isBlank()) return
         val updated = current.copy(
-            title = title,
+            title = normalizedTitle,
             updatedAt = System.currentTimeMillis(),
             localVersion = current.localVersion + 1,
             syncStatus = SyncStatus.PENDING,
@@ -1736,6 +1738,7 @@ class LocalDataRepository private constructor(
     companion object {
         /** Default title a chat is created with before the desktop auto-names it. */
         const val DEFAULT_CONVERSATION_TITLE = "New Chat"
+        const val MAX_CONVERSATION_TITLE_LENGTH = 120
 
         @Volatile private var instance: LocalDataRepository? = null
 

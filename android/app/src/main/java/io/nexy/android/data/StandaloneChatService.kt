@@ -97,7 +97,7 @@ class StandaloneChatService(
             localData.markMessageFailed(user.id, false)
             if (retryMessageId == null) localData.persistDataUrlAttachments(user.id, images + files)
             turn.event("user_message_committed", JSONObject().put("messageId", user.id))
-            val provider = providerStore.resolve(modelOverride, projectId, agentId)
+            val provider = providerStore.resolve(modelOverride, projectId, agentId, conversationId)
             if (provider == null) {
                 localData.markMessageFailed(user.id, true)
                 failTurn(

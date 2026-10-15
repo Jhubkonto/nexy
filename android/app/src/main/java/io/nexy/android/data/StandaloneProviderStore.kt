@@ -15,6 +15,7 @@ data class StandaloneProviderConfig(
     val defaultModel: String,
     val projectId: String? = null,
     val agentId: String? = null,
+    val conversationId: String? = null,
 )
 
 class StandaloneProviderStore private constructor(context: Context) {
@@ -45,8 +46,8 @@ class StandaloneProviderStore private constructor(context: Context) {
         _providers.value = providerInfos()
     }
 
-    fun hasKey(provider: String, projectId: String? = null, agentId: String? = null): Boolean =
-        vault.hasApiKey(provider, projectId, agentId)
+    fun hasKey(provider: String, projectId: String? = null, agentId: String? = null, conversationId: String? = null): Boolean =
+        vault.hasApiKey(provider, projectId, agentId, conversationId)
 
     fun setDefault(provider: String, model: String) {
         require(provider in SUPPORTED_PROVIDERS)
@@ -61,26 +62,26 @@ class StandaloneProviderStore private constructor(context: Context) {
         preferences.edit().putString(baseUrlName(provider), baseUrl.trim().trimEnd('/')).apply()
     }
 
-    fun resolve(modelOverride: String?, projectId: String? = null, agentId: String? = null): StandaloneProviderConfig? {
+    fun resolve(modelOverride: String?, projectId: String? = null, agentId: String? = null, conversationId: String? = null): StandaloneProviderConfig? {
         val explicitModel = modelOverride?.takeIf { it.isNotBlank() && it != "default" }
         val preferred = when {
             explicitModel?.startsWith("claude-") == true -> "anthropic"
-            explicitModel?.contains("/") == true && hasKey("openrouter", projectId, agentId) -> "openrouter"
+            explicitModel?.contains("/") == true && hasKey("openrouter", projectId, agentId, conversationId) -> "openrouter"
             explicitModel?.startsWith("gpt-") == true || explicitModel?.startsWith("o") == true -> "openai"
             else -> preferences.getString(KEY_DEFAULT_PROVIDER, null)
         }
         val provider = sequenceOf(preferred, "anthropic", "openai", "openrouter")
             .filterNotNull()
             .distinct()
-            .firstOrNull { hasKey(it, projectId, agentId) }
+            .firstOrNull { hasKey(it, projectId, agentId, conversationId) }
             ?: return null
-        val credentialId = vault.apiKeyCredentialId(provider, projectId, agentId) ?: return null
+        val credentialId = vault.apiKeyCredentialId(provider, projectId, agentId, conversationId) ?: return null
         val model = explicitModel
             ?: preferences.getString(KEY_DEFAULT_MODEL, null)?.takeIf(String::isNotBlank)
             ?: DEFAULT_MODELS.getValue(provider)
         val baseUrl = preferences.getString(baseUrlName(provider), null)?.takeIf(String::isNotBlank)
             ?: DEFAULT_BASE_URLS.getValue(provider)
-        return StandaloneProviderConfig(provider, credentialId, baseUrl, model, projectId, agentId)
+        return StandaloneProviderConfig(provider, credentialId, baseUrl, model, projectId, agentId, conversationId)
     }
 
     fun configured(): List<StandaloneProviderConfig> = SUPPORTED_PROVIDERS.mapNotNull { provider ->
@@ -96,7 +97,7 @@ class StandaloneProviderStore private constructor(context: Context) {
 
     /** Resolves a credential only for the immediately constructing local HTTP request. */
     fun resolveCredential(config: StandaloneProviderConfig): String? =
-        if (vault.apiKeyCredentialId(config.provider, config.projectId, config.agentId) == config.credentialId) {
+        if (vault.apiKeyCredentialId(config.provider, config.projectId, config.agentId, config.conversationId) == config.credentialId) {
             vault.resolveCredential(config.credentialId)
         } else null
 

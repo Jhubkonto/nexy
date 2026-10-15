@@ -2307,7 +2307,8 @@ object WsRepository : WsClient {
             }
             "conversation:rename" -> {
                 val id = data["id"] as? String ?: return true
-                val title = data["title"] as? String ?: return true
+                val title = (data["title"] as? String)?.trim()?.take(120) ?: return true
+                if (title.isBlank()) return true
                 scope.launch {
                     local.renameConversation(id, title)
                     _events.emit(WsEvent.ConversationRenamed(id, title))
