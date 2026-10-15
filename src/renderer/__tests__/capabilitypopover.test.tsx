@@ -67,4 +67,29 @@ describe('CapabilityPopover', () => {
     ))
     await waitFor(() => expect(screen.getByRole('combobox')).toHaveValue('block'))
   })
+
+  it('grants a provider credential only to the active chat', async () => {
+    const user = userEvent.setup()
+    mockApi.credentialList.mockResolvedValue([{
+      id: 'credential-1', name: 'Personal OpenAI key', kind: 'api-key', provider: 'openai',
+      fingerprint: 'abcd', createdAt: 1, updatedAt: 1, lastUsedAt: null, revokedAt: null,
+    }])
+    render(
+      <CapabilityPopover
+        conversationId="conv-1"
+        skills={[]}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Chat capabilities' }))
+    await user.selectOptions(await screen.findByLabelText('Credential for this chat'), 'credential-1')
+    await user.click(screen.getByRole('button', { name: 'Grant' }))
+
+    await waitFor(() => expect(mockApi.credentialBindingCreate).toHaveBeenCalledWith(expect.objectContaining({
+      credentialId: 'credential-1',
+      conversationId: 'conv-1',
+      capability: 'provider:openai',
+      approvalMode: 'auto',
+    })))
+  })
 })

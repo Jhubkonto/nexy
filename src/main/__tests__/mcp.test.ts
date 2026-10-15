@@ -127,7 +127,7 @@ vi.mock('../database', () => ({
 }))
 
 /* ── Import & Register ─────────────────────────────────────── */
-import { registerMcpHandlers, disconnectServer, shutdownMcpServers, servers, callMcpTool, getMcpServersForCompanion, buildMcpProcessEnv, getMcpServerConfigsForCli } from '../mcp'
+import { registerMcpHandlers, disconnectServer, shutdownMcpServers, servers, callMcpTool, getMcpServersForCompanion, buildMcpProcessEnv, getMcpServerConfigsForCli, initMcpServers } from '../mcp'
 import { safeStorage } from 'electron'
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import type { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -223,6 +223,33 @@ describe('MCP — IPC Handlers', () => {
   it('mcp:list-tools returns empty when no servers connected', async () => {
     const r = await invokeHandler('mcp:list-tools')
     expect(r).toEqual([])
+  })
+})
+
+describe('MCP — managed Playwright migration', () => {
+  it('migrates only the exact disabled built-in Chromium card without changing its id or enabled state', async () => {
+    const legacy = await invokeHandler('mcp:add-server', {
+      name: 'Playwright (Chromium)', command: 'npx', args: ['-y', '@playwright/mcp'], env: {}, enabled: false,
+    })
+    await initMcpServers()
+    const [migrated] = await invokeHandler('mcp:list-servers')
+    expect(migrated).toMatchObject({
+      id: legacy.id,
+      enabled: false,
+      command: '',
+      args: [],
+      launch: { kind: 'managed-playwright', mode: 'launch' },
+    })
+  })
+
+  it('does not migrate a custom npx Playwright configuration', async () => {
+    await invokeHandler('mcp:add-server', {
+      name: 'My browser', command: 'npx', args: ['-y', '@playwright/mcp'], env: {}, enabled: false,
+    })
+    await initMcpServers()
+    const [unchanged] = await invokeHandler('mcp:list-servers')
+    expect(unchanged).toMatchObject({ command: 'npx', args: ['-y', '@playwright/mcp'] })
+    expect(unchanged.launch).toBeUndefined()
   })
 })
 

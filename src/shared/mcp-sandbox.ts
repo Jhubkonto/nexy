@@ -24,14 +24,17 @@ function isGrant(value: unknown): value is McpSandboxFilesystemGrant {
 export function normalizeMcpSandboxProfile(value: unknown): McpSandboxProfile {
   const input = value && typeof value === 'object' ? value as Record<string, unknown> : {}
   const childProcesses = input.childProcesses === 'allowed' ? 'allowed' : 'blocked'
+  const managedRuntime = input.managedRuntime === 'playwright' ? 'playwright' : undefined
   return {
     ...DEFAULT_MCP_SANDBOX_PROFILE,
-    network: input.network === 'allowed' ? 'allowed' : 'blocked',
-    childProcesses,
-    maxProcesses: childProcesses === 'allowed' ? 8 : 1,
+    network: managedRuntime ? 'allowed' : input.network === 'allowed' ? 'allowed' : 'blocked',
+    childProcesses: managedRuntime ? 'allowed' : childProcesses,
+    memoryLimitMiB: managedRuntime ? 1024 : DEFAULT_MCP_SANDBOX_PROFILE.memoryLimitMiB,
+    maxProcesses: managedRuntime ? 16 : childProcesses === 'allowed' ? 8 : 1,
     filesystem: Array.isArray(input.filesystem)
       ? input.filesystem.filter(isGrant).map((grant) => ({ path: grant.path.trim(), access: grant.access }))
       : [],
+    ...(managedRuntime ? { managedRuntime } : {}),
   }
 }
 

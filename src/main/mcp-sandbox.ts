@@ -15,6 +15,8 @@ export interface McpSandboxLaunchRequest {
   cwd?: string
   profile?: McpSandboxProfile
   diagnosticLabel?: string
+  /** Local cleanup performed only after the sandbox process has stopped. */
+  cleanup?: () => void
 }
 
 export interface McpSandboxHandle {
@@ -30,6 +32,7 @@ interface ProxySession {
   sockets: Set<Socket>
   request: McpSandboxLaunchRequest
   closed: boolean
+  cleanup?: () => void
   expiryTimer?: NodeJS.Timeout
 }
 
@@ -92,6 +95,18 @@ export function resolveMcpSandboxHelper(): string | null {
   return candidates.find((candidate) => existsSync(candidate) && verifyMcpSandboxHelper(candidate, Boolean(resourceRoot && candidate.startsWith(resourceRoot)))) ?? null
 }
 
+/** Rebuild the stable Nexy-owned Windows AppContainer profile; never weakens isolation. */
+export function repairMcpSandboxProfile(): void {
+  if (process.platform !== 'win32') throw new Error('Sandbox repair is available only on Windows')
+  const helper = resolveMcpSandboxHelper()
+  if (!helper) throw new Error('MCP sandbox helper is unavailable')
+  const result = spawnSync(helper, ['--repair-profile'], { encoding: 'utf8', timeout: 10_000, windowsHide: true })
+  if (result.status !== 0) {
+    const detail = `${result.stderr ?? ''}`.trim()
+    throw new Error(detail || 'Could not repair the Nexy sandbox profile')
+  }
+}
+
 function verifyMcpSandboxHelper(helper: string, requireIntegrity = false): boolean {
   const result = spawnSync(helper, ['--version'], { encoding: 'utf8', timeout: 2_000, windowsHide: true })
   if (result.status !== 0 || !/^mcp-sandbox\s+\d+\.\d+\.\d+/i.test(result.stdout ?? '')) return false
@@ -134,6 +149,7 @@ function createProxySession(request: McpSandboxLaunchRequest): ProxySession {
     sockets: new Set(),
     request: { ...request, profile: normalizeMcpSandboxProfile(request.profile) },
     closed: false,
+    cleanup: request.cleanup,
   }
   session.server.on('connection', (socket) => {
     session.sockets.add(socket)
@@ -194,6 +210,7 @@ async function closeSession(session: ProxySession): Promise<void> {
     if (!session.server.listening) return resolve()
     session.server.close(() => resolve())
   })
+  try { session.cleanup?.() } catch { /* session cleanup must not prevent shutdown */ }
 }
 
 export function getMcpSandboxProxyConfig(request: McpSandboxLaunchRequest): { id: string; key: string; command: string; args: string[]; env?: Record<string, string>; cwd?: string } {

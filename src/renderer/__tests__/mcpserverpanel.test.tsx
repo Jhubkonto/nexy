@@ -206,6 +206,18 @@ describe('McpServerPanel — CRUD Operations', () => {
     expect(screen.getByPlaceholderText('My MCP Server')).toHaveValue('Filesystem')
   })
 
+  it('shows explicit managed Chromium setup for the Playwright card', async () => {
+    mockApi.listMcpServers = vi.fn().mockResolvedValue([])
+    render(<McpServerPanel />)
+
+    await waitFor(() => expect(screen.getByText('Control a browser')).toBeInTheDocument())
+    await user.click(screen.getByText('Control a browser'))
+
+    expect(screen.getByText('Nexy-managed Playwright')).toBeInTheDocument()
+    expect(screen.getByText('Download Chromium')).toBeInTheDocument()
+    expect(screen.queryByText('Advanced (launch command)')).not.toBeInTheDocument()
+  })
+
   it('renders a guided secret field for a catalog entry with requiredEnv', async () => {
     mockApi.listMcpServers = vi.fn().mockResolvedValue([])
     render(<McpServerPanel />)

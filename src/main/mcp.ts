@@ -11,7 +11,8 @@ import { debugLog } from './debug-mode'
 import { searchMcpRegistry } from './mcp-registry'
 import type { McpServerConfig, McpSandboxRuntimeStatus, McpRestartResult, McpServerDiagnosis } from '../shared/types'
 import { normalizeMcpSandboxProfile } from '../shared/mcp-sandbox'
-import { createSandboxedMcpTransport, getMcpSandboxProxyConfig, shutdownMcpSandboxBroker, type McpSandboxHandle } from './mcp-sandbox'
+import { createSandboxedMcpTransport, getMcpSandboxProxyConfig, repairMcpSandboxProfile, shutdownMcpSandboxBroker, type McpSandboxHandle, type McpSandboxLaunchRequest } from './mcp-sandbox'
+import { createManagedPlaywrightLaunch, getManagedBrowserStatus, installManagedBrowser } from './managed-playwright'
 
 type InProcessHandler = (toolName: string, args: Record<string, unknown>) => Promise<{ success: boolean; result?: string; images?: { dataUrl: string; mimeType: string }[]; error?: string }>
 
@@ -85,6 +86,39 @@ const reconnectTimers = new Map<string, NodeJS.Timeout>()
 const intentionallyDisconnected = new Set<string>()
 const RECONNECT_DELAY_MS = 5000
 
+function resolveLaunch(config: Pick<McpServerConfig, 'command' | 'args' | 'env' | 'cwd' | 'sandboxProfile' | 'name' | 'launch'>): { request: McpSandboxLaunchRequest; cleanup?: () => void } {
+  if (config.launch?.kind === 'managed-playwright') return createManagedPlaywrightLaunch(config.launch)
+  const rawProfile = { ...(config.sandboxProfile ?? {}) } as Record<string, unknown>
+  delete rawProfile.managedRuntime
+  return {
+    request: {
+      command: config.command,
+      args: config.args,
+      env: buildMcpProcessEnv(config.env),
+      cwd: config.cwd || undefined,
+      profile: normalizeMcpSandboxProfile(rawProfile),
+      diagnosticLabel: config.name,
+    },
+  }
+}
+
+function isLegacyBuiltInPlaywright(config: McpServerConfig): 'launch' | 'cdp' | undefined {
+  if (config.command.toLowerCase() !== 'npx' || Object.keys(config.env).length !== 0) return undefined
+  const exact = (name: string, args: string[]) => config.name === name && args.length === config.args.length && args.every((arg, index) => config.args[index] === arg)
+  if (exact('Playwright (Chromium)', ['-y', '@playwright/mcp'])) return 'launch'
+  if (exact('Playwright (CDP attach)', ['-y', '@playwright/mcp', '--cdp-endpoint', 'http://localhost:9222'])) return 'cdp'
+  return undefined
+}
+
+/** Migrate only Nexy's old stock cards; custom npx configurations remain untouched. */
+function migrateLegacyPlaywrightConfigs(): void {
+  for (const config of loadServerConfigs()) {
+    const mode = isLegacyBuiltInPlaywright(config)
+    if (!mode) continue
+    saveServerConfig({ ...config, command: '', args: [], launch: { kind: 'managed-playwright', mode } })
+  }
+}
+
 function broadcastServerStatus(id: string): void {
   const instance = servers.get(id)
   const dbConfig = loadServerConfigs().find((c) => c.id === id)
@@ -145,7 +179,12 @@ function loadServerConfigs(): McpServerConfig[] {
 
 function saveServerConfig(config: McpServerConfig): void {
   const db = getDatabase()
-  const { id, enabled, ...rest } = config
+  // A generic external server can never inherit the wider managed-browser
+  // envelope, even when its stored JSON was edited outside the UI.
+  const rawProfile = { ...(config.sandboxProfile ?? {}) } as Record<string, unknown>
+  if (config.launch?.kind !== 'managed-playwright') delete rawProfile.managedRuntime
+  const normalized = { ...config, sandboxProfile: normalizeMcpSandboxProfile(rawProfile) }
+  const { id, enabled, ...rest } = normalized
   const { value, encrypted } = encodeConfigForStorage(JSON.stringify(rest))
   db.prepare(
     'INSERT OR REPLACE INTO mcp_servers (id, config_json, config_encrypted, enabled, updated_at) VALUES (?, ?, ?, ?, unixepoch() * 1000)'
@@ -198,16 +237,12 @@ async function connectServer(config: McpServerConfig): Promise<void> {
   }
 
   let sandboxHandle: McpSandboxHandle
+  let resolved: ReturnType<typeof resolveLaunch> | undefined
   try {
-    sandboxHandle = createSandboxedMcpTransport({
-      command: config.command,
-      args: [...config.args, ...extraArgs],
-      env: buildMcpProcessEnv(config.env),
-      cwd: config.cwd || undefined,
-      profile: config.sandboxProfile,
-      diagnosticLabel: config.name,
-    })
+    resolved = resolveLaunch(config)
+    sandboxHandle = createSandboxedMcpTransport({ ...resolved.request, args: [...resolved.request.args, ...extraArgs] })
   } catch (error) {
+    try { resolved?.cleanup?.() } catch { /* best effort */ }
     const message = error instanceof Error ? error.message : String(error)
     servers.set(config.id, { config, status: 'error', error: message, tools: [], sandbox: { status: 'unavailable', backend: process.platform, diagnostics: message } })
     broadcastServerStatus(config.id)
@@ -317,7 +352,7 @@ export interface McpTestResult {
 }
 
 type McpLaunchConfig = Pick<McpServerConfig, 'command' | 'args' | 'env'> &
-  Partial<Pick<McpServerConfig, 'cwd' | 'imageResponses' | 'sandboxProfile'>>
+  Partial<Pick<McpServerConfig, 'cwd' | 'imageResponses' | 'sandboxProfile' | 'launch' | 'name'>>
 
 /**
  * Pre-flight check for a candidate server. Spawns an ephemeral stdio connection,
@@ -327,7 +362,7 @@ type McpLaunchConfig = Pick<McpServerConfig, 'command' | 'args' | 'env'> &
 export async function testMcpServer(
   config: McpLaunchConfig
 ): Promise<McpTestResult> {
-  if (!config.command || !config.command.trim()) {
+  if ((!config.command || !config.command.trim()) && config.launch?.kind !== 'managed-playwright') {
     return { ok: false, error: 'A launch command is required.' }
   }
 
@@ -337,16 +372,12 @@ export async function testMcpServer(
   }
 
   let sandboxHandle: McpSandboxHandle
+  let resolved: ReturnType<typeof resolveLaunch> | undefined
   try {
-    sandboxHandle = createSandboxedMcpTransport({
-      command: config.command,
-      args: [...(config.args ?? []), ...extraArgs],
-      env: buildMcpProcessEnv(config.env ?? {}),
-      cwd: config.cwd || undefined,
-      profile: config.sandboxProfile,
-      diagnosticLabel: 'preflight',
-    })
+    resolved = resolveLaunch({ ...config, name: config.name ?? 'preflight', args: config.args ?? [], env: config.env ?? {} })
+    sandboxHandle = createSandboxedMcpTransport({ ...resolved.request, args: [...resolved.request.args, ...extraArgs] })
   } catch (error) {
+    try { resolved?.cleanup?.() } catch { /* best effort */ }
     const message = error instanceof Error ? error.message : String(error)
     return { ok: false, error: message, sandbox: { status: 'unavailable', backend: process.platform, diagnostics: message } }
   }
@@ -446,14 +477,8 @@ export function getMcpServerConfigsForCli(serverIds: string[]): CliMcpServerConf
       const extraArgs = config.imageResponses === 'omit'
         ? ['--imageResponses', 'omit']
         : []
-      const proxy = getMcpSandboxProxyConfig({
-        command: config.command,
-        args: [...config.args, ...extraArgs],
-        env: buildMcpProcessEnv(config.env),
-        cwd: config.cwd,
-        profile: config.sandboxProfile,
-        diagnosticLabel: config.name,
-      })
+      const resolved = resolveLaunch(config)
+      const proxy = getMcpSandboxProxyConfig({ ...resolved.request, args: [...resolved.request.args, ...extraArgs] })
       return { ...proxy, id: config.id, key: toCliMcpServerKey(config) }
     })
 
@@ -602,6 +627,7 @@ export async function callMcpTool(
 }
 
 export async function initMcpServers(): Promise<void> {
+  migrateLegacyPlaywrightConfigs()
   const configs = loadServerConfigs()
   for (const config of configs) {
     if (config.enabled) {
@@ -815,6 +841,12 @@ export function listMcpToolsForAgent(agentId: string): McpTool[] {
 }
 
 export function registerMcpHandlers(): void {
+  safeHandle('mcp:get-managed-browser-status', () => getManagedBrowserStatus())
+  safeHandle('mcp:install-managed-browser', async () => installManagedBrowser())
+  safeHandle('mcp:repair-sandbox', () => {
+    repairMcpSandboxProfile()
+    return true
+  })
   safeHandle('mcp:list-servers', () => {
     return getMcpServersWithStatus()
   })

@@ -36,6 +36,8 @@ pub(crate) struct Profile {
     max_processes: u64,
     #[serde(rename = "maxDiagnosticBytes", default = "default_diagnostic_bytes")]
     max_diagnostic_bytes: usize,
+    #[serde(rename = "managedRuntime", default)]
+    managed_runtime: Option<String>,
 }
 
 fn default_diagnostic_bytes() -> usize { 65_536 }
@@ -78,9 +80,12 @@ fn request_launch(endpoint: &str, token: &str) -> Launch {
 fn validate_profile(profile: &Profile) {
     if profile.network != "blocked" && profile.network != "allowed" { fail("invalid network policy"); }
     if profile.child_processes != "blocked" && profile.child_processes != "allowed" { fail("invalid child-process policy"); }
-    if profile.memory_limit_mib != 512 { fail("memory limit is fixed at 512 MiB"); }
-    let expected = if profile.child_processes == "allowed" { 8 } else { 1 };
-    if profile.max_processes != expected { fail("invalid process limit"); }
+    let managed_playwright = profile.managed_runtime.as_deref() == Some("playwright");
+    if profile.managed_runtime.is_some() && !managed_playwright { fail("unknown managed runtime"); }
+    let (expected_memory, expected_processes) = if managed_playwright { (1024, 16) }
+        else { (512, if profile.child_processes == "allowed" { 8 } else { 1 }) };
+    if profile.memory_limit_mib != expected_memory { fail("invalid memory limit for sandbox profile"); }
+    if profile.max_processes != expected_processes { fail("invalid process limit for sandbox profile"); }
     if profile.max_diagnostic_bytes == 0 || profile.max_diagnostic_bytes > 65_536 { fail("invalid diagnostic limit"); }
     for grant in &profile.filesystem {
         if grant.path.trim().is_empty() || (grant.access != "read-only" && grant.access != "read-write") { fail("invalid filesystem grant"); }
@@ -136,6 +141,10 @@ fn main() {
     if args.iter().any(|arg| arg == "--version") {
         println!("mcp-sandbox {}", env!("CARGO_PKG_VERSION"));
         return;
+    }
+    #[cfg(windows)]
+    if args.iter().any(|arg| arg == "--repair-profile") {
+        std::process::exit(windows_backend::repair_profile());
     }
     let endpoint = args.windows(2).find(|pair| pair[0] == "--control").map(|pair| pair[1].clone()).unwrap_or_else(|| fail("--control is required"));
     let token = args.windows(2).find(|pair| pair[0] == "--session").map(|pair| pair[1].clone()).unwrap_or_else(|| fail("--session is required"));

@@ -28,6 +28,7 @@ export interface McpCatalogEntry {
   impact: McpCatalogImpact
   command: string
   args: string[]
+  launch?: { kind: 'managed-playwright'; mode: 'launch' | 'cdp' }
   env?: Record<string, string>
   imageResponses?: 'allow' | 'omit'
   /** Declared secrets/config the server needs — rendered as labeled fields. */
@@ -65,8 +66,9 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     category: 'browser',
     access: 'A managed Chromium browser session',
     impact: 'can-change',
-    command: 'npx',
-    args: ['-y', '@playwright/mcp'],
+    command: '',
+    args: [],
+    launch: { kind: 'managed-playwright', mode: 'launch' },
     imageResponses: 'allow',
     docsUrl: 'https://github.com/microsoft/playwright-mcp',
     keywords: ['browser', 'web', 'screenshot', 'automation', 'scrape', 'chromium'],
@@ -79,8 +81,9 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     category: 'browser',
     access: 'The browser session running on this computer',
     impact: 'can-change',
-    command: 'npx',
-    args: ['-y', '@playwright/mcp', '--cdp-endpoint', 'http://localhost:9222'],
+    command: '',
+    args: [],
+    launch: { kind: 'managed-playwright', mode: 'cdp' },
     imageResponses: 'allow',
     docsUrl: 'https://github.com/microsoft/playwright-mcp',
     keywords: ['browser', 'chrome', 'edge', 'attach', 'debugging', 'cdp'],
@@ -191,6 +194,7 @@ export interface McpCatalogFormConfig {
   name: string
   command: string
   args: string[]
+  launch?: { kind: 'managed-playwright'; mode: 'launch' | 'cdp' }
   env: Record<string, string>
   cwd?: string
   imageResponses?: 'allow' | 'omit'
@@ -207,6 +211,7 @@ export function catalogEntryToConfig(entry: McpCatalogEntry): McpCatalogFormConf
     name: entry.name,
     command: entry.command,
     args: [...entry.args],
+    launch: entry.launch,
     env,
     cwd: undefined,
     imageResponses: entry.imageResponses,

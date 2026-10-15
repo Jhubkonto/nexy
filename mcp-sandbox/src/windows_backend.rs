@@ -17,7 +17,7 @@ use windows_sys::Win32::Security::Authorization::{
     SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS, SE_FILE_OBJECT, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::Isolation::{
-    CreateAppContainerProfile, DeleteAppContainerProfile,
+    CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows_sys::Win32::Security::{
     ACL, DACL_SECURITY_INFORMATION, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES,
@@ -33,7 +33,7 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
+    CreateMutexW, CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess, ReleaseMutex,
     InitializeProcThreadAttributeList, ResumeThread,
     UpdateProcThreadAttribute, WaitForSingleObject, EXTENDED_STARTUPINFO_PRESENT,
     INFINITE, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
@@ -43,6 +43,10 @@ use windows_sys::Win32::System::Threading::{
 const WAIT_FAILED: u32 = 0xFFFF_FFFF;
 const GENERIC_READ_WRITE: u32 = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
 const APP_CONTAINER_INTERNET_CLIENT_SID: &str = "S-1-15-3-1";
+const APP_CONTAINER_NAME: &str = "Nexy.McpSandbox";
+const WAIT_OBJECT_0: u32 = 0;
+const WAIT_ABANDONED: u32 = 0x80;
+const HRESULT_FILE_NOT_FOUND: i32 = 0x8007_0002u32 as i32;
 
 fn fail(message: impl AsRef<str>) -> ! {
     eprintln!("mcp-sandbox: Windows sandbox: {}", message.as_ref());
@@ -146,14 +150,14 @@ fn command_line(launch: &Launch, executable: &str, wrapper: bool) -> Vec<u16> {
 }
 
 struct AppContainer {
-    name: Vec<u16>,
     sid: PSID,
     capability_sid: PSID,
 }
 
 impl AppContainer {
     fn create(network_allowed: bool) -> Self {
-        let name = wide(&format!("NexyMcp{}", uuid_suffix()));
+        let _lock = ProfileCreationLock::acquire();
+        let name = wide(APP_CONTAINER_NAME);
         let display = wide("Nexy MCP server");
         let description = wide("Short-lived isolated MCP server");
         let mut sid: PSID = null_mut();
@@ -162,18 +166,26 @@ impl AppContainer {
                 name.as_ptr(), display.as_ptr(), description.as_ptr(), null(), 0, &mut sid,
             )
         };
-        if result < 0 || sid.is_null() { fail(format!("CreateAppContainerProfile failed (HRESULT 0x{:08x})", result as u32)); }
+        if result < 0 || sid.is_null() {
+            // The profile is Nexy-owned and stable. A second helper (or an
+            // upgrade) derives the existing SID instead of treating
+            // ERROR_ALREADY_EXISTS as a generic connection failure.
+            let derive = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
+            if derive < 0 || sid.is_null() {
+                fail(format!("AppContainer profile creation failed (create HRESULT 0x{:08x}, derive HRESULT 0x{:08x})", result as u32, derive as u32));
+            }
+        }
 
         let capability_sid = if network_allowed {
             let capability_name = wide(APP_CONTAINER_INTERNET_CLIENT_SID);
             let mut capability: PSID = null_mut();
             if unsafe { ConvertStringSidToSidW(capability_name.as_ptr(), &mut capability) } == 0 {
-                unsafe { FreeSid(sid); DeleteAppContainerProfile(name.as_ptr()); }
+                unsafe { FreeSid(sid); }
                 fail("could not create the Windows internetClient capability SID");
             }
             capability
         } else { null_mut() };
-        Self { name, sid, capability_sid }
+        Self { sid, capability_sid }
     }
 }
 
@@ -182,8 +194,29 @@ impl Drop for AppContainer {
         unsafe {
             if !self.capability_sid.is_null() { LocalFree(self.capability_sid as *mut c_void); }
             if !self.sid.is_null() { FreeSid(self.sid); }
-            DeleteAppContainerProfile(self.name.as_ptr());
         }
+    }
+}
+
+struct ProfileCreationLock(HANDLE);
+
+impl ProfileCreationLock {
+    fn acquire() -> Self {
+        let name = wide("Local\\Nexy.McpSandbox.ProfileCreation");
+        let handle = unsafe { CreateMutexW(null(), 0, name.as_ptr()) };
+        if handle.is_null() { last_error("could not create AppContainer profile lock"); }
+        let wait = unsafe { WaitForSingleObject(handle, 10_000) };
+        if wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED {
+            unsafe { CloseHandle(handle); }
+            fail(format!("could not acquire AppContainer profile lock (wait result {wait})"));
+        }
+        Self(handle)
+    }
+}
+
+impl Drop for ProfileCreationLock {
+    fn drop(&mut self) {
+        unsafe { ReleaseMutex(self.0); CloseHandle(self.0); }
     }
 }
 
@@ -253,10 +286,17 @@ impl Drop for DaclGrant {
     }
 }
 
-fn uuid_suffix() -> String {
-    // A process-local random suffix is sufficient because the profile is deleted before
-    // this helper exits. Avoid a second dependency in the native boundary.
-    format!("{:x}{:x}", std::process::id(), unsafe { GetStdHandle(STD_INPUT_HANDLE) as usize })
+pub(crate) fn repair_profile() -> i32 {
+    let _lock = ProfileCreationLock::acquire();
+    let name = wide(APP_CONTAINER_NAME);
+    let result = unsafe { DeleteAppContainerProfile(name.as_ptr()) };
+    // A missing profile is already repaired. Windows reports it as a failing
+    // HRESULT, so preserve its exact value for actionable desktop diagnostics.
+    if result < 0 && result != HRESULT_FILE_NOT_FOUND {
+        eprintln!("mcp-sandbox: Windows sandbox: could not repair AppContainer profile (HRESULT 0x{:08x})", result as u32);
+        return 2;
+    }
+    0
 }
 
 fn grant_paths(launch: &Launch, executable: &str, app: &AppContainer) -> Vec<DaclGrant> {

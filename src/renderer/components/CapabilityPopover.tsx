@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Check, ChevronDown, CircleAlert, Loader2, Search, ShieldCheck, X } from 'lucide-react'
-import type { CapabilityPreflight, CapabilityScope, CapabilityTrust, ConversationCapabilityProfile, McpServerWithStatus, SkillConfig } from '../../shared/types'
+import type { CapabilityPreflight, CapabilityScope, CapabilityTrust, ConversationCapabilityProfile, CredentialBindingMetadata, CredentialMetadata, McpServerWithStatus, SkillConfig } from '../../shared/types'
 import { DropdownPanel } from './DropdownPanel'
 
 type Props = {
@@ -30,6 +30,10 @@ export function CapabilityPopover({ conversationId, modelId, skills, projectId, 
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([])
   const [selectedMcp, setSelectedMcp] = useState<Array<{ serverId: string; trust: CapabilityTrust }>>([])
   const [servers, setServers] = useState<McpServerWithStatus[]>([])
+  const [credentials, setCredentials] = useState<CredentialMetadata[]>([])
+  const [credentialBindings, setCredentialBindings] = useState<CredentialBindingMetadata[]>([])
+  const [credentialId, setCredentialId] = useState('')
+  const [credentialDuration, setCredentialDuration] = useState<'hour' | 'today' | 'until-removed'>('until-removed')
   const [preflight, setPreflight] = useState<CapabilityPreflight | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -37,6 +41,7 @@ export function CapabilityPopover({ conversationId, modelId, skills, projectId, 
   const [scope, setScope] = useState<'chat' | 'project' | 'agent'>('chat')
   const [skillSearch, setSkillSearch] = useState('')
   const activeConversationId = conversationId ?? pendingConversationId
+  const availableCredentials = credentials.filter((item) => item.provider === null && item.revokedAt === null)
 
   const applyProfile = useCallback((profile: ConversationCapabilityProfile | null | undefined) => {
     if (!profile) return
@@ -48,9 +53,11 @@ export function CapabilityPopover({ conversationId, modelId, skills, projectId, 
     if (!activeConversationId) return
     setError(null)
     try {
-      const [nextPreflight, nextServers] = await Promise.all([
+      const [nextPreflight, nextServers, nextCredentials, nextBindings] = await Promise.all([
         window.api.resolveCapabilities(activeConversationId, modelId),
         window.api.listMcpServers(),
+        window.api.credentialList(),
+        window.api.credentialBindingList(),
       ])
       // The effective profile is what execution uses, but the controls edit one persisted
       // scope at a time. Rehydrate from that scope so an inherited stricter policy does not
@@ -58,6 +65,8 @@ export function CapabilityPopover({ conversationId, modelId, skills, projectId, 
       applyProfile(nextPreflight.scopeProfiles?.[scope] ?? nextPreflight.profile)
       setPreflight(nextPreflight)
       setServers(nextServers)
+      setCredentials(nextCredentials)
+      setCredentialBindings(nextBindings)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not load capabilities')
     }
@@ -131,6 +140,51 @@ export function CapabilityPopover({ conversationId, modelId, skills, projectId, 
   const openProjectCapabilities = () => {
     setOpen(false)
     onOpenProjectCapabilities?.()
+  }
+
+  const grantCredential = async () => {
+    if (!activeConversationId || !credentialId) return
+    const credential = credentials.find((item) => item.id === credentialId)
+    if (!credential || credential.provider !== null || credential.revokedAt !== null) {
+      setError('Choose an available credential')
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      const now = Date.now()
+      const expiresAt = credentialDuration === 'hour'
+        ? now + 60 * 60 * 1000
+        : credentialDuration === 'today'
+          ? new Date(new Date(now).setHours(23, 59, 59, 999)).getTime()
+          : null
+      await window.api.credentialBindingCreate({
+        credentialId,
+        conversationId: activeConversationId,
+        capability: `credential:${credential.id}`,
+        approvalMode: 'auto',
+        expiresAt,
+      })
+      setCredentialId('')
+      await refresh()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not grant credential access')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const removeCredentialGrant = async (bindingId: string) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await window.api.credentialBindingDelete(bindingId)
+      await refresh()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not remove credential access')
+    } finally {
+      setBusy(false)
+    }
   }
 
   const toggleOpen = async () => {
@@ -209,6 +263,32 @@ export function CapabilityPopover({ conversationId, modelId, skills, projectId, 
                   <span><span className="block text-xs font-medium text-gray-700 dark:text-gray-200">This agent{agentName ? ` · ${agentName}` : ''}</span><span className="block text-[11px] text-gray-500 dark:text-gray-400">Reusable defaults for chats using this agent.</span></span>
                 </label>}
               </div>
+            </section>
+
+            <section>
+              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">Credentials</div>
+              <p className="mb-2 text-[11px] text-gray-500 dark:text-gray-400">Choose which saved credential this chat may access. Secret values are never shown here.</p>
+              {credentialBindings.filter((binding) => binding.conversationId === activeConversationId
+                && credentials.some((credential) => credential.id === binding.credentialId && credential.provider === null)).map((binding) => {
+                const credential = credentials.find((item) => item.id === binding.credentialId)
+                const expiry = binding.expiresAt === null ? 'until removed' : `until ${new Date(binding.expiresAt).toLocaleString()}`
+                return <div key={binding.id} className="mb-1.5 flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-2 py-1.5 dark:bg-gray-800">
+                  <span className="min-w-0 text-[11px] text-gray-700 dark:text-gray-200"><b>{credential?.name ?? 'Unavailable credential'}</b> · {binding.capability} · {expiry}</span>
+                  <button type="button" disabled={busy} onClick={() => void removeCredentialGrant(binding.id)} className="shrink-0 text-[11px] font-medium text-red-600 hover:underline disabled:opacity-60">Remove</button>
+                </div>
+              })}
+              {availableCredentials.length > 0 ? <div className="flex gap-1.5">
+                <select value={credentialId} onChange={(event) => setCredentialId(event.target.value)} aria-label="Credential for this chat" className="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-200">
+                  <option value="">Select a credential…</option>
+                  {availableCredentials.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
+                <select value={credentialDuration} onChange={(event) => setCredentialDuration(event.target.value as typeof credentialDuration)} aria-label="Credential grant duration" className="rounded border border-gray-200 bg-white px-1 py-1 text-[11px] text-gray-700 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-200">
+                  <option value="until-removed">Until removed</option>
+                  <option value="today">Today</option>
+                  <option value="hour">1 hour</option>
+                </select>
+                <button type="button" disabled={busy || !credentialId} onClick={() => void grantCredential()} className="rounded bg-blue-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-blue-700 disabled:opacity-60">Grant</button>
+              </div> : <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">Add a credential in Settings → Credential Manager before granting it to this chat.</p>}
             </section>
 
             <section>

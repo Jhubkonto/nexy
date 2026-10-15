@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Plug, X, RefreshCw, Settings, Trash2, Plus, ChevronLeft, ChevronDown, ChevronRight, Search, Wrench, ClipboardPaste, ExternalLink, CheckCircle2, AlertCircle, Loader2, Globe2, ShieldCheck, Users, Library, SlidersHorizontal, Database, FileText, TerminalSquare, Eye, LockKeyhole } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
 import { Button, ModalShell } from './ui/primitives'
-import { isApiError, type AgentConfig, type McpRegistrySearchResult, type McpRegistryServer, type McpSandboxProfile, type McpSandboxRuntimeStatus, type McpServerDiagnosis, type McpTool } from '@shared/types'
+import { isApiError, type AgentConfig, type ManagedBrowserRuntimeStatus, type McpRegistrySearchResult, type McpRegistryServer, type McpSandboxProfile, type McpSandboxRuntimeStatus, type McpServerDiagnosis, type McpTool } from '@shared/types'
 import { DEFAULT_MCP_SANDBOX_PROFILE, normalizeMcpSandboxProfile } from '@shared/mcp-sandbox'
 import {
   MCP_CATALOG,
@@ -26,6 +26,7 @@ interface McpServerConfig {
   command: string
   args: string[]
   env: Record<string, string>
+  launch?: { kind: 'managed-playwright'; mode: 'launch' | 'cdp' }
   cwd?: string
   imageResponses?: 'allow' | 'omit'
   sandboxProfile?: McpSandboxProfile
@@ -214,6 +215,8 @@ function EnvEditor({
 export function McpServerPanel() {
   const visible = useAppStore((s) => s.showMcpPanel)
   const setShowMcpPanel = useAppStore((s) => s.setShowMcpPanel)
+  const setShowSettings = useAppStore((s) => s.setShowSettings)
+  const setSettingsInitialTab = useAppStore((s) => s.setSettingsInitialTab)
   const addToast = useAppStore((s) => s.addToast)
   const loadAgents = useAppStore((s) => s.loadAgents)
   const onClose = () => setShowMcpPanel(false)
@@ -247,6 +250,9 @@ export function McpServerPanel() {
   const [accessTrust, setAccessTrust] = useState<Record<string, AssignmentTrust>>({})
   const [accessLoading, setAccessLoading] = useState(false)
   const [accessError, setAccessError] = useState<string | null>(null)
+  const [managedBrowser, setManagedBrowser] = useState<ManagedBrowserRuntimeStatus | null>(null)
+  const [managedBrowserBusy, setManagedBrowserBusy] = useState(false)
+  const [sandboxRepairBusy, setSandboxRepairBusy] = useState(false)
 
   const loadServers = useCallback(async () => {
     try {
@@ -306,6 +312,7 @@ export function McpServerPanel() {
   useEffect(() => {
     if (visible) {
       loadServers()
+      void window.api.getManagedBrowserStatus().then(setManagedBrowser).catch(() => setManagedBrowser(null))
       void loadTools()
       void loadAccessAgents()
       // Reset to the gallery landing each time the panel opens.
@@ -421,7 +428,7 @@ export function McpServerPanel() {
   }
 
   const handleTestConnection = async () => {
-    if (!editingServer || !editingServer.command) return
+    if (!editingServer || (!editingServer.command && editingServer.launch?.kind !== 'managed-playwright')) return
     setTest({ status: 'testing' })
     try {
       const result = await window.api.testMcpServer({
@@ -431,6 +438,7 @@ export function McpServerPanel() {
         cwd: editingServer.cwd,
         imageResponses: editingServer.imageResponses,
         sandboxProfile: sandboxProfileFor(editingServer),
+        launch: editingServer.launch,
       })
       if (result.ok) {
         setTest({ status: 'ok', toolCount: result.tools?.length ?? 0 })
@@ -443,7 +451,7 @@ export function McpServerPanel() {
   }
 
   const handleSave = async () => {
-    if (!editingServer || !editingServer.name || !editingServer.command) return
+    if (!editingServer || !editingServer.name || (!editingServer.command && editingServer.launch?.kind !== 'managed-playwright')) return
 
     try {
       if (isNew) {
@@ -512,6 +520,60 @@ export function McpServerPanel() {
       addToast('Server removed', 'success')
     } catch {
       addToast('Failed to remove server', 'error')
+    }
+  }
+
+  // While a download runs, poll the main process so the form shows live
+  // installer progress instead of a static "Downloading…" label.
+  const managedBrowserDownloading = managedBrowserBusy || managedBrowser?.state === 'downloading'
+  useEffect(() => {
+    if (!visible || !managedBrowserDownloading) return
+    const timer = setInterval(() => {
+      void window.api.getManagedBrowserStatus()
+        .then((status) => setManagedBrowser((current) => (managedBrowserBusy && status.state !== 'downloading' ? current : status)))
+        .catch(() => {})
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [visible, managedBrowserDownloading, managedBrowserBusy])
+
+  const handleManagedBrowserInstall = async () => {
+    setManagedBrowserBusy(true)
+    setManagedBrowser((current) => current && { ...current, state: 'downloading', detail: 'Starting download…', errorLogId: undefined })
+    try {
+      const status = await window.api.installManagedBrowser()
+      setManagedBrowser(status)
+      if (status.state === 'ready') addToast('Managed Chromium is ready', 'success')
+      else addToast(`Chromium download ${status.state}. See the details here, then retry.`, 'error')
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      setManagedBrowser((current) => ({
+        state: 'failed',
+        browser: 'chromium',
+        version: current?.version || 'unknown',
+        detail: `Could not start the Chromium download: ${detail}. Check that Nexy can write to its application data folder, then retry.`,
+      }))
+      addToast('Could not start managed Chromium download. See details in the form.', 'error')
+    } finally {
+      setManagedBrowserBusy(false)
+    }
+  }
+
+  const handleViewManagedBrowserError = () => {
+    if (!managedBrowser?.errorLogId) return
+    setSettingsInitialTab(`developer:console:${managedBrowser.errorLogId}`)
+    setShowMcpPanel(false)
+    setShowSettings(true)
+  }
+
+  const handleSandboxRepair = async () => {
+    setSandboxRepairBusy(true)
+    try {
+      await window.api.repairMcpSandbox()
+      addToast('Nexy sandbox profile repaired. Retry the connection.', 'success')
+    } catch {
+      addToast('Could not repair the Nexy sandbox profile', 'error')
+    } finally {
+      setSandboxRepairBusy(false)
     }
   }
 
@@ -1177,6 +1239,34 @@ export function McpServerPanel() {
         </div>
       ) : view === 'form' && editingServer ? (
         <div className="space-y-3">
+          {editingServer.launch?.kind === 'managed-playwright' && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 text-xs dark:border-emerald-900/60 dark:bg-emerald-950/20">
+              <div className="flex items-start gap-2">
+                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                <div className="min-w-0 flex-1">
+                  <p className="font-bold text-gray-700 dark:text-gray-200">Nexy-managed Playwright</p>
+                  <p className="mt-0.5 text-gray-500 dark:text-gray-400">Uses Nexy’s bundled MCP runtime and an isolated, non-persistent Chromium session. No global npm, browser, or saved browser profile is used.</p>
+                  {managedBrowser && (
+                    <div className={`mt-2 rounded-md p-2 ${managedBrowser.state === 'failed' ? 'border border-red-200 bg-red-50 text-red-800 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200' : 'text-[11px] text-gray-600 dark:text-gray-300'}`}>
+                      <p className="font-medium">Chromium {managedBrowser.version}: {managedBrowser.state}</p>
+                      {managedBrowser.detail && <p className="mt-1 max-h-28 overflow-y-auto whitespace-pre-wrap break-words">{managedBrowser.detail}</p>}
+                      {managedBrowser.state === 'failed' && <p className="mt-1">Check your internet connection and available disk space, then retry. If your network uses a proxy, configure it for Nexy before downloading.</p>}
+                      {managedBrowser.state === 'failed' && managedBrowser.errorLogId && (
+                        <button onClick={handleViewManagedBrowserError} className="mt-2 font-medium underline underline-offset-2 hover:no-underline">
+                          View logs
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {managedBrowser?.state !== 'ready' && (
+                  <Button onClick={() => void handleManagedBrowserInstall()} disabled={managedBrowserBusy || managedBrowser?.state === 'downloading'} className="shrink-0 px-2 py-1 text-xs">
+                    {managedBrowserBusy || managedBrowser?.state === 'downloading' ? 'Downloading…' : 'Download Chromium'}
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
           <div>
             <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
               Name
@@ -1270,7 +1360,7 @@ export function McpServerPanel() {
             />
           </div>
 
-          <div className="space-y-2 rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/20">
+          {editingServer.launch?.kind !== 'managed-playwright' && <div className="space-y-2 rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/20">
             <div className="flex items-start gap-2">
               <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
               <div>
@@ -1317,10 +1407,10 @@ export function McpServerPanel() {
                 </>
               )
             })()}
-          </div>
+          </div>}
 
           {/* Advanced disclosure — raw launch command. Open by default for custom servers. */}
-          <div className="border-t border-gray-200 dark:border-gray-700 pt-2">
+          {editingServer.launch?.kind !== 'managed-playwright' && <div className="border-t border-gray-200 dark:border-gray-700 pt-2">
             <button
               onClick={() => setAdvancedOpen((o) => !o)}
               className="flex items-center gap-1 text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
@@ -1373,9 +1463,11 @@ export function McpServerPanel() {
                 </div>
               </div>
             )}
-          </div>
+          </div>}
 
-          {editingServer.command && (
+          {editingServer.launch?.kind === 'managed-playwright' ? (
+            <p className="text-xs text-gray-400 dark:text-gray-500">Runs: Nexy managed Playwright ({editingServer.launch.mode === 'cdp' ? 'CDP attach' : 'isolated Chromium'})</p>
+          ) : editingServer.command && (
             <p className="text-xs text-gray-400 dark:text-gray-500 font-mono truncate">
               Runs: {editingServer.command} {editingServer.args.join(' ')}
             </p>
@@ -1385,7 +1477,7 @@ export function McpServerPanel() {
           <div className="space-y-2">
             <Button
               onClick={handleTestConnection}
-              disabled={!editingServer.command || test.status === 'testing'}
+              disabled={(!editingServer.command && editingServer.launch?.kind !== 'managed-playwright') || test.status === 'testing'}
               className="w-full justify-center py-2"
             >
               {test.status === 'testing' ? (
@@ -1509,6 +1601,7 @@ export function McpServerPanel() {
                         ) : <p className="text-nexy-error">{diagnosis.guidance[0]}</p>}
                         {diagnosis.liveError && diagnosis.liveError !== diagnosis.test?.error && <p className="break-words text-nexy-error">Live connection: {diagnosis.liveError}</p>}
                         {diagnosis.test?.sandbox?.diagnostics && <p className="break-words text-nexy-error">Sandbox: {diagnosis.test.sandbox.diagnostics}</p>}
+                        {/appcontainer|windows sandbox/i.test(`${diagnosis.liveError ?? ''} ${diagnosis.test?.error ?? ''} ${diagnosis.test?.sandbox?.diagnostics ?? ''}`) && <button type="button" onClick={() => void handleSandboxRepair()} disabled={sandboxRepairBusy} className="inline-flex items-center gap-1 rounded-nexy-sm border border-nexy-border bg-nexy-raised px-2 py-1 text-[10px] font-bold text-nexy-text hover:bg-nexy-recessed disabled:opacity-50">{sandboxRepairBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />} Repair sandbox</button>}
                         {diagnosis.guidance.length > 0 && <ul className="list-disc space-y-1 pl-4 text-nexy-muted">{diagnosis.guidance.map((item) => <li key={item}>{item}</li>)}</ul>}
                       </div>
                     )}
