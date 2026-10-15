@@ -84,19 +84,31 @@ const { mockRequestApproval } = vi.hoisted(() => ({
   mockRequestApproval: vi.fn().mockResolvedValue(true)
 }))
 
-const { MockClient, MockTransport } = vi.hoisted(() => {
+const { MockClient, MockTransport, launchControl } = vi.hoisted(() => {
+  /** Per-test control of the next launch: helper stderr and handshake outcome. */
+  const launchControl: { stderr?: string; connectError?: string } = {}
+
   class MockTransport {
     close = vi.fn().mockResolvedValue(undefined)
     onclose?: () => void
+    stderr: import('node:stream').PassThrough | null = null
+    constructor() {
+      if (launchControl.stderr !== undefined) {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { PassThrough } = require('node:stream') as typeof import('node:stream')
+        this.stderr = new PassThrough()
+        this.stderr.end(launchControl.stderr)
+      }
+    }
   }
 
   class MockClient {
-    connect = vi.fn().mockResolvedValue(undefined)
+    connect = vi.fn(() => launchControl.connectError ? Promise.reject(new Error(launchControl.connectError)) : Promise.resolve(undefined))
     listTools = vi.fn().mockResolvedValue({ tools: [] })
     callTool = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'ok' }], isError: false })
   }
 
-  return { MockClient, MockTransport }
+  return { MockClient, MockTransport, launchControl }
 })
 
 vi.mock('../tools', () => ({
@@ -171,6 +183,8 @@ beforeEach(() => {
   mockAgentRows[1].config_json = JSON.stringify({ name: 'Approval Agent', mcpServers: [] })
   mockTrustRows.clear()
   mockOverrideRows.clear()
+  delete launchControl.stderr
+  delete launchControl.connectError
   servers.clear()
   vi.useRealTimers()
   vi.clearAllMocks()
@@ -301,6 +315,54 @@ describe('MCP — Pre-flight test-server', () => {
     await invokeHandler('mcp:test-server', { command: 'node', args: [], env: {} })
     expect(mockDb._serverRows.length).toBe(0)
     expect(servers.size).toBe(0)
+  })
+
+  it('returns a passing start-up checklist on success', async () => {
+    const r = await invokeHandler('mcp:test-server', { command: 'node', args: ['server.js'], env: {} })
+    expect(r.failure).toBeUndefined()
+    expect(r.stages.map((stage: { id: string; state: string }) => `${stage.id}:${stage.state}`))
+      .toEqual(['sandbox:passed', 'server:passed', 'tools:passed'])
+  })
+
+  it('explains a closed connection using the captured sandbox output and logs a report', async () => {
+    launchControl.connectError = 'MCP error -32000: Connection closed'
+    launchControl.stderr = 'mcp-sandbox: Windows sandbox: could not create the AppContainer process (Win32 error 203)\n'
+
+    const r = await invokeHandler('mcp:test-server', { command: 'node', args: ['server.js'], env: {} })
+
+    expect(r.ok).toBe(false)
+    expect(r.error).toBe('MCP error -32000: Connection closed')
+    expect(r.failure).toMatchObject({ kind: 'sandbox' })
+    expect(r.stderr).toContain('Win32 error 203')
+    expect(r.sandbox).toMatchObject({ status: 'failed' })
+    expect(r.errorLogId).toEqual(expect.any(String))
+    const logInsert = mockDb.prepare.mock.calls.findIndex(([sql]) => String(sql).includes('INSERT INTO error_log'))
+    expect(logInsert).toBeGreaterThanOrEqual(0)
+  })
+
+  it('redacts configured secrets from the returned error output', async () => {
+    launchControl.connectError = 'MCP error -32000: Connection closed'
+    launchControl.stderr = 'Error: request failed with token ghp_supersecret123\n'
+
+    const r = await invokeHandler('mcp:test-server', { command: 'node', args: [], env: { GITHUB_TOKEN: 'ghp_supersecret123' } })
+
+    expect(r.stderr).not.toContain('ghp_supersecret123')
+    expect(JSON.stringify(r)).not.toContain('ghp_supersecret123')
+  })
+})
+
+describe('MCP — Live start failures', () => {
+  it('stores the explanation and log reference on a server that fails to connect', async () => {
+    launchControl.connectError = 'MCP error -32000: Connection closed'
+    launchControl.stderr = "Error: Cannot find module 'left-pad'\n"
+
+    const added = await invokeHandler('mcp:add-server', { name: 'Broken', command: 'node', args: ['broken.js'], env: {}, enabled: true })
+    const listed = (await invokeHandler('mcp:list-servers')).find((server: { id: string }) => server.id === added.id)
+
+    expect(listed).toMatchObject({ status: 'error', failure: { kind: 'server-crashed' }, errorLogId: expect.any(String) })
+    expect(listed.error).toContain("Cannot find module 'left-pad'")
+    const restart = await invokeHandler('mcp:restart-server', added.id)
+    expect(restart).toMatchObject({ connected: false, error: 'The server crashed during start-up' })
   })
 })
 
