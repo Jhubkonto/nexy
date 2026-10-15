@@ -2038,6 +2038,16 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
         ON test_runs(conversation_id, started_at DESC);
     `,
   },
+  {
+    // A grant can be limited to one persisted chat. Deleting that chat revokes the grant through
+    // the foreign key; no credential value is ever stored in this permission record.
+    version: 102,
+    sql: `
+      ALTER TABLE credential_bindings ADD COLUMN conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE;
+      CREATE INDEX IF NOT EXISTS idx_credential_bindings_conversation
+        ON credential_bindings(conversation_id, capability, expires_at);
+    `,
+  },
 ];
 
 

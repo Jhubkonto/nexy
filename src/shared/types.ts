@@ -701,10 +701,17 @@ export interface McpServerConfig {
   command: string
   args: string[]
   env: Record<string, string>
+  /** Nexy-owned launchers ignore the stored command/args compatibility fields. */
+  launch?: McpManagedLaunch
   cwd?: string
   imageResponses?: 'allow' | 'omit'
   sandboxProfile?: McpSandboxProfile
   enabled: boolean
+}
+
+export type McpManagedLaunch = {
+  kind: 'managed-playwright'
+  mode: 'launch' | 'cdp'
 }
 
 export interface SendMessageOptions {
@@ -2009,12 +2016,24 @@ export interface McpSandboxProfile {
   network: McpSandboxNetworkPolicy
   childProcesses: McpSandboxChildProcessPolicy
   filesystem: McpSandboxFilesystemGrant[]
-  memoryLimitMiB: 512
-  maxProcesses: 1 | 8
+  memoryLimitMiB: 512 | 1024
+  maxProcesses: 1 | 8 | 16
   startupTimeoutMs: 15000
   gracefulShutdownTimeoutMs: 2000
   hardTerminationTimeoutMs: 5000
   maxDiagnosticBytes: 65536
+  /** Present only on Nexy's managed Playwright launch descriptor. */
+  managedRuntime?: 'playwright'
+}
+
+export type ManagedBrowserRuntimeState = 'download-required' | 'downloading' | 'ready' | 'failed'
+
+export interface ManagedBrowserRuntimeStatus {
+  state: ManagedBrowserRuntimeState
+  browser: 'chromium'
+  version: string
+  detail?: string
+  errorLogId?: string
 }
 
 export type McpSandboxStatus = 'sandboxed' | 'starting' | 'unavailable' | 'failed' | 'stopped'
@@ -2179,6 +2198,8 @@ export interface CredentialMetadata {
   name: string
   kind: CredentialKind
   provider: string | null
+  /** Exact HTTPS origin a website-login credential is permitted to target. */
+  targetOrigin: string | null
   fingerprint: string | null
   createdAt: number
   updatedAt: number
@@ -2190,12 +2211,18 @@ export interface CredentialCreateInput {
   name: string
   kind: CredentialKind
   provider?: string | null
+  /** A website-login credential is constrained to this exact origin. */
+  targetOrigin?: string | null
+  /** Stored inside the encrypted payload for username/password credentials. */
+  username?: string | null
   value: string
 }
 
 export interface CredentialUpdateInput {
   name?: string
   provider?: string | null
+  targetOrigin?: string | null
+  username?: string | null
   value?: string
   revoked?: boolean
 }
@@ -2208,6 +2235,8 @@ export interface CredentialBindingMetadata {
   credentialId: string
   projectId: string | null
   agentId: string | null
+  /** Exact chat authorised to use this credential, if any. */
+  conversationId: string | null
   capability: string
   approvalMode: CredentialApprovalMode
   expiresAt: number | null
@@ -2219,6 +2248,7 @@ export interface CredentialBindingCreateInput {
   credentialId: string
   projectId?: string | null
   agentId?: string | null
+  conversationId?: string | null
   capability: string
   approvalMode?: CredentialApprovalMode
   expiresAt?: number | null
@@ -2227,6 +2257,7 @@ export interface CredentialBindingCreateInput {
 export interface CredentialBindingUpdateInput {
   projectId?: string | null
   agentId?: string | null
+  conversationId?: string | null
   capability?: string
   approvalMode?: CredentialApprovalMode
   expiresAt?: number | null
@@ -2495,6 +2526,9 @@ export type IpcReturnMap = {
   'mcp:remove-server': boolean
   'mcp:restart-server': McpRestartResult
   'mcp:diagnose-server': McpServerDiagnosis
+  'mcp:get-managed-browser-status': ManagedBrowserRuntimeStatus
+  'mcp:install-managed-browser': ManagedBrowserRuntimeStatus
+  'mcp:repair-sandbox': boolean
   'mcp:server-status-changed': void
   'mcp:test-server': McpTestResult
   'mcp:search-registry': McpRegistrySearchResult
@@ -2880,6 +2914,7 @@ export type IpcChannels =
   | 'conversation:mark-incomplete'
   | 'conversation:completed'
   | 'conversation:incompleted'
+  | 'conversation:renamed'
   | 'conversation:generate-quiz'
   | 'conversation:start-quiz-generation'
   | 'conversation:get-quiz'
@@ -2956,6 +2991,9 @@ export type IpcChannels =
   | 'mcp:remove-server'
   | 'mcp:restart-server'
   | 'mcp:diagnose-server'
+  | 'mcp:get-managed-browser-status'
+  | 'mcp:install-managed-browser'
+  | 'mcp:repair-sandbox'
   | 'mcp:server-status-changed'
   | 'mcp:test-server'
   | 'mcp:search-registry'
