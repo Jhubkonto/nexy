@@ -19,14 +19,17 @@ data class CredentialMetadata(
     val updatedAt: Long,
     val lastUsedAt: Long?,
     val revokedAt: Long?,
+    val targetOrigin: String? = null,
+    val username: String? = null,
 )
 
-/** Secret-free project/agent permission metadata mirrored from the desktop or stored locally. */
+/** Secret-free project/agent/chat permission metadata mirrored from the desktop or stored locally. */
 data class CredentialBindingMetadata(
     val id: String,
     val credentialId: String,
     val projectId: String?,
     val agentId: String?,
+    val conversationId: String?,
     val capability: String,
     val approvalMode: String,
     val expiresAt: Long?,
@@ -59,6 +62,7 @@ class CredentialVault private constructor(context: Context) {
         credentialId: String,
         projectId: String?,
         agentId: String?,
+        conversationId: String? = null,
         capability: String,
         approvalMode: String = APPROVAL_AUTO,
         expiresAt: Long? = null,
@@ -71,6 +75,7 @@ class CredentialVault private constructor(context: Context) {
             credentialId = credentialId,
             projectId = projectId.normalizedId(),
             agentId = agentId.normalizedId(),
+            conversationId = conversationId.normalizedId(),
             capability = capability.trim(),
             approvalMode = approvalMode,
             expiresAt = expiresAt,
@@ -107,6 +112,7 @@ class CredentialVault private constructor(context: Context) {
                 .put("credentialId", item.optString("credentialId"))
                 .put("projectId", if (item.isNull("projectId")) JSONObject.NULL else item.optString("projectId"))
                 .put("agentId", if (item.isNull("agentId")) JSONObject.NULL else item.optString("agentId"))
+                .put("conversationId", if (item.isNull("conversationId")) JSONObject.NULL else item.optString("conversationId"))
                 .put("capability", item.optString("capability"))
                 .put("approvalMode", item.optString("approvalMode", APPROVAL_AUTO))
                 .put("expiresAt", if (item.isNull("expiresAt")) JSONObject.NULL else item.optLong("expiresAt")))
@@ -122,10 +128,15 @@ class CredentialVault private constructor(context: Context) {
         kind: String,
         provider: String?,
         value: String,
+        targetOrigin: String? = null,
+        username: String? = null,
     ): CredentialMetadata {
         val normalizedName = name.trim().also { require(it.isNotEmpty()) { "Credential name is required" } }
         require(kind in SUPPORTED_KINDS) { "Unsupported credential kind: $kind" }
         require(value.isNotEmpty()) { "Credential value is required" }
+        val normalizedOrigin = if (kind == KIND_PASSWORD) validateCredentialOrigin(targetOrigin) else null
+        val normalizedUsername = if (kind == KIND_PASSWORD) username?.trim()?.takeIf(String::isNotEmpty)
+            .also { require(it != null) { "Website login username is required" } } else null
         val id = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
         writeRecord(
@@ -134,6 +145,8 @@ class CredentialVault private constructor(context: Context) {
             kind = kind,
             provider = provider?.trim()?.takeIf(String::isNotEmpty),
             value = value,
+            targetOrigin = normalizedOrigin,
+            username = normalizedUsername,
             createdAt = now,
             updatedAt = now,
             lastUsedAt = null,
@@ -158,6 +171,8 @@ class CredentialVault private constructor(context: Context) {
             kind = existing.kind,
             provider = existing.provider,
             value = value ?: requireNotNull(readSecret(id)),
+            targetOrigin = existing.targetOrigin,
+            username = existing.username,
             createdAt = existing.createdAt,
             updatedAt = now,
             lastUsedAt = existing.lastUsedAt,
@@ -178,6 +193,8 @@ class CredentialVault private constructor(context: Context) {
             .remove(field(id, FIELD_NAME))
             .remove(field(id, FIELD_KIND))
             .remove(field(id, FIELD_PROVIDER))
+            .remove(field(id, FIELD_TARGET_ORIGIN))
+            .remove(field(id, FIELD_USERNAME))
             .remove(field(id, FIELD_FINGERPRINT))
             .remove(field(id, FIELD_CREATED_AT))
             .remove(field(id, FIELD_UPDATED_AT))
@@ -185,6 +202,9 @@ class CredentialVault private constructor(context: Context) {
             .remove(field(id, FIELD_REVOKED_AT))
             .remove(field(id, FIELD_SECRET))
             .apply()
+        // Bindings only carry permission metadata, but retaining an orphaned binding is
+        // confusing in the manager and could accidentally apply if an ID were ever reused.
+        writeBindings(KEY_LOCAL_BINDINGS, listBindings().filterNot { it.credentialId == id })
         return true
     }
 
@@ -213,25 +233,79 @@ class CredentialVault private constructor(context: Context) {
             .forEach { deleteCredential(it.id) }
     }
 
-    fun hasApiKey(provider: String, projectId: String? = null, agentId: String? = null): Boolean = listMetadata().any {
+    fun hasApiKey(provider: String, projectId: String? = null, agentId: String? = null, conversationId: String? = null): Boolean = listMetadata().any {
         it.kind == KIND_API_KEY && it.provider == provider && it.revokedAt == null && readSecret(it.id)?.isNotBlank() == true
-            && isAuthorized(it.id, provider, projectId, agentId, "provider:$provider")
+            && isAuthorized(it.id, provider, projectId, agentId, conversationId, "provider:$provider")
+    } || capabilityCredentialId("provider:$provider", projectId, agentId, conversationId) != null
+
+    fun resolveApiKey(
+        provider: String,
+        projectId: String? = null,
+        agentId: String? = null,
+        conversationId: String? = null,
+    ): String? = apiKeyCredentialId(provider, projectId, agentId, conversationId)
+        ?.let(::resolveCredential)
+
+    fun apiKeyCredentialId(provider: String, projectId: String? = null, agentId: String? = null, conversationId: String? = null): String? = listMetadata()
+        .firstOrNull { it.kind == KIND_API_KEY && it.provider == provider && it.revokedAt == null
+            && isAuthorized(it.id, provider, projectId, agentId, conversationId, "provider:$provider") }
+        ?.id ?: capabilityCredentialId("provider:$provider", projectId, agentId, conversationId)
+
+    /**
+     * Returns a device-local API-key/token credential only when an active automatic grant
+     * explicitly authorizes the requested capability and scope. Generic credentials never
+     * inherit the unbound-provider-key behavior used for legacy standalone API keys.
+     */
+    fun capabilityCredentialId(
+        capability: String,
+        projectId: String? = null,
+        agentId: String? = null,
+        conversationId: String? = null,
+    ): String? {
+        val now = System.currentTimeMillis()
+        val matchingBindings = listBindings().filter { binding ->
+            binding.capability == capability &&
+                binding.approvalMode == APPROVAL_AUTO &&
+                (binding.expiresAt == null || binding.expiresAt > now) &&
+                (binding.projectId == null || binding.projectId == projectId) &&
+                (binding.agentId == null || binding.agentId == agentId) &&
+                (binding.conversationId == null || binding.conversationId == conversationId)
+        }
+        if (matchingBindings.isEmpty()) return null
+        val grantedCredentialIds = matchingBindings
+            .sortedByDescending { binding ->
+                (if (binding.conversationId != null) 4 else 0) +
+                    (if (binding.projectId != null) 2 else 0) +
+                    (if (binding.agentId != null) 1 else 0)
+            }
+            .map { it.credentialId }
+            .distinct()
+        val metadataById = listMetadata().associateBy(CredentialMetadata::id)
+        return grantedCredentialIds.firstNotNullOfOrNull { id ->
+            val credential = metadataById[id] ?: return@firstNotNullOfOrNull null
+            credential.takeIf {
+                credential.provider == null &&
+                    credential.kind in CAPABILITY_API_CREDENTIAL_KINDS &&
+                    credential.revokedAt == null &&
+                    readSecret(credential.id)?.isNotBlank() == true
+            }?.id
+        }
     }
 
-    fun resolveApiKey(provider: String): String? = listMetadata()
-        .firstOrNull { it.kind == KIND_API_KEY && it.provider == provider && it.revokedAt == null }
-        ?.let { resolveCredential(it.id) }
-
-    fun apiKeyCredentialId(provider: String, projectId: String? = null, agentId: String? = null): String? = listMetadata()
-        .firstOrNull { it.kind == KIND_API_KEY && it.provider == provider && it.revokedAt == null
-            && isAuthorized(it.id, provider, projectId, agentId, "provider:$provider") }
-        ?.id
+    fun resolveCapabilityCredential(
+        capability: String,
+        projectId: String? = null,
+        agentId: String? = null,
+        conversationId: String? = null,
+    ): String? = capabilityCredentialId(capability, projectId, agentId, conversationId)
+        ?.let(::resolveCredential)
 
     private fun isAuthorized(
         credentialId: String,
         provider: String?,
         projectId: String?,
         agentId: String?,
+        conversationId: String?,
         capability: String,
     ): Boolean {
         val local = listBindings().filter { it.credentialId == credentialId && it.capability == capability }
@@ -244,6 +318,7 @@ class CredentialVault private constructor(context: Context) {
                 && (binding.expiresAt == null || binding.expiresAt > System.currentTimeMillis())
                 && (binding.projectId == null || binding.projectId == projectId)
                 && (binding.agentId == null || binding.agentId == agentId)
+                && (binding.conversationId == null || binding.conversationId == conversationId)
         }
     }
 
@@ -265,6 +340,7 @@ class CredentialVault private constructor(context: Context) {
                 credentialId = item.optString("credentialId"),
                 projectId = item.optString("projectId").takeIf(String::isNotBlank),
                 agentId = item.optString("agentId").takeIf(String::isNotBlank),
+                conversationId = item.optString("conversationId").takeIf(String::isNotBlank),
                 capability = item.optString("capability"),
                 approvalMode = item.optString("approvalMode", APPROVAL_AUTO),
                 expiresAt = item.takeUnless { it.isNull("expiresAt") }?.optLong("expiresAt"),
@@ -282,6 +358,7 @@ class CredentialVault private constructor(context: Context) {
                 .put("credentialId", binding.credentialId)
                 .put("projectId", binding.projectId ?: JSONObject.NULL)
                 .put("agentId", binding.agentId ?: JSONObject.NULL)
+                .put("conversationId", binding.conversationId ?: JSONObject.NULL)
                 .put("capability", binding.capability)
                 .put("approvalMode", binding.approvalMode)
                 .put("expiresAt", binding.expiresAt ?: JSONObject.NULL)
@@ -328,6 +405,8 @@ class CredentialVault private constructor(context: Context) {
         kind: String,
         provider: String?,
         value: String,
+        targetOrigin: String? = null,
+        username: String? = null,
         createdAt: Long,
         updatedAt: Long,
         lastUsedAt: Long?,
@@ -339,6 +418,8 @@ class CredentialVault private constructor(context: Context) {
             .putString(field(id, FIELD_NAME), name)
             .putString(field(id, FIELD_KIND), kind)
             .putString(field(id, FIELD_PROVIDER), provider)
+            .putString(field(id, FIELD_TARGET_ORIGIN), targetOrigin)
+            .putString(field(id, FIELD_USERNAME), username)
             .putString(field(id, FIELD_FINGERPRINT), fingerprint(value))
             .putLong(field(id, FIELD_CREATED_AT), createdAt)
             .putLong(field(id, FIELD_UPDATED_AT), updatedAt)
@@ -360,6 +441,8 @@ class CredentialVault private constructor(context: Context) {
             updatedAt = preferences.getLong(field(id, FIELD_UPDATED_AT), 0L),
             lastUsedAt = preferences.getString(field(id, FIELD_LAST_USED_AT), null)?.toLongOrNull(),
             revokedAt = preferences.getString(field(id, FIELD_REVOKED_AT), null)?.toLongOrNull(),
+            targetOrigin = preferences.getString(field(id, FIELD_TARGET_ORIGIN), null),
+            username = preferences.getString(field(id, FIELD_USERNAME), null),
         )
     }
 
@@ -380,9 +463,13 @@ class CredentialVault private constructor(context: Context) {
         private const val APPROVAL_AUTO = "auto"
         private const val APPROVAL_ALWAYS_ASK = "always-ask"
         private const val KIND_API_KEY = "api-key"
+        private const val KIND_PASSWORD = "password"
+        private val CAPABILITY_API_CREDENTIAL_KINDS = setOf("api-key", "token")
         private const val FIELD_NAME = "name"
         private const val FIELD_KIND = "kind"
         private const val FIELD_PROVIDER = "provider"
+        private const val FIELD_TARGET_ORIGIN = "target_origin"
+        private const val FIELD_USERNAME = "username"
         private const val FIELD_FINGERPRINT = "fingerprint"
         private const val FIELD_CREATED_AT = "created_at"
         private const val FIELD_UPDATED_AT = "updated_at"
@@ -415,6 +502,18 @@ class CredentialVault private constructor(context: Context) {
             .digest(value.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
             .take(16)
+
+        private fun validateCredentialOrigin(origin: String?): String {
+            val value = origin?.trim().orEmpty()
+            val uri = runCatching { java.net.URI(value) }.getOrNull()
+                ?: throw IllegalArgumentException("Website login address must be an HTTPS origin without a path, query, or fragment")
+            require(uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank() &&
+                uri.userInfo == null && uri.rawPath.orEmpty().let { it.isEmpty() || it == "/" } &&
+                uri.rawQuery == null && uri.rawFragment == null) {
+                "Website login address must be an HTTPS origin without a path, query, or fragment"
+            }
+            return "https://${uri.host.lowercase()}${uri.port.takeIf { it != -1 }?.let { ":$it" }.orEmpty()}"
+        }
     }
 }
 

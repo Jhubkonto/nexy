@@ -33,6 +33,7 @@ fun SettingsScreen(
     onOpenUpdates: () -> Unit = {},
     onOpenDiagnostics: () -> Unit = {},
     onOpenProviders: () -> Unit = {},
+    onOpenCredentials: () -> Unit = {},
     onOpenPromptLibrary: () -> Unit = {},
     onOpenGlobalSettings: () -> Unit = {},
     onOpenMcpServers: () -> Unit = {},
@@ -118,6 +119,11 @@ fun SettingsScreen(
                 title = "API Providers",
                 detail = "Encrypted keys for standalone and desktop chat",
                 onClick = onOpenProviders,
+            )
+            SettingsNavRow(
+                title = "Credential Manager",
+                detail = "Store reusable credentials and manage access grants",
+                onClick = onOpenCredentials,
             )
             SettingsNavRow(
                 title = "Prompt Library",
