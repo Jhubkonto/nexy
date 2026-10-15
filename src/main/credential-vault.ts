@@ -32,6 +32,7 @@ interface CredentialBindingRow {
   credential_id: string
   project_id: string | null
   agent_id: string | null
+  conversation_id: string | null
   capability: string
   approval_mode: CredentialApprovalMode
   expires_at: number | null
@@ -45,11 +46,14 @@ export type ProviderCredentialRef = {
   readonly provider: string
   readonly credentialId: string
   readonly bindingId?: string
+  /** The resolved scope is retained for main-process re-authorization at dispatch time. */
+  readonly scope?: CredentialAccessScope
 }
 
 export type CredentialAccessScope = {
   projectId?: string | null
   agentId?: string | null
+  conversationId?: string | null
 }
 
 export const providerCapability = (provider: string): string => `provider:${provider}`
@@ -109,12 +113,48 @@ function parseFingerprint(metadataJson: string): string | null {
   }
 }
 
+function parseTargetOrigin(metadataJson: string): string | null {
+  try {
+    const metadata = JSON.parse(metadataJson) as { targetOrigin?: unknown }
+    return typeof metadata.targetOrigin === 'string' ? metadata.targetOrigin : null
+  } catch {
+    return null
+  }
+}
+
+function normalizeTargetOrigin(value: string | null | undefined): string | null {
+  const trimmed = value?.trim()
+  if (!trimmed) return null
+  let url: URL
+  try {
+    url = new URL(trimmed)
+  } catch {
+    throw new Error('Website address must be a valid HTTPS origin')
+  }
+  if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('Website credentials must use an exact HTTPS origin, such as https://example.com')
+  }
+  return url.origin
+}
+
+function encodeCredentialValue(input: Pick<CredentialCreateInput, 'kind' | 'value' | 'username'>): string {
+  if (input.kind !== 'password') return input.value
+  const username = input.username?.trim()
+  if (!username) throw new Error('Username is required for a website login')
+  return JSON.stringify({ version: 1, username, password: input.value })
+}
+
+function credentialMetadata(value: string, targetOrigin: string | null): string {
+  return JSON.stringify({ fingerprint: fingerprint(value), targetOrigin })
+}
+
 function toMetadata(row: CredentialRow): CredentialMetadata {
   return {
     id: row.id,
     name: row.name,
     kind: row.kind,
     provider: row.provider,
+    targetOrigin: parseTargetOrigin(row.metadata_json),
     fingerprint: parseFingerprint(row.metadata_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -170,6 +210,7 @@ function bindingMetadata(row: CredentialBindingRow): CredentialBindingMetadata {
     credentialId: row.credential_id,
     projectId: row.project_id,
     agentId: row.agent_id,
+    conversationId: row.conversation_id,
     capability: row.capability,
     approvalMode: row.approval_mode,
     expiresAt: row.expires_at,
@@ -185,8 +226,10 @@ function bindingIsActive(row: CredentialBindingRow, now = Date.now()): boolean {
 function scopeMatches(row: CredentialBindingRow, scope: CredentialAccessScope): boolean {
   const projectId = normalizeOptionalId(scope.projectId)
   const agentId = normalizeOptionalId(scope.agentId)
+  const conversationId = normalizeOptionalId(scope.conversationId)
   return (row.project_id === null || row.project_id === projectId)
     && (row.agent_id === null || row.agent_id === agentId)
+    && (row.conversation_id === null || row.conversation_id === conversationId)
 }
 
 function hasExplicitBindings(credentialId: string, capability: string): boolean {
@@ -208,7 +251,8 @@ function selectBinding(
   return rows
     .filter((row) => row.approval_mode === 'auto' && bindingIsActive(row) && scopeMatches(row, scope))
     .sort((left, right) => {
-      const specificity = (row: CredentialBindingRow) => (row.project_id !== null ? 2 : 0) + (row.agent_id !== null ? 1 : 0)
+      const specificity = (row: CredentialBindingRow) =>
+        (row.conversation_id !== null ? 4 : 0) + (row.project_id !== null ? 2 : 0) + (row.agent_id !== null ? 1 : 0)
       return specificity(right) - specificity(left) || right.updated_at - left.updated_at
     })[0] ?? null
 }
@@ -228,11 +272,19 @@ export function createCredential(input: CredentialCreateInput): CredentialMetada
   if (typeof input.value !== 'string' || input.value.length === 0) {
     throw new Error('Credential value is required')
   }
+  const targetOrigin = normalizeTargetOrigin(input.targetOrigin)
+  if (input.kind === 'password' && !targetOrigin) {
+    throw new Error('Website address is required for a website login')
+  }
+  if (input.kind !== 'password' && targetOrigin) {
+    throw new Error('Only website-login credentials can have a website address')
+  }
 
   const now = Date.now()
   const id = randomUUID()
-  const encoded = encodePayload(input.value)
-  const metadata = JSON.stringify({ fingerprint: fingerprint(input.value) })
+  const payloadValue = encodeCredentialValue(input)
+  const encoded = encodePayload(payloadValue)
+  const metadata = credentialMetadata(input.value, targetOrigin)
   getDatabase()
     .prepare(`
       INSERT INTO credentials
@@ -261,15 +313,25 @@ export function updateCredential(id: string, input: CredentialUpdateInput): Cred
 
   const name = input.name === undefined ? existing.name : validateName(input.name)
   const provider = input.provider === undefined ? existing.provider : input.provider?.trim() || null
+  const targetOrigin = input.targetOrigin === undefined ? parseTargetOrigin(existing.metadata_json) : normalizeTargetOrigin(input.targetOrigin)
+  if (existing.kind === 'password' && !targetOrigin) throw new Error('Website address is required for a website login')
+  if (existing.kind !== 'password' && targetOrigin) throw new Error('Only website-login credentials can have a website address')
   let payload = existing.encrypted_payload
   let payloadEncrypted = existing.payload_encrypted
   let metadataJson = existing.metadata_json
   if (input.value !== undefined) {
     if (!input.value) throw new Error('Credential value is required')
-    const encoded = encodePayload(input.value)
+    const payloadValue = encodeCredentialValue({
+      kind: existing.kind,
+      value: input.value,
+      username: input.username,
+    })
+    const encoded = encodePayload(payloadValue)
     payload = encoded.payload
     payloadEncrypted = encoded.encrypted ? 1 : 0
-    metadataJson = JSON.stringify({ fingerprint: fingerprint(input.value) })
+    metadataJson = credentialMetadata(input.value, targetOrigin)
+  } else if (input.targetOrigin !== undefined) {
+    metadataJson = credentialMetadata(decodePayload(existing), targetOrigin)
   }
 
   const now = Date.now()
@@ -313,13 +375,14 @@ export function createCredentialBinding(input: CredentialBindingCreateInput): Cr
   const id = randomUUID()
   getDatabase().prepare(`
     INSERT INTO credential_bindings
-      (id, credential_id, project_id, agent_id, capability, approval_mode, expires_at, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, credential_id, project_id, agent_id, conversation_id, capability, approval_mode, expires_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.credentialId,
     normalizeOptionalId(input.projectId),
     normalizeOptionalId(input.agentId),
+    normalizeOptionalId(input.conversationId),
     capability,
     approvalMode,
     expiresAt,
@@ -341,11 +404,12 @@ export function updateCredentialBinding(id: string, input: CredentialBindingUpda
   const now = Date.now()
   getDatabase().prepare(`
     UPDATE credential_bindings
-    SET project_id = ?, agent_id = ?, capability = ?, approval_mode = ?, expires_at = ?, updated_at = ?
+    SET project_id = ?, agent_id = ?, conversation_id = ?, capability = ?, approval_mode = ?, expires_at = ?, updated_at = ?
     WHERE id = ?
   `).run(
     input.projectId === undefined ? existing.project_id : normalizeOptionalId(input.projectId),
     input.agentId === undefined ? existing.agent_id : normalizeOptionalId(input.agentId),
+    input.conversationId === undefined ? existing.conversation_id : normalizeOptionalId(input.conversationId),
     capability,
     approvalMode,
     expiresAt,
@@ -391,7 +455,7 @@ export function getProviderCredentialRef(provider: string, scope: CredentialAcce
     // A credential without explicit bindings retains Phase 1's implicit global access. Once a
     // binding exists, it must match this project/agent and be auto-approved and unexpired.
     if (!hasExplicitBindings(row.id, capability) || binding) {
-      return { kind: 'provider-api-key', provider, credentialId: row.id, bindingId: binding?.id }
+      return { kind: 'provider-api-key', provider, credentialId: row.id, bindingId: binding?.id, scope }
     }
   }
   return null
@@ -399,6 +463,17 @@ export function getProviderCredentialRef(provider: string, scope: CredentialAcce
 
 /** Resolves an opaque provider reference at the final provider-adapter boundary. */
 export function resolveProviderCredentialRef(ref: ProviderCredentialRef): string {
+  // A reference may live through retries. Recheck its binding immediately before sending the
+  // request so revocation, expiry, or a chat deletion takes effect even after preflight.
+  if (ref.bindingId) {
+    const binding = hasBindingTable()
+      ? getDatabase().prepare('SELECT * FROM credential_bindings WHERE id = ?').get(ref.bindingId) as CredentialBindingRow | undefined
+      : undefined
+    if (!binding || binding.credential_id !== ref.credentialId || binding.capability !== providerCapability(ref.provider)
+      || binding.approval_mode !== 'auto' || !bindingIsActive(binding) || !scopeMatches(binding, ref.scope ?? {})) {
+      throw new Error(`Credential for provider "${ref.provider}" is not authorized for this chat`)
+    }
+  }
   const value = resolveCredential(ref.credentialId)
   if (!value) throw new Error(`Credential for provider "${ref.provider}" is unavailable`)
   return value
