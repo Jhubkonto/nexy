@@ -9,10 +9,13 @@ import { DESKTOP_NAVIGATOR_ID, DESKTOP_NAVIGATOR_TOOLS, createDesktopNavigatorHa
 import { startDesktopNavigatorBridge, getDesktopNavigatorCliConfig } from './desktop-navigator-bridge'
 import { debugLog } from './debug-mode'
 import { searchMcpRegistry } from './mcp-registry'
-import type { McpServerConfig, McpSandboxRuntimeStatus, McpRestartResult, McpServerDiagnosis } from '../shared/types'
+import type { McpServerConfig, McpSandboxRuntimeStatus, McpRestartResult, McpServerDiagnosis, McpTestResult, McpLaunchFailure, McpLaunchStage } from '../shared/types'
 import { normalizeMcpSandboxProfile } from '../shared/mcp-sandbox'
 import { createSandboxedMcpTransport, getMcpSandboxProxyConfig, repairMcpSandboxProfile, shutdownMcpSandboxBroker, type McpSandboxHandle, type McpSandboxLaunchRequest } from './mcp-sandbox'
 import { createManagedPlaywrightLaunch, getManagedBrowserStatus, installManagedBrowser } from './managed-playwright'
+import { buildMcpProcessEnv } from './mcp-process-env'
+import { recordErrorLogEntry } from './error-log-handlers'
+import { buildLaunchStages, classifyLaunchFailure, formatLaunchReport, redactDiagnostics, DISPLAY_STDERR_CHARS, type LaunchObservation } from './mcp-launch-diagnostics'
 
 type InProcessHandler = (toolName: string, args: Record<string, unknown>) => Promise<{ success: boolean; result?: string; images?: { dataUrl: string; mimeType: string }[]; error?: string }>
 
@@ -31,6 +34,8 @@ interface McpServerInstance {
   prompts?: McpPrompt[]
   sandbox?: McpSandboxRuntimeStatus
   sandboxHandle?: McpSandboxHandle
+  failure?: McpLaunchFailure
+  errorLogId?: string
 }
 
 interface McpTool {
@@ -68,18 +73,7 @@ export interface McpExecutionPolicy {
   serverTrust: Record<string, 'auto' | 'always-ask' | 'block'>
 }
 
-const INHERITED_MCP_ENV_KEYS = new Set([
-  'PATH', 'Path', 'PATHEXT', 'ComSpec', 'COMSPEC', 'SystemRoot', 'SYSTEMROOT', 'WINDIR',
-  'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'LANG', 'LC_ALL',
-])
-
-/** Keep provider credentials and other desktop secrets out of third-party MCP processes. */
-export function buildMcpProcessEnv(explicitEnv: Record<string, string> = {}): Record<string, string> {
-  const inherited = Object.fromEntries(
-    Object.entries(process.env).filter(([key, value]) => INHERITED_MCP_ENV_KEYS.has(key) && typeof value === 'string'),
-  ) as Record<string, string>
-  return { ...inherited, ...explicitEnv }
-}
+export { buildMcpProcessEnv }
 
 export const servers = new Map<string, McpServerInstance>()
 const reconnectTimers = new Map<string, NodeJS.Timeout>()
@@ -131,6 +125,8 @@ function broadcastServerStatus(id: string): void {
     toolCount: instance?.tools.length ?? 0,
     managed: Boolean(instance?.inProcessHandler),
     ...(instance?.sandbox ? { sandbox: instance.sandbox } : {}),
+    ...(instance?.failure ? { failure: instance.failure } : {}),
+    ...(instance?.errorLogId ? { errorLogId: instance.errorLogId } : {}),
   }
   let windows: BrowserWindow[]
   try {
@@ -220,6 +216,102 @@ function scheduleReconnect(id: string): void {
   reconnectTimers.set(id, timer)
 }
 
+/** How long to wait for the exiting helper to flush the server's buffered error output. */
+const STDERR_SETTLE_MS = 750
+/** Upper bound for the managed browser check in "Test connection". */
+const BROWSER_VERIFY_TIMEOUT_MS = 30_000
+
+type LaunchSubject = Pick<McpServerConfig, 'command' | 'args' | 'env'> & Partial<Pick<McpServerConfig, 'name' | 'launch'>>
+
+function managedModeOf(config: LaunchSubject): 'launch' | 'cdp' | undefined {
+  return config.launch?.kind === 'managed-playwright' ? config.launch.mode : undefined
+}
+
+interface LaunchExplanation {
+  stages: McpLaunchStage[]
+  failure?: McpLaunchFailure
+  stderr?: string
+  errorLogId?: string
+}
+
+/**
+ * Builds the checklist and failure explanation for a start attempt and, when it
+ * failed, records the full redacted report in the error log for "View logs".
+ */
+function explainLaunch(config: LaunchSubject, observation: LaunchObservation): LaunchExplanation {
+  const secrets = Object.values(config.env ?? {})
+  const redact = (text: string | undefined) => text ? redactDiagnostics(text, secrets) : text
+  const redacted: LaunchObservation = {
+    ...observation,
+    preflightError: redact(observation.preflightError),
+    connectError: redact(observation.connectError),
+    stderr: redact(observation.stderr),
+    ...(observation.browser ? { browser: { ...observation.browser, detail: redact(observation.browser.detail) } } : {}),
+  }
+  const failure = classifyLaunchFailure(redacted)
+  const stages = buildLaunchStages(redacted, failure)
+  const stderr = redacted.stderr?.trim() ? redacted.stderr.trim() : undefined
+  let errorLogId: string | undefined
+  if (failure) {
+    const managedMode = managedModeOf(config)
+    const label = config.name || (managedMode ? 'Nexy managed Playwright' : config.command)
+    errorLogId = recordErrorLogEntry({
+      source: 'main',
+      level: 'error',
+      message: `MCP server "${label}" did not start: ${failure.title}`,
+      stack: formatLaunchReport({
+        label,
+        command: managedMode ? `Nexy managed Playwright (${managedMode})` : redact([config.command, ...(config.args ?? [])].join(' ')),
+        failure,
+        stages,
+        error: redacted.preflightError || redacted.connectError || redacted.browser?.detail,
+        stderr,
+      }),
+    }).id
+  }
+  return { stages, failure, ...(stderr ? { stderr: stderr.slice(-DISPLAY_STDERR_CHARS) } : {}), ...(errorLogId ? { errorLogId } : {}) }
+}
+
+function sandboxStatusFor(base: McpSandboxRuntimeStatus, explanation: LaunchExplanation): McpSandboxRuntimeStatus {
+  const sandboxStage = explanation.stages.find((stage) => stage.id === 'sandbox')
+  if (sandboxStage?.state === 'failed') return { ...base, status: 'failed', diagnostics: explanation.failure?.explanation }
+  return { ...base, status: explanation.failure ? base.status : 'sandboxed' }
+}
+
+function toolResultText(result: object): string {
+  const content = (result as { content?: unknown }).content
+  return (Array.isArray(content) ? content : [])
+    .map((part) => (part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string' ? (part as { text: string }).text : ''))
+    .filter(Boolean)
+    .join('\n')
+    .replace(/^###\s*Error\s*/i, '')
+    .trim()
+}
+
+/**
+ * Opens and closes a blank page so "Test connection" proves the browser can
+ * actually start — the MCP handshake alone succeeds without ever launching it.
+ */
+async function verifyManagedBrowser(client: Client, toolNames: string[]): Promise<NonNullable<LaunchObservation['browser']>> {
+  if (!toolNames.includes('browser_navigate')) return { state: 'skipped', detail: 'The server did not offer a navigation tool to check.' }
+  try {
+    const result = await client.callTool({ name: 'browser_navigate', arguments: { url: 'about:blank' } }, undefined, { timeout: BROWSER_VERIFY_TIMEOUT_MS })
+    if (result.isError) return { state: 'failed', detail: toolResultText(result) || 'The browser reported an error while opening a page.' }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return {
+      state: 'failed',
+      detail: /timed out|timeout/i.test(message)
+        ? `Chromium did not open a page within ${BROWSER_VERIFY_TIMEOUT_MS / 1000} seconds.`
+        : message,
+    }
+  }
+  if (toolNames.includes('browser_close')) {
+    try { await client.callTool({ name: 'browser_close', arguments: {} }, undefined, { timeout: 5_000 }) } catch { /* the page opened; closing is best effort */ }
+  }
+  return { state: 'passed', detail: 'Opened and closed a blank page.' }
+}
+
 async function connectServer(config: McpServerConfig): Promise<void> {
   if (!config.enabled) {
     intentionallyDisconnected.add(config.id)
@@ -244,7 +336,16 @@ async function connectServer(config: McpServerConfig): Promise<void> {
   } catch (error) {
     try { resolved?.cleanup?.() } catch { /* best effort */ }
     const message = error instanceof Error ? error.message : String(error)
-    servers.set(config.id, { config, status: 'error', error: message, tools: [], sandbox: { status: 'unavailable', backend: process.platform, diagnostics: message } })
+    const explanation = explainLaunch(config, { managedMode: managedModeOf(config), preflightError: message })
+    servers.set(config.id, {
+      config,
+      status: 'error',
+      error: message,
+      tools: [],
+      sandbox: { status: 'unavailable', backend: process.platform, diagnostics: message },
+      failure: explanation.failure,
+      errorLogId: explanation.errorLogId,
+    })
     broadcastServerStatus(config.id)
     throw error
   }
@@ -335,29 +436,33 @@ async function connectServer(config: McpServerConfig): Promise<void> {
       }
     }
   } catch (error) {
+    const message = (error as Error).message
+    // The helper flushes the server's buffered error output as it exits.
+    await sandboxHandle.stderrSettled(STDERR_SETTLE_MS)
+    const explanation = explainLaunch(config, { managedMode: managedModeOf(config), connectError: message, stderr: sandboxHandle.stderrTail() })
     instance.status = 'error'
-    instance.error = (error as Error).message
-    debugLog('mcp', `connect failed: ${config.name} — ${instance.error}`)
+    instance.error = explanation.failure ? `${explanation.failure.title}. ${explanation.failure.explanation}` : message
+    instance.failure = explanation.failure
+    instance.errorLogId = explanation.errorLogId
+    instance.sandbox = sandboxStatusFor(sandboxHandle.status, explanation)
+    try { await sandboxHandle.close() } catch { /* the process already exited */ }
+    debugLog('mcp', `connect failed: ${config.name} — ${message}`)
     console.error(`[mcp] failed to start ${config.name}:`, error)
   }
 
   broadcastServerStatus(config.id)
 }
 
-export interface McpTestResult {
-  ok: boolean
-  tools?: { name: string; description?: string }[]
-  error?: string
-  sandbox?: McpSandboxRuntimeStatus
-}
+export type { McpTestResult }
 
 type McpLaunchConfig = Pick<McpServerConfig, 'command' | 'args' | 'env'> &
   Partial<Pick<McpServerConfig, 'cwd' | 'imageResponses' | 'sandboxProfile' | 'launch' | 'name'>>
 
 /**
  * Pre-flight check for a candidate server. Spawns an ephemeral stdio connection,
- * lists its tools, then tears it down — without persisting anything or touching the
- * live `servers` map. Powers the "Test connection" button in the add-server wizard.
+ * lists its tools (and, for the managed browser, opens a blank page), then tears
+ * it down — without persisting anything or touching the live `servers` map.
+ * Powers the "Test connection" button and "Diagnose connection".
  */
 export async function testMcpServer(
   config: McpLaunchConfig
@@ -365,6 +470,7 @@ export async function testMcpServer(
   if ((!config.command || !config.command.trim()) && config.launch?.kind !== 'managed-playwright') {
     return { ok: false, error: 'A launch command is required.' }
   }
+  const managedMode = managedModeOf(config)
 
   const extraArgs: string[] = []
   if (config.imageResponses === 'omit') {
@@ -379,15 +485,17 @@ export async function testMcpServer(
   } catch (error) {
     try { resolved?.cleanup?.() } catch { /* best effort */ }
     const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, error: message, sandbox: { status: 'unavailable', backend: process.platform, diagnostics: message } }
+    const explanation = explainLaunch(config, { managedMode, preflightError: message })
+    return { ok: false, error: message, sandbox: { status: 'unavailable', backend: process.platform, diagnostics: message }, ...explanation }
   }
   const transport = sandboxHandle.transport
 
   const client = new Client({ name: 'nexy-preflight', version: '0.9.0' }, { capabilities: {} })
+  const observation: LaunchObservation = { managedMode }
+  let tools: { name: string; description?: string }[] = []
 
   try {
     await client.connect(transport)
-    let tools: { name: string; description?: string }[] = []
     try {
       const result = await client.listTools()
       tools = (result.tools || []).map((t) => ({ name: t.name, description: t.description }))
@@ -395,15 +503,29 @@ export async function testMcpServer(
       // Server connected but exposes no tools list — still a successful connection.
       tools = []
     }
-    return { ok: true, tools, sandbox: { ...sandboxHandle.status, status: 'sandboxed' } }
+    observation.toolCount = tools.length
+    if (managedMode === 'launch') observation.browser = await verifyManagedBrowser(client, tools.map((tool) => tool.name))
   } catch (error) {
-    return { ok: false, error: (error as Error).message, sandbox: sandboxHandle.status }
+    observation.connectError = (error as Error).message
+    await sandboxHandle.stderrSettled(STDERR_SETTLE_MS)
   } finally {
     try {
       await sandboxHandle.close()
     } catch {
       // Ignore teardown errors.
     }
+  }
+
+  observation.stderr = sandboxHandle.stderrTail()
+  const explanation = explainLaunch(config, observation)
+  const ok = !explanation.failure
+  const error = observation.connectError ?? (!ok ? observation.browser?.detail : undefined)
+  return {
+    ok,
+    tools,
+    ...(error ? { error } : {}),
+    sandbox: sandboxStatusFor(sandboxHandle.status, explanation),
+    ...explanation,
   }
 }
 
@@ -680,7 +802,7 @@ export function initDesktopNavigatorMcp(win: BrowserWindow): void {
   })
 }
 
-export function getMcpServersWithStatus(): (McpServerConfig & { status: string; error?: string; toolCount: number; resourceCount: number; promptCount: number; capabilities?: Record<string, unknown>; serverVersion?: { name: string; version: string }; instructions?: string; sandbox?: McpSandboxRuntimeStatus })[] {
+export function getMcpServersWithStatus(): (McpServerConfig & { status: string; error?: string; toolCount: number; resourceCount: number; promptCount: number; capabilities?: Record<string, unknown>; serverVersion?: { name: string; version: string }; instructions?: string; sandbox?: McpSandboxRuntimeStatus; failure?: McpLaunchFailure; errorLogId?: string })[] {
   const configs = loadServerConfigs()
   const configIds = new Set(configs.map((c) => c.id))
   const result = configs.map((config) => {
@@ -697,6 +819,8 @@ export function getMcpServersWithStatus(): (McpServerConfig & { status: string; 
       ...(instance?.serverVersion ? { serverVersion: instance.serverVersion } : {}),
       ...(instance?.instructions ? { instructions: instance.instructions } : {}),
       ...(instance?.sandbox ? { sandbox: instance.sandbox } : {}),
+      ...(instance?.failure ? { failure: instance.failure } : {}),
+      ...(instance?.errorLogId ? { errorLogId: instance.errorLogId } : {}),
     }
   })
   for (const [id, instance] of servers) {
@@ -723,7 +847,7 @@ export function getMcpServersForCompanion(): Array<Omit<ReturnType<typeof getMcp
   return getMcpServersWithStatus().map(({ env: _env, ...server }) => server)
 }
 
-export function getMcpServerStatus(id: string): { status: string; error?: string; tools: McpTool[]; resources: McpResource[]; prompts: McpPrompt[]; capabilities?: Record<string, unknown>; serverVersion?: { name: string; version: string }; instructions?: string; sandbox?: McpSandboxRuntimeStatus } {
+export function getMcpServerStatus(id: string): { status: string; error?: string; tools: McpTool[]; resources: McpResource[]; prompts: McpPrompt[]; capabilities?: Record<string, unknown>; serverVersion?: { name: string; version: string }; instructions?: string; sandbox?: McpSandboxRuntimeStatus; failure?: McpLaunchFailure; errorLogId?: string } {
   const instance = servers.get(id)
   return {
     status: instance?.status ?? 'disconnected',
@@ -733,8 +857,10 @@ export function getMcpServerStatus(id: string): { status: string; error?: string
     prompts: instance?.prompts ?? [],
     ...(instance?.capabilities ? { capabilities: instance.capabilities } : {}),
     ...(instance?.serverVersion ? { serverVersion: instance.serverVersion } : {}),
-        ...(instance?.instructions ? { instructions: instance.instructions } : {}),
-        ...(instance?.sandbox ? { sandbox: instance.sandbox } : {}),
+    ...(instance?.instructions ? { instructions: instance.instructions } : {}),
+    ...(instance?.sandbox ? { sandbox: instance.sandbox } : {}),
+    ...(instance?.failure ? { failure: instance.failure } : {}),
+    ...(instance?.errorLogId ? { errorLogId: instance.errorLogId } : {}),
   }
 }
 
@@ -779,7 +905,7 @@ export async function restartMcpServer(id: string): Promise<McpRestartResult> {
   return {
     attempted: true,
     connected: instance?.status === 'connected',
-    ...(instance?.status === 'connected' ? {} : { error: instance?.error ?? 'The server did not establish an MCP connection.' }),
+    ...(instance?.status === 'connected' ? {} : { error: instance?.failure?.title ?? instance?.error ?? 'The server did not establish an MCP connection.' }),
   }
 }
 
@@ -789,6 +915,8 @@ function connectionGuidance(config: McpServerConfig, test: McpTestResult): strin
       ? ['The isolated connection test passed. Retry connection to replace the live process, then check whether another process or policy is closing it.']
       : ['The isolated connection test passed. Enable the server when you are ready to start its live connection.']
   }
+  // A recognised failure already carries a specific explanation, checklist, and actions.
+  if (test.failure && test.failure.kind !== 'unknown') return []
 
   const error = `${test.error ?? ''} ${test.sandbox?.diagnostics ?? ''}`.toLowerCase()
   const guidance: string[] = []

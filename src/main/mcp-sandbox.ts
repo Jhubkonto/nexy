@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { McpSandboxProfile, McpSandboxRuntimeStatus } from '../shared/types'
 import { normalizeMcpSandboxProfile } from '../shared/mcp-sandbox'
+import { buildMcpProcessEnv } from './mcp-process-env'
 
 export interface McpSandboxLaunchRequest {
   command: string
@@ -23,6 +24,14 @@ export interface McpSandboxHandle {
   transport: StdioClientTransport
   status: McpSandboxRuntimeStatus
   close: () => Promise<void>
+  /** Bounded tail of the helper's stderr: its own failures plus the server's startup output. */
+  stderrTail: () => string
+  /**
+   * Resolves once the helper's stderr has ended (or after `timeoutMs`). The helper
+   * flushes the sandboxed server's buffered diagnostics only as it exits, so read
+   * the tail after this settles when explaining a failed start.
+   */
+  stderrSettled: (timeoutMs: number) => Promise<void>
 }
 
 interface ProxySession {
@@ -123,8 +132,44 @@ function verifyMcpSandboxHelper(helper: string, requireIntegrity = false): boole
 }
 
 function helperEnvironment(): Record<string, string> {
-  const allow = new Set(['PATH', 'Path', 'PATHEXT', 'ComSpec', 'COMSPEC', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'LANG', 'LC_ALL'])
-  return Object.fromEntries(Object.entries(process.env).filter(([key, value]) => allow.has(key) && typeof value === 'string')) as Record<string, string>
+  return buildMcpProcessEnv()
+}
+
+/** Retained helper stderr per connection; enough for a stack trace, bounded for long-lived servers. */
+const STDERR_TAIL_BYTES = 16_384
+
+/**
+ * Continuously drains the transport's stderr into a rolling tail. Draining matters
+ * beyond diagnostics: an unread pipe eventually applies back-pressure and stalls a
+ * server that logs to stderr.
+ */
+function captureStderr(transport: StdioClientTransport): Pick<McpSandboxHandle, 'stderrTail' | 'stderrSettled'> {
+  const stream = (transport as { stderr?: NodeJS.ReadableStream | null }).stderr ?? null
+  let tail = ''
+  let ended = !stream
+  const waiters = new Set<() => void>()
+  const finish = () => {
+    ended = true
+    for (const resolve of waiters) resolve()
+    waiters.clear()
+  }
+  if (stream) {
+    stream.on('data', (chunk: Buffer | string) => {
+      tail = `${tail}${typeof chunk === 'string' ? chunk : chunk.toString('utf8')}`
+      if (tail.length > STDERR_TAIL_BYTES) tail = tail.slice(-STDERR_TAIL_BYTES)
+    })
+    stream.once('end', finish)
+    stream.once('close', finish)
+    stream.once('error', finish)
+  }
+  return {
+    stderrTail: () => tail,
+    stderrSettled: (timeoutMs) => ended ? Promise.resolve() : new Promise<void>((resolve) => {
+      const timer = setTimeout(() => { waiters.delete(done); resolve() }, timeoutMs)
+      const done = () => { clearTimeout(timer); resolve() }
+      waiters.add(done)
+    }),
+  }
 }
 
 function createEndpoint(token: string): string {
@@ -243,6 +288,7 @@ export function createSandboxedMcpTransport(request: McpSandboxLaunchRequest): M
   })
   return {
     transport,
+    ...captureStderr(transport),
     status: { status: 'starting', backend: process.platform, helperVersion: `protocol-${HELPER_PROTOCOL_VERSION}` },
     close: async () => {
       try { await transport.close() } catch { /* transport teardown is best effort */ }

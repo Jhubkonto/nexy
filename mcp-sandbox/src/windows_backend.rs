@@ -350,10 +350,28 @@ fn diagnostic_pipe() -> (HANDLE, HANDLE) {
     (read_pipe, write_pipe)
 }
 
+/// Nexy's bundled Playwright server must launch Chromium, whose Windows launch
+/// protocol requires IPC objects that an AppContainer cannot create.  The
+/// descriptor is constructed only by the desktop's managed-runtime factory;
+/// arbitrary MCP configurations have `managedRuntime` removed before they
+/// reach the helper.  Keep this exception narrow: the server still runs in a
+/// kill-on-close Job Object with the fixed managed-runtime process and memory
+/// limits, and Chromium retains its own browser sandbox.
+fn runs_outside_app_container(launch: &Launch) -> bool {
+    launch.profile.managed_runtime.as_deref() == Some("playwright")
+}
+
 fn run_inner(launch: &Launch) -> Result<u32, String> {
-    let app = AppContainer::create(launch.profile.network == "allowed");
+    let outside_app_container = runs_outside_app_container(launch);
+    let app = if outside_app_container {
+        None
+    } else {
+        Some(AppContainer::create(launch.profile.network == "allowed"))
+    };
     let (executable, wrapper) = resolve_command(launch);
-    let _grants = grant_paths(launch, &executable, &app);
+    // Only AppContainer processes need temporary ACL grants. The managed
+    // runtime executes as Nexy and is limited by the Job Object below.
+    let _grants = app.as_ref().map(|app| grant_paths(launch, &executable, app));
     let (diagnostic_read, diagnostic_write) = diagnostic_pipe();
     let stdin = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
     let stdout = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
@@ -361,34 +379,39 @@ fn run_inner(launch: &Launch) -> Result<u32, String> {
     set_inheritable(stdout);
 
     let mut capabilities = Vec::new();
-    if !app.capability_sid.is_null() {
-        capabilities.push(SID_AND_ATTRIBUTES { Sid: app.capability_sid, Attributes: 4 }); // SE_GROUP_ENABLED
+    if let Some(app) = app.as_ref() {
+        if !app.capability_sid.is_null() {
+            capabilities.push(SID_AND_ATTRIBUTES { Sid: app.capability_sid, Attributes: 4 }); // SE_GROUP_ENABLED
+        }
     }
     let security_capabilities = SECURITY_CAPABILITIES {
-        AppContainerSid: app.sid,
+        AppContainerSid: app.as_ref().map_or(null_mut(), |app| app.sid),
         Capabilities: if capabilities.is_empty() { null_mut() } else { capabilities.as_mut_ptr() },
         CapabilityCount: capabilities.len() as u32,
         Reserved: 0,
     };
 
-    let mut attribute_size = 0usize;
-    unsafe { InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut attribute_size); }
-    if attribute_size == 0 { return Err("could not size the AppContainer process attribute list".to_owned()); }
-    let mut attribute_storage = vec![0u8; attribute_size];
-    let attribute_list = attribute_storage.as_mut_ptr() as *mut c_void;
-    if unsafe { InitializeProcThreadAttributeList(attribute_list, 1, 0, &mut attribute_size) } == 0 {
-        return Err("could not initialize the AppContainer process attribute list".to_owned());
-    }
-    if unsafe {
-        UpdateProcThreadAttribute(
-            attribute_list, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
-            &security_capabilities as *const _ as *const c_void,
-            size_of::<SECURITY_CAPABILITIES>(), null_mut(), null(),
-        )
-    } == 0 {
-        unsafe { DeleteProcThreadAttributeList(attribute_list); }
-        return Err("could not attach the AppContainer security capabilities".to_owned());
-    }
+    let (_attribute_storage, attribute_list) = if app.is_some() {
+        let mut attribute_size = 0usize;
+        unsafe { InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut attribute_size); }
+        if attribute_size == 0 { return Err("could not size the AppContainer process attribute list".to_owned()); }
+        let mut storage = vec![0u8; attribute_size];
+        let attribute_list = storage.as_mut_ptr() as *mut c_void;
+        if unsafe { InitializeProcThreadAttributeList(attribute_list, 1, 0, &mut attribute_size) } == 0 {
+            return Err("could not initialize the AppContainer process attribute list".to_owned());
+        }
+        if unsafe {
+            UpdateProcThreadAttribute(
+                attribute_list, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
+                &security_capabilities as *const _ as *const c_void,
+                size_of::<SECURITY_CAPABILITIES>(), null_mut(), null(),
+            )
+        } == 0 {
+            unsafe { DeleteProcThreadAttributeList(attribute_list); }
+            return Err("could not attach the AppContainer security capabilities".to_owned());
+        }
+        (Some(storage), attribute_list)
+    } else { (None, null_mut()) };
 
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
@@ -401,7 +424,8 @@ fn run_inner(launch: &Launch) -> Result<u32, String> {
     let mut command_line = command_line(launch, &executable, wrapper);
     let current_directory = launch.cwd.as_ref().map(|value| wide(value));
     let mut environment = environment_block(launch);
-    let creation_flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
+    let creation_flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT
+        | if app.is_some() { EXTENDED_STARTUPINFO_PRESENT } else { 0 };
     let created = unsafe {
         CreateProcessW(
             null(), command_line.as_mut_ptr(), null(), null(), 1, creation_flags,
@@ -410,7 +434,10 @@ fn run_inner(launch: &Launch) -> Result<u32, String> {
             &startup.StartupInfo, &mut process_info,
         )
     };
-    unsafe { DeleteProcThreadAttributeList(attribute_list); CloseHandle(diagnostic_write); }
+    unsafe {
+        if !attribute_list.is_null() { DeleteProcThreadAttributeList(attribute_list); }
+        CloseHandle(diagnostic_write);
+    }
     if created == 0 {
         unsafe { CloseHandle(diagnostic_read); }
         return Err(format!("could not create the AppContainer process (Win32 error {})", unsafe { GetLastError() }));
@@ -468,5 +495,37 @@ pub(crate) fn run(launch: &Launch) -> i32 {
     match run_inner(launch) {
         Ok(code) => code as i32,
         Err(error) => fail(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runs_outside_app_container;
+    use crate::{Launch, Profile};
+    use std::collections::BTreeMap;
+
+    fn launch(managed_runtime: Option<&str>) -> Launch {
+        Launch {
+            command: "node.exe".to_owned(),
+            args: Vec::new(),
+            cwd: None,
+            env: BTreeMap::new(),
+            profile: Profile {
+                network: "allowed".to_owned(),
+                child_processes: "allowed".to_owned(),
+                filesystem: Vec::new(),
+                memory_limit_mib: 1024,
+                max_processes: 16,
+                max_diagnostic_bytes: 65_536,
+                managed_runtime: managed_runtime.map(str::to_owned),
+            },
+        }
+    }
+
+    #[test]
+    fn only_the_managed_playwright_descriptor_bypasses_app_container() {
+        assert!(runs_outside_app_container(&launch(Some("playwright"))));
+        assert!(!runs_outside_app_container(&launch(None)));
+        assert!(!runs_outside_app_container(&launch(Some("unknown-runtime"))));
     }
 }
