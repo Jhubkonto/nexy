@@ -1,5 +1,6 @@
 import type { StateCreator } from 'zustand'
 import { isApiError } from '../../../shared/types'
+import { normalizeConversationTitle } from '../../../shared/conversation-title'
 import type { AppState } from '../app-store'
 import type { Conversation } from '../types'
 
@@ -12,6 +13,8 @@ export interface ConversationSlice {
   loadConversations: () => Promise<void>
   selectConversation: (id: string | null) => void
   deleteConversation: (id: string) => Promise<void>
+  renameConversation: (id: string, title: string) => Promise<boolean>
+  handleConversationRenamed: (id: string, title: string, updatedAt?: number) => void
   conversationCreated: (id: string) => Promise<void>
   newChat: (opts?: { projectId?: string | null; agentId?: string | null }) => void
   markConversationComplete: (id: string) => Promise<void>
@@ -144,6 +147,44 @@ export const createConversationSlice: StateCreator<
       })
       get().addToast(pinned ? 'Failed to pin conversation' : 'Failed to unpin conversation', 'error')
     }
+  },
+
+  renameConversation: async (id, title) => {
+    const previous = get().conversations.find((conversation) => conversation.id === id)
+    const normalizedTitle = normalizeConversationTitle(title)
+    if (!normalizedTitle) {
+      get().addToast('Chat title cannot be empty', 'error')
+      return false
+    }
+    set((s) => {
+      const conversation = s.conversations.find((item) => item.id === id)
+      if (conversation) {
+        conversation.title = normalizedTitle
+        conversation.updated_at = Date.now()
+      }
+    })
+    try {
+      const result = await window.api.renameConversation(id, normalizedTitle)
+      if (isApiError(result)) throw new Error(result.error)
+      return true
+    } catch {
+      set((s) => {
+        const conversation = s.conversations.find((item) => item.id === id)
+        if (conversation && previous) Object.assign(conversation, previous)
+      })
+      get().addToast('Failed to rename conversation', 'error')
+      return false
+    }
+  },
+
+  handleConversationRenamed: (id, title, updatedAt) => {
+    set((s) => {
+      const conversation = s.conversations.find((item) => item.id === id)
+      if (conversation) {
+        conversation.title = title
+        if (updatedAt != null) conversation.updated_at = updatedAt
+      }
+    })
   },
 
   handleConversationCompleted: (conversationId) => {

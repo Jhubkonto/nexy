@@ -28,6 +28,7 @@ import { PromptLibraryModal } from './PromptLibraryModal'
 import { SaveToWikiModal } from './SaveToWikiModal'
 import { WikiExtractionModal } from './WikiExtractionModal'
 import { ConfirmDialog } from './ui/ConfirmDialog'
+import { RenameConversationDialog } from './RenameConversationDialog'
 import type { ChatMessage } from '../hooks/chat-types'
 
 const FALLBACK_CLAUDE_MODELS = [
@@ -92,6 +93,7 @@ export function ChatWindow() {
   const skills = useAppStore((state) => state.skills)
   const conversationCreated = useAppStore((state) => state.conversationCreated)
   const loadConversations = useAppStore((state) => state.loadConversations)
+  const renameConversation = useAppStore((state) => state.renameConversation)
   const loadAgents = useAppStore((state) => state.loadAgents)
   const newChat = useAppStore((state) => state.newChat)
   const openSectionPane = useAppStore((state) => state.openSectionPane)
@@ -177,6 +179,7 @@ export function ChatWindow() {
   const [isExporting, setIsExporting] = useState(false)
   const [isImporting, setIsImporting] = useState(false)
   const [showActionsMenu, setShowActionsMenu] = useState(false)
+  const [showRenameDialog, setShowRenameDialog] = useState(false)
   const [menuRatingOpen, setMenuRatingOpen] = useState(false)
   const [menuExportOpen, setMenuExportOpen] = useState(false)
   const [menuContinueOpen, setMenuContinueOpen] = useState(false)
@@ -1826,6 +1829,16 @@ export function ChatWindow() {
               }
             >
               <div className="p-1">
+                {conversationId && currentConversation && (
+                  <button
+                    type="button"
+                    onClick={() => { setShowRenameDialog(true); setShowActionsMenu(false) }}
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  >
+                    <span className="text-sm leading-none">✎</span>
+                    Rename chat
+                  </button>
+                )}
                 {chatProjectId && chatProjectId !== '__none__' && (
                   <button
                     type="button"
@@ -2140,6 +2153,13 @@ export function ChatWindow() {
           >
             This message and all messages after it will be removed from the conversation.
           </ConfirmDialog>
+        )}
+        {showRenameDialog && conversationId && currentConversation && (
+          <RenameConversationDialog
+            conversationTitle={currentConversation.title}
+            onConfirm={(title) => renameConversation(conversationId, title)}
+            onCancel={() => setShowRenameDialog(false)}
+          />
         )}
         {wikiModalMessage && conversationId && chatProjectId && chatProjectId !== '__none__' && (
           <SaveToWikiModal

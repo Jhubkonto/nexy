@@ -104,7 +104,8 @@ interface Props {
   desktopPackagingBlocked: boolean
   // Set when the tab is opened from an activity feed entry that needs a specific sub-tab
   // (e.g. clicking an Android build activity should land on the Android sub-tab, not Desktop).
-  initialDeveloperTab?: 'desktop' | 'android' | null
+  initialDeveloperTab?: 'desktop' | 'android' | 'console' | null
+  initialErrorLogId?: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +391,7 @@ export function DeveloperTab({
   desktopPackagingBlocked,
   debugLogging, onToggleDebugLogging,
   initialDeveloperTab,
+  initialErrorLogId,
 }: Props) {
   const [developerTab, setDeveloperTab] = useState<DeveloperInnerTab>(initialDeveloperTab ?? 'desktop')
   const [developmentMcpStatus, setDevelopmentMcpStatus] = useState<Awaited<ReturnType<typeof window.api.getDevelopmentMcpStatus>> | null>(null)
@@ -433,6 +435,12 @@ export function DeveloperTab({
   const [consoleLevel, setConsoleLevel] = useState<'all' | ErrorLogEntry['level']>('all')
   const [consoleStatus, setConsoleStatus] = useState<string | null>(null)
   const [unreadErrorCount, setUnreadErrorCount] = useState(0)
+
+  useEffect(() => {
+    if (!initialErrorLogId || developerTab !== 'console' || !consoleEntries.some((entry) => entry.id === initialErrorLogId)) return
+    const target = document.getElementById(`error-log-${initialErrorLogId}`)
+    if (target && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'center' })
+  }, [initialErrorLogId, developerTab, consoleEntries])
 
   // Build history expand
   const [expandedDesktopHistoryId, setExpandedDesktopHistoryId] = useState<string | null>(null)
@@ -1339,7 +1347,12 @@ export function DeveloperTab({
               ) : (
                 <div className="divide-y divide-gray-100 dark:divide-gray-800">
                   {filteredConsoleEntries.map((entry) => (
-                    <details key={entry.id} className="group">
+                    <details
+                      key={entry.id}
+                      id={`error-log-${entry.id}`}
+                      open={entry.id === initialErrorLogId || undefined}
+                      className={`group ${entry.id === initialErrorLogId ? 'bg-amber-50 ring-2 ring-inset ring-amber-400 dark:bg-amber-950/30 dark:ring-amber-600' : ''}`}
+                    >
                       <summary className="flex cursor-pointer items-start gap-2 px-3 py-2 text-xs hover:bg-gray-50 dark:hover:bg-gray-800/60">
                         <span className="shrink-0 font-mono text-[11px] text-gray-400">
                           {new Date(entry.timestamp).toLocaleTimeString()}

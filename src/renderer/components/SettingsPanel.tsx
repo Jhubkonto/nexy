@@ -9,6 +9,7 @@ import { ModalShell } from './ui/primitives'
 import { GeneralTab } from './settings/GeneralTab'
 import { VoiceAudioTab } from './settings/VoiceAudioTab'
 import { ProvidersTab } from './settings/ProvidersTab'
+import { CredentialsTab } from './settings/CredentialsTab'
 import { CliTab } from './settings/CliTab'
 import { PromptsTab } from './settings/PromptsTab'
 import { MobileTab } from './settings/MobileTab'
@@ -16,12 +17,13 @@ import { DeveloperTab } from './settings/DeveloperTab'
 import type { ProviderInfo } from './settings/types'
 import { useClickOutside } from '../hooks/useClickOutside'
 
-type SettingsCategory = 'general' | 'voice' | 'providers' | 'cli' | 'mobile' | 'prompts' | 'developer'
+type SettingsCategory = 'general' | 'voice' | 'providers' | 'credentials' | 'cli' | 'mobile' | 'prompts' | 'developer'
 
 const NAV_ITEMS: { id: SettingsCategory; label: string; icon: NexyIconName }[] = [
   { id: 'general',   label: 'General',       icon: 'settings' },
   { id: 'voice',     label: 'Voice & audio', icon: 'microphone' },
   { id: 'providers', label: 'API Providers', icon: 'key' },
+  { id: 'credentials', label: 'Credential Manager', icon: 'key' },
   { id: 'cli',       label: 'CLI Tools',     icon: 'prompt' },
   { id: 'prompts',   label: 'Prompts',       icon: 'clipboard' },
   { id: 'mobile',    label: 'Mobile',        icon: 'mobile' },
@@ -79,17 +81,19 @@ export function SettingsPanel() {
     authMode === 'byok' ? 'providers' : 'general'
   )
 
-  const [developerInitialSubTab, setDeveloperInitialSubTab] = useState<'desktop' | 'android' | null>(null)
+  const [developerInitialSubTab, setDeveloperInitialSubTab] = useState<'desktop' | 'android' | 'console' | null>(null)
+  const [developerInitialErrorId, setDeveloperInitialErrorId] = useState<string | null>(null)
 
   useEffect(() => {
     if (visible && settingsInitialTab) {
       // Background activities that need to land on a specific Developer sub-tab (e.g. an
       // Android build vs a desktop build) encode it as 'developer:android' / 'developer:desktop'.
-      const [tab, subTab] = settingsInitialTab.split(':')
+      const [tab, subTab, errorId] = settingsInitialTab.split(':')
       setCategory(tab as SettingsCategory)
-      if (tab === 'developer' && (subTab === 'desktop' || subTab === 'android')) {
+      if (tab === 'developer' && (subTab === 'desktop' || subTab === 'android' || subTab === 'console')) {
         setDeveloperInitialSubTab(subTab)
       }
+      if (tab === 'developer' && subTab === 'console' && errorId) setDeveloperInitialErrorId(errorId)
       setSettingsInitialTab(null)
     }
   }, [visible, settingsInitialTab, setSettingsInitialTab])
@@ -1058,6 +1062,8 @@ export function SettingsPanel() {
           />
         )}
 
+        {category === 'credentials' && <CredentialsTab />}
+
         {category === 'cli' && (
           <CliTab
             installedClis={installedClis}
@@ -1250,6 +1256,7 @@ export function SettingsPanel() {
             onToggleDebugLogging={() => setDebugLogging(!debugLogging)}
             desktopPackagingBlocked={runtimeInfo?.isPackaged === false}
             initialDeveloperTab={developerInitialSubTab}
+            initialErrorLogId={developerInitialErrorId}
           />
         )}
       </div>

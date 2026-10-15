@@ -4,6 +4,7 @@ import { NexyIcon } from '../ui/icons/NexyIcon'
 import { useAppStore } from '../../store/app-store'
 import type { Conversation } from '../../store/types'
 import { DeleteConversationDialog } from '../DeleteConversationDialog'
+import { RenameConversationButton, RenameConversationDialog } from '../RenameConversationDialog'
 import { formatRelativeTime } from '../../../shared/utils'
 import { isPinned, groupByDate, PROJECT_COLOR_MAP, projectColorHex, withLivePinState } from './shared'
 import { PaneEmptyState } from './pane-primitives'
@@ -19,6 +20,7 @@ export function ProjectHistoryPane() {
   const agents = useAppStore((s) => s.agents)
   const selectConversation = useAppStore((s) => s.selectConversation)
   const deleteConversation = useAppStore((s) => s.deleteConversation)
+  const renameConversation = useAppStore((s) => s.renameConversation)
   const newChat = useAppStore((s) => s.newChat)
   const unreadConversationIds = useAppStore((s) => s.unreadConversationIds)
   const generatingConversationIds = useAppStore((s) => s.generatingConversationIds)
@@ -54,6 +56,7 @@ export function ProjectHistoryPane() {
     return withLivePinState(source, cachedConversations)
   }, [cachedConversations, debouncedQuery, historyProjectId, pagination.hasLoaded, pagination.items])
   const [pendingDeleteConv, setPendingDeleteConv] = useState<{ id: string; title: string } | null>(null)
+  const [pendingRenameConv, setPendingRenameConv] = useState<{ id: string; title: string } | null>(null)
 
   const filtered = conversations
 
@@ -77,7 +80,7 @@ export function ProjectHistoryPane() {
         key={conv.id}
         onClick={() => selectConversation(conv.id)}
         aria-current={isActive ? 'page' : undefined}
-        className={`group flex items-stretch gap-0 rounded-nexy-sm border cursor-pointer transition-colors overflow-hidden ${
+        className={`group relative flex items-stretch gap-0 rounded-nexy-sm border cursor-pointer transition-colors overflow-hidden ${
           isActive
             ? 'border-nexy-accent bg-nexy-accent/10 shadow-nexy'
             : 'border-transparent hover:border-nexy-border-soft hover:bg-nexy-recessed'
@@ -104,7 +107,8 @@ export function ProjectHistoryPane() {
                 .join(' · ')}
             </p>
           </div>
-        <div className="invisible group-hover:visible flex items-center gap-0.5 shrink-0">
+        <div className="pointer-events-none absolute right-2 top-1.5 z-10 flex items-center gap-0.5 rounded-nexy-sm border border-nexy-border-soft bg-nexy-raised p-0.5 opacity-0 shadow-nexy transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+          <RenameConversationButton onClick={() => setPendingRenameConv({ id: conv.id, title: conv.title })} />
           <button
             onClick={(e) => { e.stopPropagation(); void setConversationPinned(conv.id, !isPinned(conv)) }}
             className={`p-1 rounded-nexy-sm hover:bg-nexy-recessed ${
@@ -229,6 +233,17 @@ export function ProjectHistoryPane() {
             setPendingDeleteConv(null)
           }}
           onCancel={() => setPendingDeleteConv(null)}
+        />
+      )}
+      {pendingRenameConv && (
+        <RenameConversationDialog
+          conversationTitle={pendingRenameConv.title}
+          onConfirm={async (title) => {
+            const saved = await renameConversation(pendingRenameConv.id, title)
+            if (saved) pagination.updateItem(pendingRenameConv.id, (item) => ({ ...item, title }))
+            return saved
+          }}
+          onCancel={() => setPendingRenameConv(null)}
         />
       )}
     </div>
