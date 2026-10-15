@@ -26,6 +26,8 @@ import {
   listCredentialMetadata,
   registerCredentialVaultHandlers,
   resolveCredential,
+  resolveProviderCredentialInput,
+  deleteCredentialBinding,
   getProviderCredentialRef,
 } from '../credential-vault'
 import { getProviderCredential, retrieveApiKey } from '../provider-secrets'
@@ -78,6 +80,28 @@ describe('credential vault', () => {
     expect(JSON.stringify(listed)).not.toContain(secret)
   })
 
+  it('stores a website login as an encrypted, exact-origin credential without exposing its username or password', () => {
+    const created = createCredential({
+      name: 'Acme support',
+      kind: 'password',
+      targetOrigin: 'https://support.acme.test/',
+      username: 'julian@example.test',
+      value: 'correct-horse-battery-staple',
+    })
+
+    expect(created).toMatchObject({
+      name: 'Acme support',
+      kind: 'password',
+      targetOrigin: 'https://support.acme.test',
+    })
+    expect(JSON.stringify(created)).not.toContain('julian@example.test')
+    expect(JSON.stringify(created)).not.toContain('correct-horse-battery-staple')
+    expect(resolveCredential(created.id)).toContain('correct-horse-battery-staple')
+    expect(() => createCredential({
+      name: 'Unsafe origin', kind: 'password', targetOrigin: 'http://acme.test', username: 'user', value: 'password',
+    })).toThrow(/HTTPS origin/i)
+  })
+
   it('moves a legacy provider setting into the vault on first read', () => {
     const secret = 'legacy-provider-secret'
     state.db!.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(
@@ -114,6 +138,42 @@ describe('credential vault', () => {
     expect(getProviderCredentialRef('openai', { projectId: 'project-a', agentId: 'agent-a' })).toMatchObject({ credentialId: created.id })
     expect(getProviderCredentialRef('openai', { projectId: 'project-b', agentId: 'agent-a' })).toBeNull()
     expect(JSON.stringify(listCredentialBindings(created.id))).not.toContain('scoped-secret')
+  })
+
+  it('limits a credential grant to its exact conversation and rechecks it before dispatch', () => {
+    state.db!.prepare(
+      'INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('chat-a', 'Chat A', 1, 1)
+    state.db!.prepare(
+      'INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('chat-b', 'Chat B', 1, 1)
+    const created = createCredential({ name: 'Chat-only OpenAI', kind: 'api-key', provider: 'openai', value: 'chat-secret' })
+    const binding = createCredentialBinding({
+      credentialId: created.id,
+      conversationId: 'chat-a',
+      capability: 'provider:openai',
+    })
+
+    const ref = getProviderCredentialRef('openai', { conversationId: 'chat-a' })
+    expect(ref).toMatchObject({ credentialId: created.id, bindingId: binding.id })
+    expect(getProviderCredentialRef('openai', { conversationId: 'chat-b' })).toBeNull()
+    expect(listCredentialBindings(created.id)).toEqual([expect.objectContaining({ conversationId: 'chat-a' })])
+
+    expect(resolveProviderCredentialInput(ref!)).toBe('chat-secret')
+    expect(deleteCredentialBinding(binding.id)).toBe(true)
+    expect(() => resolveProviderCredentialInput(ref!)).toThrow(/not authorized/i)
+  })
+
+  it('cascades a conversation deletion to its credential grants', () => {
+    state.db!.pragma('foreign_keys = ON')
+    state.db!.prepare(
+      'INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run('chat-delete', 'Disposable', 1, 1)
+    const created = createCredential({ name: 'Disposable OpenAI', kind: 'api-key', provider: 'openai', value: 'delete-secret' })
+    createCredentialBinding({ credentialId: created.id, conversationId: 'chat-delete', capability: 'provider:openai' })
+
+    state.db!.prepare('DELETE FROM conversations WHERE id = ?').run('chat-delete')
+    expect(listCredentialBindings(created.id)).toEqual([])
   })
 
   it('fails closed for expired or always-ask bindings', () => {

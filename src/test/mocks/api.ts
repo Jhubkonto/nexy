@@ -74,6 +74,16 @@ export function createMockApi() {
     onAutoClipboardFocus: vi.fn().mockReturnValue(() => {}),
     onToolAutoApproved: vi.fn().mockReturnValue(() => {}),
 
+    // Credential vault (metadata only)
+    credentialList: vi.fn().mockResolvedValue([]),
+    credentialCreate: vi.fn().mockResolvedValue({}),
+    credentialUpdate: vi.fn().mockResolvedValue({}),
+    credentialDelete: vi.fn().mockResolvedValue(true),
+    credentialBindingList: vi.fn().mockResolvedValue([]),
+    credentialBindingCreate: vi.fn().mockResolvedValue({}),
+    credentialBindingUpdate: vi.fn().mockResolvedValue({}),
+    credentialBindingDelete: vi.fn().mockResolvedValue(true),
+
     // Conversations
     listConversations: vi.fn().mockResolvedValue([]),
     // Keep paged panes on their cached bootstrap rows unless a test supplies a page explicitly.
@@ -266,6 +276,9 @@ export function createMockApi() {
     callMcpTool: vi.fn().mockResolvedValue(null),
     restartMcpServer: vi.fn().mockResolvedValue({ attempted: true, connected: true }),
     diagnoseMcpServer: vi.fn().mockResolvedValue({ found: true, enabled: true, status: 'connected', test: { ok: true, tools: [] }, guidance: [] }),
+    getManagedBrowserStatus: vi.fn().mockResolvedValue({ state: 'download-required', browser: 'chromium', version: 'test' }),
+    installManagedBrowser: vi.fn().mockResolvedValue({ state: 'ready', browser: 'chromium', version: 'test' }),
+    repairMcpSandbox: vi.fn().mockResolvedValue(true),
     testMcpServer: vi.fn().mockResolvedValue({ ok: true, tools: [] }),
     searchMcpRegistry: vi.fn().mockResolvedValue({ servers: [], fetchedAt: Date.now(), stale: false }),
     onMcpServerStatusChanged: vi.fn().mockReturnValue(() => {}),
@@ -566,6 +579,7 @@ export function createMockApi() {
     markConversationIncomplete: vi.fn().mockResolvedValue(true),
     onConversationCompleted: vi.fn().mockReturnValue(() => {}),
     onConversationIncompleted: vi.fn().mockReturnValue(() => {}),
+    onConversationRenamed: vi.fn().mockReturnValue(() => {}),
 
     // Quiz
     generateQuiz: vi.fn().mockResolvedValue({ questions: [], artifactId: 'quiz-artifact-1', versionId: 'quiz-version-1' }),
