@@ -26,6 +26,12 @@ for (const file of tracked) checkFile(file, 'tracked source')
 const builderConfig = readFileSync(path.join(root, 'electron-builder.yml'), 'utf8')
 if (!builderConfig.includes('  - dist/**/*')) errors.push('electron-builder.yml: dist allowlist is missing')
 if (!builderConfig.includes('  - package.json')) errors.push('electron-builder.yml: package.json allowlist is missing')
+for (const managedRuntime of ['node_modules/@playwright/mcp/**/*', 'node_modules/playwright/**/*', 'node_modules/playwright-core/**/*']) {
+  if (!builderConfig.includes(managedRuntime)) errors.push(`electron-builder.yml: managed Playwright runtime is not unpacked (${managedRuntime})`)
+}
+if (/node_modules[\\/]playwright[^\n]*browsers/i.test(builderConfig)) {
+  errors.push('electron-builder.yml: Chromium must not be included in the installer')
+}
 if (builderConfig.includes('android/') || builderConfig.includes('release/') || builderConfig.includes('tmp-nexy-visual')) {
   errors.push('electron-builder.yml: broad/local data path is included')
 }

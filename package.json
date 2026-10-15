@@ -1,6 +1,6 @@
 {
   "name": "nexy",
-  "version": "1.3.77",
+  "version": "1.3.88",
   "description": "A provider-agnostic native AI workspace — locally-first, multi-provider, with MCP tools, CLI adapters, and project-scoped workspaces.",
   "type": "module",
   "main": "dist/main/index.js",

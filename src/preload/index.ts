@@ -538,6 +538,9 @@ const api = {
     typedInvoke('mcp:call-tool', serverId, toolName, args, agentId),
   restartMcpServer: (id: string) => typedInvoke('mcp:restart-server', id),
   diagnoseMcpServer: (id: string) => typedInvoke('mcp:diagnose-server', id),
+  getManagedBrowserStatus: () => typedInvoke('mcp:get-managed-browser-status'),
+  installManagedBrowser: () => typedInvoke('mcp:install-managed-browser'),
+  repairMcpSandbox: () => typedInvoke('mcp:repair-sandbox'),
   testMcpServer: (config: Record<string, unknown>) => typedInvoke('mcp:test-server', config),
   searchMcpRegistry: (query: string) => typedInvoke('mcp:search-registry', query),
   onMcpServerStatusChanged: (callback: (server: McpServerWithStatus) => void) => {
@@ -1050,6 +1053,11 @@ const api = {
     const handler = (_event: Electron.IpcRendererEvent, data: { conversationId: string }) => callback(data)
     typedOn('conversation:incompleted', handler)
     return () => typedOff('conversation:incompleted', handler)
+  },
+  onConversationRenamed: (callback: (data: { id: string; title: string; updatedAt: number }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { id: string; title: string; updatedAt: number }) => callback(data)
+    typedOn('conversation:renamed', handler)
+    return () => typedOff('conversation:renamed', handler)
   },
 
   // Quiz

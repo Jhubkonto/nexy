@@ -12,6 +12,12 @@ asarUnpack:
   - "node_modules/tesseract.js-core/**/*"
   - "node_modules/@nut-tree-fork/**/*"
   - "node_modules/node-pty/**/*"
+  # The managed Playwright worker is launched by Electron-as-Node and cannot
+  # execute reliably from inside app.asar. Chromium itself remains a deliberate
+  # first-use download under user data, not an installer payload.
+  - "node_modules/@playwright/mcp/**/*"
+  - "node_modules/playwright/**/*"
+  - "node_modules/playwright-core/**/*"
 extraResources:
   - from: resources/icon.png
     to: tray-icon.png
