@@ -1,11 +1,12 @@
 import { app } from 'electron'
 import { createRequire } from 'node:module'
 import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs'
-import { join, dirname, isAbsolute, relative } from 'node:path'
+import { join, dirname, isAbsolute, relative, basename } from 'node:path'
 import { spawn } from 'node:child_process'
 import type { ManagedBrowserRuntimeStatus, McpManagedLaunch } from '../shared/types'
 import type { McpSandboxLaunchRequest } from './mcp-sandbox'
 import { recordErrorLogEntry } from './error-log-handlers'
+import { buildMcpProcessEnv } from './mcp-process-env'
 
 const require = createRequire(import.meta.url)
 type PackageManifest = {
@@ -239,6 +240,34 @@ export interface ManagedPlaywrightLaunch {
   cleanup: () => void
 }
 
+/**
+ * Node's CommonJS resolver stats every candidate `node_modules` directory before
+ * looking inside it, and skips any it cannot stat. Granting only the package
+ * folders therefore leaves sibling packages (`playwright-core` from
+ * `@playwright/mcp`) unresolvable inside the AppContainer. Grant the enclosing
+ * `node_modules` directories read-only; in packaged builds that is
+ * app.asar.unpacked/node_modules, which holds only Nexy's unpacked runtimes.
+ */
+export function enclosingNodeModulesDirectories(packageDirectories: string[]): string[] {
+  const roots = new Set<string>()
+  for (const directory of packageDirectories) {
+    let current = directory
+    while (dirname(current) !== current) {
+      if (basename(current).toLowerCase() === 'node_modules') { roots.add(current); break }
+      current = dirname(current)
+    }
+  }
+  return [...roots]
+}
+
+/**
+ * Electron-as-Node flags required inside the Windows AppContainer. Without
+ * them Node canonicalises the entry script and every module with
+ * `realpathSync`, which walks up to and `lstat`s the drive root — a path an
+ * AppContainer may not inspect — and aborts with EPERM before the server starts.
+ */
+export const MANAGED_NODE_FLAGS = ['--preserve-symlinks', '--preserve-symlinks-main'] as const
+
 /** Builds the fixed sandbox descriptor used by Nexy's two managed browser cards. */
 export function createManagedPlaywrightLaunch(launch: McpManagedLaunch): ManagedPlaywrightLaunch {
   const status = getManagedBrowserStatus()
@@ -250,25 +279,34 @@ export function createManagedPlaywrightLaunch(launch: McpManagedLaunch): Managed
         : `Managed Chromium is not installed. Open the MCP server settings and select “Download Chromium” to install version ${BROWSER_VERSION}.`)
   }
   const sessionDirectory = mkdtempSync(join(userDataPath(), `${RUNTIME_DIRECTORY}-session-`))
+  const outputDirectory = join(sessionDirectory, 'output')
+  mkdirSync(outputDirectory, { recursive: true })
+  const mcpDirectory = dirname(mcpCliPath())
   const playwrightCoreDirectory = unpackedRuntimePath(dirname(require.resolve('playwright-core/package.json')))
   const playwrightDirectory = unpackedRuntimePath(dirname(require.resolve('playwright/package.json')))
+  const packageDirectories = [mcpDirectory, playwrightCoreDirectory, playwrightDirectory]
+  // `--isolated` keeps the browser profile in memory (it is mutually exclusive
+  // with --user-data-dir in this @playwright/mcp release), the server is headed
+  // by default (there is no --headed flag), and without `--browser chromium` it
+  // looks for a system Google Chrome install instead of Nexy's managed Chromium.
   const args = launch.mode === 'cdp'
-    ? ['--cdp-endpoint', 'http://127.0.0.1:9222']
-    : ['--isolated', '--user-data-dir', sessionDirectory, '--headed']
+    ? ['--cdp-endpoint', 'http://127.0.0.1:9222', '--output-dir', outputDirectory]
+    : ['--isolated', '--browser', 'chromium', '--output-dir', outputDirectory]
   return {
     request: {
       command: process.execPath,
-      args: [mcpCliPath(), ...args],
-      env: { ELECTRON_RUN_AS_NODE: '1', PLAYWRIGHT_BROWSERS_PATH: browserRoot() },
+      args: [...MANAGED_NODE_FLAGS, mcpCliPath(), ...args],
+      // Start from the same secret-free allowlist as every other MCP server:
+      // Windows cannot create the AppContainer process without e.g. SystemRoot.
+      env: buildMcpProcessEnv({ ELECTRON_RUN_AS_NODE: '1', PLAYWRIGHT_BROWSERS_PATH: browserRoot() }),
       cwd: sessionDirectory,
       profile: {
         version: 1,
         network: 'allowed',
         childProcesses: 'allowed',
         filesystem: [
-          { path: dirname(mcpCliPath()), access: 'read-only' },
-          { path: playwrightCoreDirectory, access: 'read-only' },
-          { path: playwrightDirectory, access: 'read-only' },
+          ...enclosingNodeModulesDirectories(packageDirectories).map((path) => ({ path, access: 'read-only' as const })),
+          ...packageDirectories.map((path) => ({ path, access: 'read-only' as const })),
           { path: browserRoot(), access: 'read-only' },
           { path: sessionDirectory, access: 'read-write' },
         ],

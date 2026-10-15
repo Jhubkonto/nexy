@@ -19,6 +19,7 @@ vi.mock('../error-log-handlers', () => ({
 import { MCP_CATALOG, catalogEntryToConfig } from '../../shared/mcp-catalog'
 import {
   createManagedPlaywrightLaunch,
+  enclosingNodeModulesDirectories,
   executableAt,
   getManagedBrowserStatus,
   installManagedBrowser,
@@ -73,9 +74,63 @@ describe('managed Playwright catalog', () => {
     writeFileSync(executable, '')
 
     const managed = createManagedPlaywrightLaunch({ kind: 'managed-playwright', mode: 'launch' })
-    expect(managed.request.args[0]).toMatch(/@playwright.mcp.cli.js$/)
-    expect(managed.request.args.slice(1)).toEqual(['--isolated', '--user-data-dir', expect.any(String), '--headed'])
+    // Node flags first: without them Electron-as-Node realpaths up to the drive
+    // root, which the Windows AppContainer may not inspect.
+    expect(managed.request.args.slice(0, 2)).toEqual(['--preserve-symlinks', '--preserve-symlinks-main'])
+    expect(managed.request.args[2]).toMatch(/@playwright.mcp.cli.js$/)
+    // --isolated excludes --user-data-dir; there is no --headed flag; without
+    // --browser chromium the server looks for a system Chrome install.
+    expect(managed.request.args.slice(3)).toEqual(['--isolated', '--browser', 'chromium', '--output-dir', expect.stringMatching(/output$/)])
     managed.cleanup()
+  })
+
+  it('gives the sandboxed process the Windows base environment and resolvable node_modules', () => {
+    const executable = executableAt(managedBrowserRoot())
+    mkdirSync(dirname(executable), { recursive: true })
+    writeFileSync(executable, '')
+    const previous = process.env.SystemRoot
+    // Windows keeps the existing key's casing (often SYSTEMROOT); other platforms need it set.
+    if (previous === undefined) process.env.SystemRoot = 'C:\\Windows'
+    try {
+      const managed = createManagedPlaywrightLaunch({ kind: 'managed-playwright', mode: 'launch' })
+      // Missing SystemRoot made CreateProcess fail with Win32 error 203.
+      const systemRoot = Object.entries(managed.request.env).find(([key]) => key.toLowerCase() === 'systemroot')
+      expect(systemRoot?.[1]).toBe(process.env.SystemRoot)
+      expect(managed.request.env).toMatchObject({ ELECTRON_RUN_AS_NODE: '1', PLAYWRIGHT_BROWSERS_PATH: managedBrowserRoot() })
+      const grants = managed.request.profile?.filesystem ?? []
+      expect(grants).toContainEqual({ path: expect.stringMatching(/node_modules$/), access: 'read-only' })
+      expect(grants.filter((grant) => grant.access === 'read-write')).toHaveLength(1)
+      managed.cleanup()
+    } finally {
+      if (previous === undefined) delete process.env.SystemRoot
+    }
+  })
+
+  it('never passes provider secrets from the desktop environment', () => {
+    const executable = executableAt(managedBrowserRoot())
+    mkdirSync(dirname(executable), { recursive: true })
+    writeFileSync(executable, '')
+    process.env.ANTHROPIC_API_KEY = 'sk-test'
+    try {
+      const managed = createManagedPlaywrightLaunch({ kind: 'managed-playwright', mode: 'cdp' })
+      expect(managed.request.env).not.toHaveProperty('ANTHROPIC_API_KEY')
+      expect(managed.request.args).toContain('--cdp-endpoint')
+      managed.cleanup()
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY
+    }
+  })
+})
+
+describe('enclosingNodeModulesDirectories', () => {
+  it('returns each distinct enclosing node_modules directory', () => {
+    const root = join('C:', 'app', 'resources', 'app.asar.unpacked', 'node_modules')
+    expect(enclosingNodeModulesDirectories([
+      join(root, '@playwright', 'mcp'),
+      join(root, 'playwright-core'),
+      join(root, 'playwright'),
+    ])).toEqual([root])
+    expect(enclosingNodeModulesDirectories([join('C:', 'no', 'modules', 'here')])).toEqual([])
   })
 })
 
