@@ -47,6 +47,7 @@ describe('conversation:list — rating column', () => {
   beforeEach(() => {
     state.handlers.clear()
     state.approvePendingApprovalsForConversation.mockClear()
+    vi.mocked(broadcastToMobile).mockClear()
     state.db?.close()
     state.db = new Database(':memory:')
     initializeBaseSchema(state.db)
@@ -129,6 +130,21 @@ describe('conversation:list — rating column', () => {
     await invoke('conversation:set-mode', 'conv-1', { cliModeOverride: 'bypassPermissions' })
 
     expect(state.approvePendingApprovalsForConversation).toHaveBeenCalledWith('conv-1')
+  })
+
+  it('normalizes and broadcasts conversation renames', async () => {
+    const db = state.db!
+    db.prepare("INSERT INTO conversations (id, title) VALUES ('conv-rename', 'Old title')").run()
+
+    await invoke('conversation:rename', 'conv-rename', `  ${'x'.repeat(140)}  `)
+
+    const row = db.prepare('SELECT title FROM conversations WHERE id = ?').get('conv-rename') as { title: string }
+    expect(row.title).toBe('x'.repeat(120))
+    expect(broadcastToMobile).toHaveBeenCalledWith({
+      event: 'conversation:renamed',
+      data: expect.objectContaining({ id: 'conv-rename', title: 'x'.repeat(120), updatedAt: expect.any(Number) }),
+    })
+    await expect(invoke('conversation:rename', 'conv-rename', '   ')).rejects.toThrow('Conversation title cannot be empty')
   })
 
   it('deletes messages inclusively from a timestamp and broadcasts the remaining history', async () => {

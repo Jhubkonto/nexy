@@ -23,6 +23,8 @@ import { broadcastConversationMessages } from "./chat-handlers";
 import { parseConversationExport } from "./conversation-serialization";
 import { approvePendingApprovalsForConversation } from "./tools";
 import { listConversationPage } from "./conversation-pagination";
+import { broadcastConversationRenamed } from './conversation-events';
+import { normalizeConversationTitle } from '../shared/conversation-title';
 
 export {
   buildConversationExport,
@@ -198,9 +200,13 @@ export function registerConversationHandlers(): void {
   });
 
   safeHandle("conversation:rename", (_event, id: string, title: string) => {
-    db.prepare(
+    const normalizedTitle = normalizeConversationTitle(title);
+    if (!id || !normalizedTitle) throw new Error('Conversation title cannot be empty');
+    const updatedAt = Date.now();
+    const result = db.prepare(
       "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
-    ).run(title, Date.now(), id);
+    ).run(normalizedTitle, updatedAt, id);
+    if (result.changes > 0) broadcastConversationRenamed(id, normalizedTitle, updatedAt);
     return true;
   });
 

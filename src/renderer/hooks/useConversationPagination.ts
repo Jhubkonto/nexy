@@ -1,6 +1,7 @@
 import { isApiError, type ConversationPageScope } from '../../shared/types'
 import type { Conversation } from '../store/types'
 import { useCursorPagination } from './useCursorPagination'
+import { useEffect } from 'react'
 
 /**
  * `freshnessKey` lets a scoped history replace an already-loaded cursor page when
@@ -9,9 +10,8 @@ import { useCursorPagination } from './useCursorPagination'
  * can complete before the send handler has inserted the conversation row.
  */
 export function useConversationPagination(scope: ConversationPageScope, query = '', freshnessKey = '') {
-  const resetKey = JSON.stringify([scope, query.trim(), freshnessKey])
-  return useCursorPagination<Conversation>({
-    resetKey,
+  const pagination = useCursorPagination<Conversation>({
+    resetKey: JSON.stringify([scope, query.trim(), freshnessKey]),
     loadPage: async (cursor, requestId) => {
       const result = await window.api.listConversationPage({
         requestId,
@@ -24,4 +24,9 @@ export function useConversationPagination(scope: ConversationPageScope, query = 
       return result
     },
   })
+  const { updateItem } = pagination
+  useEffect(() => window.api.onConversationRenamed((data) => {
+    updateItem(data.id, (item) => ({ ...item, title: data.title, updated_at: data.updatedAt }))
+  }), [updateItem])
+  return pagination
 }
