@@ -13,6 +13,7 @@ import type { McpServerConfig, McpSandboxRuntimeStatus, McpRestartResult, McpSer
 import { normalizeMcpSandboxProfile } from '../shared/mcp-sandbox'
 import { createSandboxedMcpTransport, getMcpSandboxProxyConfig, repairMcpSandboxProfile, shutdownMcpSandboxBroker, type McpSandboxHandle, type McpSandboxLaunchRequest } from './mcp-sandbox'
 import { createManagedPlaywrightLaunch, getManagedBrowserStatus, installManagedBrowser } from './managed-playwright'
+import { createManagedNodeNpxLaunch, ensureManagedNodeNpxRuntime, isManagedNodeNpxConfig, normalizeMcpRemoteHeaderArgs } from './managed-node'
 import { buildMcpProcessEnv } from './mcp-process-env'
 import { recordErrorLogEntry } from './error-log-handlers'
 import { buildLaunchStages, classifyLaunchFailure, formatLaunchReport, redactDiagnostics, DISPLAY_STDERR_CHARS, type LaunchObservation } from './mcp-launch-diagnostics'
@@ -82,12 +83,13 @@ const RECONNECT_DELAY_MS = 5000
 
 function resolveLaunch(config: Pick<McpServerConfig, 'command' | 'args' | 'env' | 'cwd' | 'sandboxProfile' | 'name' | 'launch'>): { request: McpSandboxLaunchRequest; cleanup?: () => void } {
   if (config.launch?.kind === 'managed-playwright') return createManagedPlaywrightLaunch(config.launch)
+  if (isManagedNodeNpxConfig(config)) return createManagedNodeNpxLaunch(config)
   const rawProfile = { ...(config.sandboxProfile ?? {}) } as Record<string, unknown>
   delete rawProfile.managedRuntime
   return {
     request: {
       command: config.command,
-      args: config.args,
+      args: normalizeMcpRemoteHeaderArgs(config.args),
       env: buildMcpProcessEnv(config.env),
       cwd: config.cwd || undefined,
       profile: normalizeMcpSandboxProfile(rawProfile),
@@ -227,6 +229,10 @@ function managedModeOf(config: LaunchSubject): 'launch' | 'cdp' | undefined {
   return config.launch?.kind === 'managed-playwright' ? config.launch.mode : undefined
 }
 
+function usesManagedNodeRuntime(config: LaunchSubject): boolean {
+  return isManagedNodeNpxConfig(config)
+}
+
 interface LaunchExplanation {
   stages: McpLaunchStage[]
   failure?: McpLaunchFailure
@@ -331,12 +337,13 @@ async function connectServer(config: McpServerConfig): Promise<void> {
   let sandboxHandle: McpSandboxHandle
   let resolved: ReturnType<typeof resolveLaunch> | undefined
   try {
+    await ensureManagedNodeNpxRuntime(config)
     resolved = resolveLaunch(config)
-    sandboxHandle = createSandboxedMcpTransport({ ...resolved.request, args: [...resolved.request.args, ...extraArgs] })
+    sandboxHandle = createSandboxedMcpTransport({ ...resolved.request, args: [...resolved.request.args, ...extraArgs], cleanup: resolved.cleanup })
   } catch (error) {
     try { resolved?.cleanup?.() } catch { /* best effort */ }
     const message = error instanceof Error ? error.message : String(error)
-    const explanation = explainLaunch(config, { managedMode: managedModeOf(config), preflightError: message })
+    const explanation = explainLaunch(config, { managedMode: managedModeOf(config), managedNodeRuntime: usesManagedNodeRuntime(config), preflightError: message })
     servers.set(config.id, {
       config,
       status: 'error',
@@ -439,7 +446,7 @@ async function connectServer(config: McpServerConfig): Promise<void> {
     const message = (error as Error).message
     // The helper flushes the server's buffered error output as it exits.
     await sandboxHandle.stderrSettled(STDERR_SETTLE_MS)
-    const explanation = explainLaunch(config, { managedMode: managedModeOf(config), connectError: message, stderr: sandboxHandle.stderrTail() })
+    const explanation = explainLaunch(config, { managedMode: managedModeOf(config), managedNodeRuntime: usesManagedNodeRuntime(config), connectError: message, stderr: sandboxHandle.stderrTail() })
     instance.status = 'error'
     instance.error = explanation.failure ? `${explanation.failure.title}. ${explanation.failure.explanation}` : message
     instance.failure = explanation.failure
@@ -480,18 +487,19 @@ export async function testMcpServer(
   let sandboxHandle: McpSandboxHandle
   let resolved: ReturnType<typeof resolveLaunch> | undefined
   try {
+    await ensureManagedNodeNpxRuntime(config)
     resolved = resolveLaunch({ ...config, name: config.name ?? 'preflight', args: config.args ?? [], env: config.env ?? {} })
-    sandboxHandle = createSandboxedMcpTransport({ ...resolved.request, args: [...resolved.request.args, ...extraArgs] })
+    sandboxHandle = createSandboxedMcpTransport({ ...resolved.request, args: [...resolved.request.args, ...extraArgs], cleanup: resolved.cleanup })
   } catch (error) {
     try { resolved?.cleanup?.() } catch { /* best effort */ }
     const message = error instanceof Error ? error.message : String(error)
-    const explanation = explainLaunch(config, { managedMode, preflightError: message })
+    const explanation = explainLaunch(config, { managedMode, managedNodeRuntime: usesManagedNodeRuntime(config), preflightError: message })
     return { ok: false, error: message, sandbox: { status: 'unavailable', backend: process.platform, diagnostics: message }, ...explanation }
   }
   const transport = sandboxHandle.transport
 
   const client = new Client({ name: 'nexy-preflight', version: '0.9.0' }, { capabilities: {} })
-  const observation: LaunchObservation = { managedMode }
+  const observation: LaunchObservation = { managedMode, managedNodeRuntime: usesManagedNodeRuntime(config) }
   let tools: { name: string; description?: string }[] = []
 
   try {
@@ -591,18 +599,21 @@ function toCliMcpServerKey(config: McpServerConfig): string {
   return base || `mcp_${config.id.replace(/[^a-zA-Z0-9_-]+/g, '_')}`
 }
 
-export function getMcpServerConfigsForCli(serverIds: string[]): CliMcpServerConfig[] {
+export async function getMcpServerConfigsForCli(serverIds: string[]): Promise<CliMcpServerConfig[]> {
   const allowed = new Set(serverIds)
-  const configs = loadServerConfigs()
-    .filter((config) => config.enabled && allowed.has(config.id))
-    .map((config) => {
-      const extraArgs = config.imageResponses === 'omit'
-        ? ['--imageResponses', 'omit']
-        : []
-      const resolved = resolveLaunch(config)
-      const proxy = getMcpSandboxProxyConfig({ ...resolved.request, args: [...resolved.request.args, ...extraArgs] })
-      return { ...proxy, id: config.id, key: toCliMcpServerKey(config) }
-    })
+  const configs: CliMcpServerConfig[] = []
+  for (const config of loadServerConfigs().filter((candidate) => candidate.enabled && allowed.has(candidate.id))) {
+    // CLI adapters use the same sandbox broker as Nexy's own MCP client. Make
+    // sure their descriptor cannot be created before the managed Node runtime
+    // exists, which would otherwise tempt a host-npx fallback.
+    await ensureManagedNodeNpxRuntime(config)
+    const extraArgs = config.imageResponses === 'omit'
+      ? ['--imageResponses', 'omit']
+      : []
+    const resolved = resolveLaunch(config)
+    const proxy = getMcpSandboxProxyConfig({ ...resolved.request, args: [...resolved.request.args, ...extraArgs], cleanup: resolved.cleanup })
+    configs.push({ ...proxy, id: config.id, key: toCliMcpServerKey(config) })
+  }
 
   // Inject the Desktop Navigator bridge when it is assigned to this agent
   if (allowed.has(DESKTOP_NAVIGATOR_ID)) {
@@ -842,9 +853,48 @@ export function getMcpServersWithStatus(): (McpServerConfig & { status: string; 
   return result
 }
 
-/** Secret-free metadata for the companion protocol. */
+/** Marker sent to a paired editor instead of a saved sensitive HTTP-header value. */
+export const COMPANION_RETAIN_SECRET_ARGUMENT = '[saved on desktop]'
+
+function isSensitiveHeader(value: string): boolean {
+  const separator = value.indexOf(':')
+  if (separator < 1) return false
+  return /(?:authorization|api[-_]?key|token|secret|password)/i.test(value.slice(0, separator))
+}
+
+function isCompanionRetainedHeader(value: string): boolean {
+  const separator = value.indexOf(':')
+  return separator >= 1 && value.slice(separator + 1).trim() === COMPANION_RETAIN_SECRET_ARGUMENT
+}
+
+/** Keeps HTTP credentials out of companion metadata without losing their argv position. */
+function redactCompanionArguments(args: string[]): string[] {
+  return args.map((argument, index) =>
+    args[index - 1] === '--header' && isSensitiveHeader(argument)
+      ? `${argument.slice(0, argument.indexOf(':') + 1)} ${COMPANION_RETAIN_SECRET_ARGUMENT}`
+      : argument,
+  )
+}
+
+/** Restores a write-only header value when a companion resubmits an edited server. */
+export function preserveCompanionSecretArguments(existing: string[], incoming: string[]): string[] {
+  return incoming.map((argument, index) => {
+    if (!isCompanionRetainedHeader(argument)) return argument
+    const saved = existing[index]
+    const headerName = argument.slice(0, argument.indexOf(':')).trim().toLowerCase()
+    if (incoming[index - 1] === '--header' && existing[index - 1] === '--header' &&
+      isSensitiveHeader(saved) && saved.slice(0, saved.indexOf(':')).trim().toLowerCase() === headerName) {
+      return saved
+    }
+    return argument
+  })
+}
+
 export function getMcpServersForCompanion(): Array<Omit<ReturnType<typeof getMcpServersWithStatus>[number], 'env'>> {
-  return getMcpServersWithStatus().map(({ env: _env, ...server }) => server)
+  return getMcpServersWithStatus().map(({ env: _env, args, ...server }) => ({
+    ...server,
+    args: redactCompanionArguments(args),
+  }))
 }
 
 export function getMcpServerStatus(id: string): { status: string; error?: string; tools: McpTool[]; resources: McpResource[]; prompts: McpPrompt[]; capabilities?: Record<string, unknown>; serverVersion?: { name: string; version: string }; instructions?: string; sandbox?: McpSandboxRuntimeStatus; failure?: McpLaunchFailure; errorLogId?: string } {

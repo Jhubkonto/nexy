@@ -82,6 +82,16 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
   StdioClientTransport: MockTransport
 }))
 
+// This suite verifies only the image-response argument adapter. Keep its
+// transport fixture independent of Windows' managed npx runtime, which has
+// dedicated coverage in managed-node.test.ts.
+vi.mock('../managed-node', () => ({
+  createManagedNodeNpxLaunch: vi.fn(),
+  ensureManagedNodeNpxRuntime: vi.fn().mockResolvedValue(undefined),
+  isManagedNodeNpxConfig: vi.fn(() => false),
+  normalizeMcpRemoteHeaderArgs: (args: string[]) => args,
+}))
+
 import { registerMcpHandlers, shutdownMcpServers, servers } from '../mcp'
 
 async function invokeHandler(channel: string, ...args: unknown[]) {

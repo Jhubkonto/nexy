@@ -139,7 +139,7 @@ vi.mock('../database', () => ({
 }))
 
 /* ── Import & Register ─────────────────────────────────────── */
-import { registerMcpHandlers, disconnectServer, shutdownMcpServers, servers, callMcpTool, getMcpServersForCompanion, buildMcpProcessEnv, getMcpServerConfigsForCli, initMcpServers } from '../mcp'
+import { registerMcpHandlers, disconnectServer, shutdownMcpServers, servers, callMcpTool, getMcpServersForCompanion, buildMcpProcessEnv, getMcpServerConfigsForCli, initMcpServers, COMPANION_RETAIN_SECRET_ARGUMENT, preserveCompanionSecretArguments } from '../mcp'
 import { safeStorage } from 'electron'
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import type { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -814,6 +814,18 @@ describe('MCP — Companion redaction', () => {
     expect(server).not.toHaveProperty('env')
     expect(JSON.stringify(server)).not.toContain('do-not-send')
   })
+
+  it('redacts saved sensitive HTTP headers and preserves them when Android saves an edit', async () => {
+    const args = ['-y', 'mcp-remote', 'https://easy8.example/mcp', '--header', 'X-Easy8-API-Key: do-not-send']
+    const added = await invokeHandler('mcp:add-server', {
+      name: 'Easy8', command: 'npx', args, env: {}, enabled: false,
+    })
+
+    const companion = getMcpServersForCompanion().find((entry) => entry.id === added.id)
+    expect(companion?.args).toContain(`X-Easy8-API-Key: ${COMPANION_RETAIN_SECRET_ARGUMENT}`)
+    expect(JSON.stringify(companion)).not.toContain('do-not-send')
+    expect(preserveCompanionSecretArguments(args, companion?.args ?? [])).toEqual(args)
+  })
 })
 
 describe('MCP — CLI sandbox proxy', () => {
@@ -824,7 +836,7 @@ describe('MCP — CLI sandbox proxy', () => {
     })
     // CLI preparation only returns enabled servers.
     await invokeHandler('mcp:update-server', added.id, { enabled: true })
-    const [proxy] = getMcpServerConfigsForCli([added.id])
+    const [proxy] = await getMcpServerConfigsForCli([added.id])
     expect(proxy.command).not.toBe('node')
     expect(proxy.args).toContain('--session')
     expect(proxy.args).not.toContain('server.js')
