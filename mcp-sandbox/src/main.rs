@@ -63,7 +63,15 @@ fn connect(endpoint: &str) -> TcpStream {
     fail(format!("could not connect to broker at {endpoint}"));
 }
 
-fn request_launch(endpoint: &str, token: &str) -> Launch {
+/// Keep the authenticated control connection alive for the helper's lifetime.
+///
+/// The desktop broker owns per-launch private directories (for example, npm's
+/// temporary session directory) and removes them when this connection closes.
+/// Dropping the stream after reading the descriptor creates a race: on Windows
+/// the broker can remove the directory before the helper has applied its
+/// AppContainer ACL grants. The returned stream is deliberately retained by
+/// `main` until the sandboxed child has stopped.
+fn request_launch(endpoint: &str, token: &str) -> (Launch, TcpStream) {
     let mut stream = connect(endpoint);
     writeln!(stream, "{{\"type\":\"hello\",\"token\":{}}}", serde_json::to_string(token).unwrap()).unwrap_or_else(|_| fail("could not authenticate with broker"));
     let mut line = String::new();
@@ -74,7 +82,8 @@ fn request_launch(endpoint: &str, token: &str) -> Launch {
     }
     let protocol = message.get("protocolVersion").and_then(Value::as_u64).unwrap_or(0);
     if protocol != PROTOCOL_VERSION { fail("unsupported broker protocol version"); }
-    serde_json::from_value(message).unwrap_or_else(|_| fail("invalid launch descriptor"))
+    let launch = serde_json::from_value(message).unwrap_or_else(|_| fail("invalid launch descriptor"));
+    (launch, stream)
 }
 
 fn validate_profile(profile: &Profile) {
@@ -148,7 +157,7 @@ fn main() {
     }
     let endpoint = args.windows(2).find(|pair| pair[0] == "--control").map(|pair| pair[1].clone()).unwrap_or_else(|| fail("--control is required"));
     let token = args.windows(2).find(|pair| pair[0] == "--session").map(|pair| pair[1].clone()).unwrap_or_else(|| fail("--session is required"));
-    let launch = request_launch(&endpoint, &token);
+    let (launch, _control_connection) = request_launch(&endpoint, &token);
     validate_profile(&launch.profile);
 
     #[cfg(windows)]
@@ -201,5 +210,33 @@ fn main() {
     #[cfg(unix)]
     if let Some(reader) = stderr { if let Ok(bytes) = reader.join() { if !bytes.is_empty() { let _ = std::io::stderr().write_all(&bytes); } } }
     if !status.success() { std::process::exit(status.code().unwrap_or(1)); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+
+    #[test]
+    fn retains_the_control_connection_after_reading_the_launch_descriptor() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let (result_sender, result_receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut hello = String::new();
+            BufReader::new(stream.try_clone().unwrap()).read_line(&mut hello).unwrap();
+            writeln!(stream, "{{\"type\":\"launch\",\"protocolVersion\":1,\"command\":\"node.exe\",\"args\":[],\"env\":{{}},\"profile\":{{\"network\":\"allowed\",\"childProcesses\":\"blocked\",\"filesystem\":[],\"memoryLimitMiB\":512,\"maxProcesses\":1,\"maxDiagnosticBytes\":65536}}}}").unwrap();
+            stream.set_read_timeout(Some(Duration::from_millis(250))).unwrap();
+            let mut byte = [0_u8];
+            let remains_open = matches!(stream.read(&mut byte), Err(error) if error.kind() == std::io::ErrorKind::TimedOut || error.kind() == std::io::ErrorKind::WouldBlock);
+            result_sender.send(remains_open).unwrap();
+        });
+
+        let (_launch, _control_connection) = request_launch(&endpoint, "test-token");
+        assert!(result_receiver.recv_timeout(Duration::from_secs(1)).unwrap());
     }
 }

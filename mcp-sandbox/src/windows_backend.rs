@@ -20,28 +20,34 @@ use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows_sys::Win32::Security::{
-    ACL, DACL_SECURITY_INFORMATION, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES,
-    SID_AND_ATTRIBUTES, PSID, FreeSid,
+    FreeSid, ACL, DACL_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES,
+    SID_AND_ATTRIBUTES,
 };
-use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE};
+use windows_sys::Win32::Storage::FileSystem::{
+    DELETE, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+};
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOBOBJECT_BASIC_LIMIT_INFORMATION,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-    JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, SetInformationJobObject,
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, JOBOBJECT_BASIC_LIMIT_INFORMATION,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+    JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CreateMutexW, CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess, ReleaseMutex,
-    InitializeProcThreadAttributeList, ResumeThread,
-    UpdateProcThreadAttribute, WaitForSingleObject, EXTENDED_STARTUPINFO_PRESENT,
-    INFINITE, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+    CreateMutexW, CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
+    InitializeProcThreadAttributeList, ReleaseMutex, ResumeThread, UpdateProcThreadAttribute,
+    WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+    EXTENDED_STARTUPINFO_PRESENT, INFINITE, PROCESS_INFORMATION,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 
 const WAIT_FAILED: u32 = 0xFFFF_FFFF;
-const GENERIC_READ_WRITE: u32 = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
+// `FILE_GENERIC_WRITE` permits changing file contents but deliberately omits
+// the standard DELETE right. A writable MCP grant must also permit a process
+// to remove files it creates (npm atomically promotes cache downloads by
+// deleting temporary files), while staying confined to the granted directory.
+const GENERIC_READ_WRITE_DELETE: u32 = FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE;
 const APP_CONTAINER_INTERNET_CLIENT_SID: &str = "S-1-15-3-1";
 const APP_CONTAINER_NAME: &str = "Nexy.McpSandbox";
 const WAIT_OBJECT_0: u32 = 0;
@@ -61,12 +67,18 @@ fn wide(value: &str) -> Vec<u16> {
 }
 
 fn last_error(context: &str) -> ! {
-    fail(format!("{context} (Win32 error {})", unsafe { GetLastError() }))
+    fail(format!("{context} (Win32 error {})", unsafe {
+        GetLastError()
+    }))
 }
 
 fn quote_arg(value: &str) -> String {
-    if value.is_empty() { return "\"\"".to_owned(); }
-    if !value.chars().any(|c| c.is_whitespace() || c == '"') { return value.to_owned(); }
+    if value.is_empty() {
+        return "\"\"".to_owned();
+    }
+    if !value.chars().any(|c| c.is_whitespace() || c == '"') {
+        return value.to_owned();
+    }
     let mut result = String::from("\"");
     let mut slashes = 0;
     for character in value.chars() {
@@ -110,27 +122,62 @@ fn resolve_command(launch: &Launch) -> (String, bool) {
     let candidates = if explicit {
         vec![command.to_path_buf()]
     } else {
-        let path_value = launch.env.get("Path").or_else(|| launch.env.get("PATH")).cloned().unwrap_or_default();
-        let extensions = launch.env.get("PATHEXT").cloned().unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_owned());
-        let mut extensions: Vec<String> = extensions.split(';').map(|value| value.to_ascii_lowercase()).collect();
-        if command.extension().is_some() { extensions = vec![String::new()]; }
-        path_value.split(';').flat_map(|directory| {
-            extensions.iter().map(move |extension| PathBuf::from(directory).join(format!("{}{}", launch.command, extension)))
-        }).collect()
+        let path_value = launch
+            .env
+            .get("Path")
+            .or_else(|| launch.env.get("PATH"))
+            .cloned()
+            .unwrap_or_default();
+        let extensions = launch
+            .env
+            .get("PATHEXT")
+            .cloned()
+            .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_owned());
+        let mut extensions: Vec<String> = extensions
+            .split(';')
+            .map(|value| value.to_ascii_lowercase())
+            .collect();
+        if command.extension().is_some() {
+            extensions = vec![String::new()];
+        }
+        path_value
+            .split(';')
+            .flat_map(|directory| {
+                extensions.iter().map(move |extension| {
+                    PathBuf::from(directory).join(format!("{}{}", launch.command, extension))
+                })
+            })
+            .collect()
     };
-    let executable = candidates.into_iter().find(|candidate| candidate.is_file())
-        .unwrap_or_else(|| fail(format!("could not resolve MCP command '{}' through PATH", launch.command)));
-    let executable = std::fs::canonicalize(executable).unwrap_or_else(|_| fail("could not canonicalize the MCP executable"));
-    let wrapper = executable.extension().map(|value| {
-        let extension = value.to_string_lossy().to_ascii_lowercase();
-        extension == "cmd" || extension == "bat"
-    }).unwrap_or(false);
+    let executable = candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| {
+            fail(format!(
+                "could not resolve MCP command '{}' through PATH",
+                launch.command
+            ))
+        });
+    let executable = std::fs::canonicalize(executable)
+        .unwrap_or_else(|_| fail("could not canonicalize the MCP executable"));
+    let wrapper = executable
+        .extension()
+        .map(|value| {
+            let extension = value.to_string_lossy().to_ascii_lowercase();
+            extension == "cmd" || extension == "bat"
+        })
+        .unwrap_or(false);
     (executable.to_string_lossy().into_owned(), wrapper)
 }
 
 fn command_line(launch: &Launch, executable: &str, wrapper: bool) -> Vec<u16> {
     let mut command = if wrapper {
-        let comspec = launch.env.get("ComSpec").or_else(|| launch.env.get("COMSPEC")).cloned().unwrap_or_else(|| "C:\\Windows\\System32\\cmd.exe".to_owned());
+        let comspec = launch
+            .env
+            .get("ComSpec")
+            .or_else(|| launch.env.get("COMSPEC"))
+            .cloned()
+            .unwrap_or_else(|| "C:\\Windows\\System32\\cmd.exe".to_owned());
         let mut script = quote_arg(executable);
         for argument in &launch.args {
             script.push(' ');
@@ -141,10 +188,10 @@ fn command_line(launch: &Launch, executable: &str, wrapper: bool) -> Vec<u16> {
         quote_arg(executable)
     };
     if !wrapper {
-    for argument in &launch.args {
-        command.push(' ');
-        command.push_str(&quote_arg(argument));
-    }
+        for argument in &launch.args {
+            command.push(' ');
+            command.push_str(&quote_arg(argument));
+        }
     }
     wide(&command)
 }
@@ -163,14 +210,20 @@ impl AppContainer {
         let mut sid: PSID = null_mut();
         let result = unsafe {
             CreateAppContainerProfile(
-                name.as_ptr(), display.as_ptr(), description.as_ptr(), null(), 0, &mut sid,
+                name.as_ptr(),
+                display.as_ptr(),
+                description.as_ptr(),
+                null(),
+                0,
+                &mut sid,
             )
         };
         if result < 0 || sid.is_null() {
             // The profile is Nexy-owned and stable. A second helper (or an
             // upgrade) derives the existing SID instead of treating
             // ERROR_ALREADY_EXISTS as a generic connection failure.
-            let derive = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
+            let derive =
+                unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
             if derive < 0 || sid.is_null() {
                 fail(format!("AppContainer profile creation failed (create HRESULT 0x{:08x}, derive HRESULT 0x{:08x})", result as u32, derive as u32));
             }
@@ -180,20 +233,31 @@ impl AppContainer {
             let capability_name = wide(APP_CONTAINER_INTERNET_CLIENT_SID);
             let mut capability: PSID = null_mut();
             if unsafe { ConvertStringSidToSidW(capability_name.as_ptr(), &mut capability) } == 0 {
-                unsafe { FreeSid(sid); }
+                unsafe {
+                    FreeSid(sid);
+                }
                 fail("could not create the Windows internetClient capability SID");
             }
             capability
-        } else { null_mut() };
-        Self { sid, capability_sid }
+        } else {
+            null_mut()
+        };
+        Self {
+            sid,
+            capability_sid,
+        }
     }
 }
 
 impl Drop for AppContainer {
     fn drop(&mut self) {
         unsafe {
-            if !self.capability_sid.is_null() { LocalFree(self.capability_sid as *mut c_void); }
-            if !self.sid.is_null() { FreeSid(self.sid); }
+            if !self.capability_sid.is_null() {
+                LocalFree(self.capability_sid as *mut c_void);
+            }
+            if !self.sid.is_null() {
+                FreeSid(self.sid);
+            }
         }
     }
 }
@@ -204,11 +268,17 @@ impl ProfileCreationLock {
     fn acquire() -> Self {
         let name = wide("Local\\Nexy.McpSandbox.ProfileCreation");
         let handle = unsafe { CreateMutexW(null(), 0, name.as_ptr()) };
-        if handle.is_null() { last_error("could not create AppContainer profile lock"); }
+        if handle.is_null() {
+            last_error("could not create AppContainer profile lock");
+        }
         let wait = unsafe { WaitForSingleObject(handle, 10_000) };
         if wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED {
-            unsafe { CloseHandle(handle); }
-            fail(format!("could not acquire AppContainer profile lock (wait result {wait})"));
+            unsafe {
+                CloseHandle(handle);
+            }
+            fail(format!(
+                "could not acquire AppContainer profile lock (wait result {wait})"
+            ));
         }
         Self(handle)
     }
@@ -216,7 +286,10 @@ impl ProfileCreationLock {
 
 impl Drop for ProfileCreationLock {
     fn drop(&mut self) {
-        unsafe { ReleaseMutex(self.0); CloseHandle(self.0); }
+        unsafe {
+            ReleaseMutex(self.0);
+            CloseHandle(self.0);
+        }
     }
 }
 
@@ -235,14 +308,27 @@ impl DaclGrant {
         let mut old_dacl: *mut ACL = null_mut();
         let result = unsafe {
             GetNamedSecurityInfoW(
-                path_w.as_ptr(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
-                null_mut(), null_mut(), &mut old_dacl, null_mut(), &mut security_descriptor,
+                path_w.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                &mut old_dacl,
+                null_mut(),
+                &mut security_descriptor,
             )
         };
-        if result != 0 { return Err(format!("could not read ACL for {} (error {result})", path_text)); }
+        if result != 0 {
+            return Err(format!(
+                "could not read ACL for {} (error {result})",
+                path_text
+            ));
+        }
 
         let mut trustee = TRUSTEE_W::default();
-        unsafe { BuildTrusteeWithSidW(&mut trustee, sid); }
+        unsafe {
+            BuildTrusteeWithSidW(&mut trustee, sid);
+        }
         let entry = EXPLICIT_ACCESS_W {
             grfAccessPermissions: access,
             grfAccessMode: GRANT_ACCESS,
@@ -252,20 +338,41 @@ impl DaclGrant {
         let mut new_dacl: *mut ACL = null_mut();
         let result = unsafe { SetEntriesInAclW(1, &entry, old_dacl, &mut new_dacl) };
         if result != 0 {
-            unsafe { LocalFree(security_descriptor); }
-            return Err(format!("could not construct ACL for {} (error {result})", path_text));
+            unsafe {
+                LocalFree(security_descriptor);
+            }
+            return Err(format!(
+                "could not construct ACL for {} (error {result})",
+                path_text
+            ));
         }
         let result = unsafe {
             SetNamedSecurityInfoW(
-                path_w.as_ptr(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
-                null_mut(), null_mut(), new_dacl, null_mut(),
+                path_w.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                new_dacl,
+                null_mut(),
             )
         };
         if result != 0 {
-            unsafe { LocalFree(new_dacl as *mut c_void); LocalFree(security_descriptor); }
-            return Err(format!("could not grant AppContainer access to {} (error {result})", path_text));
+            unsafe {
+                LocalFree(new_dacl as *mut c_void);
+                LocalFree(security_descriptor);
+            }
+            return Err(format!(
+                "could not grant AppContainer access to {} (error {result})",
+                path_text
+            ));
         }
-        Ok(Self { path: path_w, security_descriptor, old_dacl, new_dacl })
+        Ok(Self {
+            path: path_w,
+            security_descriptor,
+            old_dacl,
+            new_dacl,
+        })
     }
 }
 
@@ -276,10 +383,19 @@ impl Drop for DaclGrant {
             // the Windows security APIs. If restoration fails, the helper reports it rather
             // than silently leaving a temporary AppContainer grant behind.
             let result = SetNamedSecurityInfoW(
-                self.path.as_ptr(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
-                null_mut(), null_mut(), self.old_dacl, null_mut(),
+                self.path.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                self.old_dacl,
+                null_mut(),
             );
-            if result != 0 { eprintln!("mcp-sandbox: could not restore a temporary filesystem ACL (error {result})"); }
+            if result != 0 {
+                eprintln!(
+                    "mcp-sandbox: could not restore a temporary filesystem ACL (error {result})"
+                );
+            }
             LocalFree(self.new_dacl as *mut c_void);
             LocalFree(self.security_descriptor);
         }
@@ -301,23 +417,46 @@ pub(crate) fn repair_profile() -> i32 {
 
 fn grant_paths(launch: &Launch, executable: &str, app: &AppContainer) -> Vec<DaclGrant> {
     let command_path = PathBuf::from(executable);
-    let command_parent = command_path.parent().filter(|path| !path.as_os_str().is_empty());
+    let command_parent = command_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty());
     let mut paths: Vec<(PathBuf, u32, bool)> = Vec::new();
-    if let Some(parent) = command_parent { paths.push((parent.to_path_buf(), FILE_GENERIC_READ | FILE_GENERIC_EXECUTE, true)); }
+    if let Some(parent) = command_parent {
+        paths.push((
+            parent.to_path_buf(),
+            FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+            true,
+        ));
+    }
     // Parent inheritance is needed by runtimes that load adjacent DLLs, while
     // the explicit file grant also covers existing files whose ACLs disable
     // inheritance.
-    paths.push((command_path, FILE_GENERIC_READ | FILE_GENERIC_EXECUTE, false));
-    if let Some(cwd) = &launch.cwd { paths.push((PathBuf::from(cwd), GENERIC_READ_WRITE, true)); }
+    paths.push((
+        command_path,
+        FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+        false,
+    ));
+    if let Some(cwd) = &launch.cwd {
+        paths.push((PathBuf::from(cwd), GENERIC_READ_WRITE_DELETE, true));
+    }
     for grant in &launch.profile.filesystem {
         let path = PathBuf::from(&grant.path);
-        let access = if grant.access == "read-write" { GENERIC_READ_WRITE } else { FILE_GENERIC_READ | FILE_GENERIC_EXECUTE };
+        let access = if grant.access == "read-write" {
+            GENERIC_READ_WRITE_DELETE
+        } else {
+            FILE_GENERIC_READ | FILE_GENERIC_EXECUTE
+        };
         let is_directory = metadata(&path).map(|value| value.is_dir()).unwrap_or(false);
         paths.push((path, access, is_directory));
     }
     let mut grants = Vec::new();
     for (path, access, inherit) in paths {
-        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| fail(format!("filesystem path does not exist: {}", path.display())));
+        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| {
+            fail(format!(
+                "filesystem path does not exist: {}",
+                path.display()
+            ))
+        });
         match DaclGrant::apply(&canonical, app.sid, access, inherit) {
             Ok(grant) => grants.push(grant),
             Err(error) => {
@@ -330,7 +469,9 @@ fn grant_paths(launch: &Launch, executable: &str, app: &AppContainer) -> Vec<Dac
 }
 
 fn set_inheritable(handle: HANDLE) {
-    if handle.is_null() || handle == INVALID_HANDLE_VALUE { return; }
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return;
+    }
     if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
         last_error("could not make a standard handle inheritable");
     }
@@ -339,12 +480,19 @@ fn set_inheritable(handle: HANDLE) {
 fn diagnostic_pipe() -> (HANDLE, HANDLE) {
     let mut read_pipe: HANDLE = null_mut();
     let mut write_pipe: HANDLE = null_mut();
-    let attributes = SECURITY_ATTRIBUTES { nLength: size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: null_mut(), bInheritHandle: 1 };
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: null_mut(),
+        bInheritHandle: 1,
+    };
     if unsafe { CreatePipe(&mut read_pipe, &mut write_pipe, &attributes, 0) } == 0 {
         last_error("could not create the MCP diagnostic pipe");
     }
     if unsafe { SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0) } == 0 {
-        unsafe { CloseHandle(read_pipe); CloseHandle(write_pipe); }
+        unsafe {
+            CloseHandle(read_pipe);
+            CloseHandle(write_pipe);
+        }
         last_error("could not protect the MCP diagnostic pipe");
     }
     (read_pipe, write_pipe)
@@ -371,7 +519,9 @@ fn run_inner(launch: &Launch) -> Result<u32, String> {
     let (executable, wrapper) = resolve_command(launch);
     // Only AppContainer processes need temporary ACL grants. The managed
     // runtime executes as Nexy and is limited by the Job Object below.
-    let _grants = app.as_ref().map(|app| grant_paths(launch, &executable, app));
+    let _grants = app
+        .as_ref()
+        .map(|app| grant_paths(launch, &executable, app));
     let (diagnostic_read, diagnostic_write) = diagnostic_pipe();
     let stdin = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
     let stdout = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
@@ -381,37 +531,59 @@ fn run_inner(launch: &Launch) -> Result<u32, String> {
     let mut capabilities = Vec::new();
     if let Some(app) = app.as_ref() {
         if !app.capability_sid.is_null() {
-            capabilities.push(SID_AND_ATTRIBUTES { Sid: app.capability_sid, Attributes: 4 }); // SE_GROUP_ENABLED
+            capabilities.push(SID_AND_ATTRIBUTES {
+                Sid: app.capability_sid,
+                Attributes: 4,
+            }); // SE_GROUP_ENABLED
         }
     }
     let security_capabilities = SECURITY_CAPABILITIES {
         AppContainerSid: app.as_ref().map_or(null_mut(), |app| app.sid),
-        Capabilities: if capabilities.is_empty() { null_mut() } else { capabilities.as_mut_ptr() },
+        Capabilities: if capabilities.is_empty() {
+            null_mut()
+        } else {
+            capabilities.as_mut_ptr()
+        },
         CapabilityCount: capabilities.len() as u32,
         Reserved: 0,
     };
 
     let (_attribute_storage, attribute_list) = if app.is_some() {
         let mut attribute_size = 0usize;
-        unsafe { InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut attribute_size); }
-        if attribute_size == 0 { return Err("could not size the AppContainer process attribute list".to_owned()); }
+        unsafe {
+            InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut attribute_size);
+        }
+        if attribute_size == 0 {
+            return Err("could not size the AppContainer process attribute list".to_owned());
+        }
         let mut storage = vec![0u8; attribute_size];
         let attribute_list = storage.as_mut_ptr() as *mut c_void;
-        if unsafe { InitializeProcThreadAttributeList(attribute_list, 1, 0, &mut attribute_size) } == 0 {
+        if unsafe { InitializeProcThreadAttributeList(attribute_list, 1, 0, &mut attribute_size) }
+            == 0
+        {
             return Err("could not initialize the AppContainer process attribute list".to_owned());
         }
         if unsafe {
             UpdateProcThreadAttribute(
-                attribute_list, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
+                attribute_list,
+                0,
+                PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
                 &security_capabilities as *const _ as *const c_void,
-                size_of::<SECURITY_CAPABILITIES>(), null_mut(), null(),
+                size_of::<SECURITY_CAPABILITIES>(),
+                null_mut(),
+                null(),
             )
-        } == 0 {
-            unsafe { DeleteProcThreadAttributeList(attribute_list); }
+        } == 0
+        {
+            unsafe {
+                DeleteProcThreadAttributeList(attribute_list);
+            }
             return Err("could not attach the AppContainer security capabilities".to_owned());
         }
         (Some(storage), attribute_list)
-    } else { (None, null_mut()) };
+    } else {
+        (None, null_mut())
+    };
 
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
@@ -424,28 +596,50 @@ fn run_inner(launch: &Launch) -> Result<u32, String> {
     let mut command_line = command_line(launch, &executable, wrapper);
     let current_directory = launch.cwd.as_ref().map(|value| wide(value));
     let mut environment = environment_block(launch);
-    let creation_flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT
-        | if app.is_some() { EXTENDED_STARTUPINFO_PRESENT } else { 0 };
+    let creation_flags = CREATE_SUSPENDED
+        | CREATE_UNICODE_ENVIRONMENT
+        | if app.is_some() {
+            EXTENDED_STARTUPINFO_PRESENT
+        } else {
+            0
+        };
     let created = unsafe {
         CreateProcessW(
-            null(), command_line.as_mut_ptr(), null(), null(), 1, creation_flags,
+            null(),
+            command_line.as_mut_ptr(),
+            null(),
+            null(),
+            1,
+            creation_flags,
             environment.as_mut_ptr() as *const c_void,
-            current_directory.as_ref().map_or(null(), |value| value.as_ptr()),
-            &startup.StartupInfo, &mut process_info,
+            current_directory
+                .as_ref()
+                .map_or(null(), |value| value.as_ptr()),
+            &startup.StartupInfo,
+            &mut process_info,
         )
     };
     unsafe {
-        if !attribute_list.is_null() { DeleteProcThreadAttributeList(attribute_list); }
+        if !attribute_list.is_null() {
+            DeleteProcThreadAttributeList(attribute_list);
+        }
         CloseHandle(diagnostic_write);
     }
     if created == 0 {
-        unsafe { CloseHandle(diagnostic_read); }
-        return Err(format!("could not create the AppContainer process (Win32 error {})", unsafe { GetLastError() }));
+        unsafe {
+            CloseHandle(diagnostic_read);
+        }
+        return Err(format!(
+            "could not create the AppContainer process (Win32 error {})",
+            unsafe { GetLastError() }
+        ));
     }
 
     let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
     limits.BasicLimitInformation = JOBOBJECT_BASIC_LIMIT_INFORMATION {
-        LimitFlags: JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_JOB_MEMORY | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        LimitFlags: JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+            | JOB_OBJECT_LIMIT_JOB_MEMORY
+            | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         // .cmd/.bat launchers need one infrastructure process (cmd.exe). The
         // limit still prevents the launched server from creating any process
         // when childProcesses is blocked.
@@ -455,38 +649,76 @@ fn run_inner(launch: &Launch) -> Result<u32, String> {
     limits.JobMemoryLimit = (launch.profile.memory_limit_mib as usize) * 1024 * 1024;
     let job = unsafe { CreateJobObjectW(null(), null()) };
     if job.is_null() {
-        unsafe { CloseHandle(process_info.hThread); CloseHandle(process_info.hProcess); CloseHandle(diagnostic_read); }
-        return Err(format!("could not create the MCP Job Object (Win32 error {})", unsafe { GetLastError() }));
+        unsafe {
+            CloseHandle(process_info.hThread);
+            CloseHandle(process_info.hProcess);
+            CloseHandle(diagnostic_read);
+        }
+        return Err(format!(
+            "could not create the MCP Job Object (Win32 error {})",
+            unsafe { GetLastError() }
+        ));
     }
-    if unsafe { SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits as *const _ as *const c_void, size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32) } == 0
+    if unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &limits as *const _ as *const c_void,
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    } == 0
         || unsafe { AssignProcessToJobObject(job, process_info.hProcess) } == 0
     {
-        unsafe { CloseHandle(job); CloseHandle(process_info.hThread); CloseHandle(process_info.hProcess); CloseHandle(diagnostic_read); }
-        return Err(format!("could not apply MCP Job Object limits (Win32 error {})", unsafe { GetLastError() }));
+        unsafe {
+            CloseHandle(job);
+            CloseHandle(process_info.hThread);
+            CloseHandle(process_info.hProcess);
+            CloseHandle(diagnostic_read);
+        }
+        return Err(format!(
+            "could not apply MCP Job Object limits (Win32 error {})",
+            unsafe { GetLastError() }
+        ));
     }
     if unsafe { ResumeThread(process_info.hThread) } == u32::MAX {
-        unsafe { CloseHandle(job); CloseHandle(process_info.hThread); CloseHandle(process_info.hProcess); CloseHandle(diagnostic_read); }
+        unsafe {
+            CloseHandle(job);
+            CloseHandle(process_info.hThread);
+            CloseHandle(process_info.hProcess);
+            CloseHandle(diagnostic_read);
+        }
         return Err("could not resume the sandboxed MCP process".to_owned());
     }
-    unsafe { CloseHandle(process_info.hThread); }
+    unsafe {
+        CloseHandle(process_info.hThread);
+    }
 
     let max_diagnostics = launch.profile.max_diagnostic_bytes;
     let diagnostic_read = diagnostic_read as usize;
     let diagnostics = thread::spawn(move || {
         let file = unsafe { File::from_raw_handle(diagnostic_read as *mut _) };
         let mut bytes = Vec::new();
-        file.take((max_diagnostics + 1) as u64).read_to_end(&mut bytes).ok();
+        file.take((max_diagnostics + 1) as u64)
+            .read_to_end(&mut bytes)
+            .ok();
         bytes.truncate(max_diagnostics);
         bytes
     });
     let wait_status = unsafe { WaitForSingleObject(process_info.hProcess, INFINITE) };
     let mut exit_code = 1u32;
-    if wait_status == WAIT_FAILED || unsafe { GetExitCodeProcess(process_info.hProcess, &mut exit_code) } == 0 {
+    if wait_status == WAIT_FAILED
+        || unsafe { GetExitCodeProcess(process_info.hProcess, &mut exit_code) } == 0
+    {
         exit_code = 1;
     }
-    unsafe { CloseHandle(process_info.hProcess); CloseHandle(job); }
+    unsafe {
+        CloseHandle(process_info.hProcess);
+        CloseHandle(job);
+    }
     if let Ok(bytes) = diagnostics.join() {
-        if !bytes.is_empty() { let _ = std::io::stderr().write_all(&bytes); }
+        if !bytes.is_empty() {
+            let _ = std::io::stderr().write_all(&bytes);
+        }
     }
     Ok(exit_code)
 }
@@ -500,9 +732,10 @@ pub(crate) fn run(launch: &Launch) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::runs_outside_app_container;
+    use super::{runs_outside_app_container, GENERIC_READ_WRITE_DELETE};
     use crate::{Launch, Profile};
     use std::collections::BTreeMap;
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_GENERIC_READ, FILE_GENERIC_WRITE};
 
     fn launch(managed_runtime: Option<&str>) -> Launch {
         Launch {
@@ -526,6 +759,17 @@ mod tests {
     fn only_the_managed_playwright_descriptor_bypasses_app_container() {
         assert!(runs_outside_app_container(&launch(Some("playwright"))));
         assert!(!runs_outside_app_container(&launch(None)));
-        assert!(!runs_outside_app_container(&launch(Some("unknown-runtime"))));
+        assert!(!runs_outside_app_container(&launch(Some(
+            "unknown-runtime"
+        ))));
+    }
+
+    #[test]
+    fn writable_grants_include_file_deletion() {
+        // npm's content-addressable cache deletes temporary downloads after
+        // promotion. FILE_GENERIC_WRITE alone intentionally lacks DELETE.
+        assert_ne!(GENERIC_READ_WRITE_DELETE & DELETE, 0);
+        assert_ne!(GENERIC_READ_WRITE_DELETE & FILE_GENERIC_READ, 0);
+        assert_ne!(GENERIC_READ_WRITE_DELETE & FILE_GENERIC_WRITE, 0);
     }
 }

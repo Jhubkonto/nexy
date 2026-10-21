@@ -41,6 +41,8 @@ interface ProxySession {
   sockets: Set<Socket>
   request: McpSandboxLaunchRequest
   closed: boolean
+  /** The helper has authenticated and owns the session until it exits. */
+  claimed: boolean
   cleanup?: () => void
   expiryTimer?: NodeJS.Timeout
 }
@@ -194,6 +196,7 @@ function createProxySession(request: McpSandboxLaunchRequest): ProxySession {
     sockets: new Set(),
     request: { ...request, profile: normalizeMcpSandboxProfile(request.profile) },
     closed: false,
+    claimed: false,
     cleanup: request.cleanup,
   }
   session.server.on('connection', (socket) => {
@@ -213,6 +216,15 @@ function createProxySession(request: McpSandboxLaunchRequest): ProxySession {
             socket.destroy()
             return
           }
+          // A valid helper owns the session until it exits. Its control socket
+          // stays open while it starts and waits for the sandboxed process;
+          // this keeps temporary managed-runtime paths present through the
+          // Windows AppContainer ACL setup.
+          session.claimed = true
+          if (session.expiryTimer) {
+            clearTimeout(session.expiryTimer)
+            session.expiryTimer = undefined
+          }
           writeJson(socket, {
             type: 'launch',
             protocolVersion: HELPER_PROTOCOL_VERSION,
@@ -231,6 +243,9 @@ function createProxySession(request: McpSandboxLaunchRequest): ProxySession {
     })
     socket.on('close', () => {
       session.sockets.delete(socket)
+      // Before authentication, retain only a short startup window. After a
+      // helper has claimed the session, the close signal means it has exited,
+      // so this is the correct point to release its private files.
       if (session.sockets.size === 0 && !session.closed) {
         setTimeout(() => { void closeSession(session) }, 100)
       }
@@ -241,7 +256,12 @@ function createProxySession(request: McpSandboxLaunchRequest): ProxySession {
   const [, port] = endpoint.split(':')
   session.server.listen(Number(port), '127.0.0.1')
   sessions.set(token, session)
-  session.expiryTimer = setTimeout(() => { void closeSession(session) }, 30_000)
+  // This guards only a helper that never reaches authentication. A live MCP
+  // server may run indefinitely, so its private runtime paths must not be
+  // removed on a fixed timer after it has claimed the session.
+  session.expiryTimer = setTimeout(() => {
+    if (!session.claimed) void closeSession(session)
+  }, 30_000)
   return session
 }
 
