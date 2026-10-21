@@ -36,7 +36,9 @@ Unknown optional JSON fields are retained in canonical payload JSON. Malformed o
 treated as an empty/default value rather than crashing or silently replacing a pending local edit.
 API keys, authorization values, passwords, pairing secrets, data URLs, base64 payload fields,
 workspace/root/local paths, transient streams, logs, build state, and device settings are removed
-recursively at both synchronization boundaries.
+recursively at both synchronization boundaries. An exception is an explicit, live MCP setup request
+over the certificate-pinned paired-desktop connection: its environment values are write-only, stored
+in the desktop's encrypted MCP configuration, never returned to Android, and never synchronized.
 
 Android provider keys are stored in the device-local Keystore-backed credential vault. Existing
 standalone provider keys are migrated into the vault on first access and removed from the legacy
@@ -64,7 +66,7 @@ only an explicit, human-confirmed provider-key handoff can transfer a key from d
 | Artifacts and workspace-writing generators | Desktop required | Desktop required | Desktop execution |
 | Managed workflow authoring, review, version history, and publication | Read-only cached state; actions disabled | Desktop required | Full control through desktop execution/storage |
 | Builds, shell, Git, code changes, CLI backends | Desktop required | Desktop required | Desktop execution |
-| Local stdio MCP, desktop automation, scheduled execution | Desktop required | Desktop required | Desktop execution |
+| Local stdio MCP, desktop automation, scheduled execution | Desktop required | Desktop required | Configure and execute through paired desktop |
 | Tool approval or stopping an active desktop process | Disabled, never queued | Disabled, never queued | Live desktop only |
 | HTTP remote MCP | Not enabled | Not enabled | Not enabled; requires separate threat model |
 

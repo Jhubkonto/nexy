@@ -23,6 +23,11 @@ detects and launches an executable already installed by the user.
 - Optional Supertonic speech model: downloaded separately under the OpenRAIL-M
   license. The model and runtime details are in
   [`docs/licenses/SUPERTONIC.md`](docs/licenses/SUPERTONIC.md).
+- Optional managed Node.js runtime for Windows `npx` MCP servers: downloaded
+  separately from the official Node.js release archive, verified against a
+  release-pinned SHA-256 digest, and stored in Nexy's per-user data directory.
+  Node.js is MIT licensed; its source, license, and release notices are at
+  <https://github.com/nodejs/node> and <https://nodejs.org>.
 
 ## Package dependencies
 
