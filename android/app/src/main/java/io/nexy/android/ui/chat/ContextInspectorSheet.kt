@@ -36,7 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import io.nexy.android.ui.theme.NexySurfaceShape as RectangleShape
+import io.nexy.android.ui.theme.NexyChatSurfaceShape
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -156,7 +156,7 @@ fun ContextInspectorSheet(
 
                 item {
                     Card(
-                        shape = RectangleShape,
+                        shape = NexyChatSurfaceShape,
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                     ) {
@@ -192,7 +192,7 @@ private fun TokenBudgetCard(totalTokens: Int, maxTokens: Int) {
         pct >= 0.5f -> Color(0xFFF59E0B)
         else -> Color(0xFF10B981)
     }
-    Card(shape = RectangleShape, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+    Card(shape = NexyChatSurfaceShape, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 LinearProgressIndicator(
@@ -200,7 +200,7 @@ private fun TokenBudgetCard(totalTokens: Int, maxTokens: Int) {
                     modifier = Modifier
                         .weight(1f)
                         .height(6.dp)
-                        .clip(RectangleShape),
+                        .clip(NexyChatSurfaceShape),
                     color = color,
                     trackColor = MaterialTheme.colorScheme.outlineVariant,
                 )
@@ -217,7 +217,7 @@ private fun TokenBudgetCard(totalTokens: Int, maxTokens: Int) {
 
 @Composable
 private fun StatCard(label: String, value: String, modifier: Modifier = Modifier) {
-    Card(modifier = modifier, shape = RectangleShape, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+    Card(modifier = modifier, shape = NexyChatSurfaceShape, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
         Column(modifier = Modifier.padding(vertical = 8.dp, horizontal = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(value, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -279,7 +279,7 @@ private fun ExpandableTextSection(label: String, tokenLabel: String, body: Strin
             Text(if (expanded) "Hide prompt" else "Show prompt", style = MaterialTheme.typography.labelSmall)
         }
         if (expanded) {
-            Card(shape = RectangleShape, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Card(shape = NexyChatSurfaceShape, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                 Text(
                     body,
                     style = MaterialTheme.typography.bodySmall,
@@ -299,7 +299,7 @@ private fun ExpandableTextSection(label: String, tokenLabel: String, body: Strin
  */
 @Composable
 private fun StandaloneCompressionCard(loading: Boolean, summary: ConversationSummaryEntity?) {
-    Card(shape = RectangleShape, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+    Card(shape = NexyChatSurfaceShape, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 NexyIcon(NexyIconName.Compress, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -334,7 +334,7 @@ private fun CompressionCard(
     state: ContextInspectorState,
     vm: ContextInspectorViewModel,
 ) {
-    Card(shape = RectangleShape, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+    Card(shape = NexyChatSurfaceShape, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 NexyIcon(NexyIconName.Compress, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)

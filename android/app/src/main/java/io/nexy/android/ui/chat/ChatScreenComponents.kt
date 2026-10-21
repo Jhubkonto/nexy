@@ -72,6 +72,7 @@ import io.nexy.android.ui.components.NexySecondaryButton
 import io.nexy.android.ui.icons.NexyIcon
 import io.nexy.android.ui.icons.NexyIconName
 import io.nexy.android.ui.theme.LocalNexyEightBit
+import io.nexy.android.ui.theme.NexyChatSurfaceShape
 import kotlin.math.roundToInt
 
 @Composable
@@ -551,6 +552,7 @@ fun ToolApprovalCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp),
+        shape = NexyChatSurfaceShape,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.secondaryContainer,
         ),

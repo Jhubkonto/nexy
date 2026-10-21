@@ -76,8 +76,8 @@ private class CodeBlockBridge(
 }
 
 @Composable
-fun CodeBlockWebView(language: String?, code: String, modifier: Modifier = Modifier) {
-    var showFullscreen by remember(code, language) { mutableStateOf(false) }
+fun CodeBlockWebView(language: String?, code: String, modifier: Modifier = Modifier, searchQuery: String? = null) {
+    var showFullscreen by remember(code, language, searchQuery) { mutableStateOf(false) }
     // WebViews are considerably more expensive than normal Compose nodes. A large history
     // containing code should not create Chromium surfaces just because those blocks happen to
     // be visible on entry. Keep the inline representation native and instantiate the existing
@@ -105,7 +105,10 @@ fun CodeBlockWebView(language: String?, code: String, modifier: Modifier = Modif
                 )
             }
             Text(
-                text = code,
+                text = androidx.compose.ui.text.AnnotatedString(code).withSearchHighlights(
+                    searchQuery,
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                ),
                 modifier = Modifier.padding(top = 8.dp),
                 color = androidx.compose.ui.graphics.Color(0xFFCDD6F4),
                 fontFamily = FontFamily.Monospace,
@@ -120,6 +123,7 @@ fun CodeBlockWebView(language: String?, code: String, modifier: Modifier = Modif
         CodeBlockFullscreenDialog(
             language = language,
             code = code,
+            searchQuery = searchQuery,
             onDismiss = { showFullscreen = false },
         )
     }
@@ -137,6 +141,7 @@ fun CodeBlockWebView(language: String?, code: String, modifier: Modifier = Modif
 private fun CodeBlockFullscreenDialog(
     language: String?,
     code: String,
+    searchQuery: String?,
     onDismiss: () -> Unit,
 ) {
     Dialog(
@@ -164,7 +169,7 @@ private fun CodeBlockFullscreenDialog(
                         settings.domStorageEnabled = false
                         setBackgroundColor(0x00000000)
                         webViewClient = WebViewClient()
-                        val html = buildCodeBlockHtml(language, code, showFullscreenButton = false)
+                        val html = buildCodeBlockHtml(language, code, showFullscreenButton = false, searchQuery = searchQuery)
                         loadDataWithBaseURL("file:///android_asset/codeblock/", html, "text/html", "utf-8", null)
                         addJavascriptInterface(
                             CodeBlockBridge(

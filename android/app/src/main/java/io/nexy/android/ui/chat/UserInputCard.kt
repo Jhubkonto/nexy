@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import io.nexy.android.data.WsRepository
+import io.nexy.android.ui.theme.NexyChatSurfaceShape
 
 @Composable
 fun UserInputCard(input: ChatTurnUserInput) {
@@ -33,7 +34,7 @@ fun UserInputCard(input: ChatTurnUserInput) {
     }
 
     Surface(
-        shape = MaterialTheme.shapes.medium,
+        shape = NexyChatSurfaceShape,
         color = MaterialTheme.colorScheme.primaryContainer,
         modifier = Modifier.fillMaxWidth(),
     ) {

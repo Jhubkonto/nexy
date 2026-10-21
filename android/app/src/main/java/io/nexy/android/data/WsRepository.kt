@@ -25,6 +25,7 @@ import io.nexy.android.data.model.WikiEntry
 import io.nexy.android.data.model.Conversation
 import io.nexy.android.data.model.NewContentConversation
 import io.nexy.android.data.model.McpServerInfo
+import io.nexy.android.data.model.McpSandboxProfile
 import io.nexy.android.data.model.McpCatalogEntry
 import io.nexy.android.data.model.McpToolInfo
 import io.nexy.android.data.model.WikiExtractionCandidate
@@ -3259,28 +3260,44 @@ object WsRepository : WsClient {
         send("agent:set-mcp-server-trust", mapOf("agentId" to agentId, "serverId" to serverId, "trust" to trust))
     }
 
-    fun addMcpServer(name: String, command: String, description: String = "", args: List<String> = emptyList(), env: Map<String, String> = emptyMap(), cwd: String? = null, imageResponses: String? = null, enabled: Boolean = true) {
-        // MCP environment values are desktop-owned secrets and never cross the
-        // companion connection, even when a caller supplies this legacy parameter.
+    fun addMcpServer(name: String, command: String, description: String = "", args: List<String> = emptyList(), env: Map<String, String> = emptyMap(), cwd: String? = null, imageResponses: String? = null, sandboxProfile: McpSandboxProfile = McpSandboxProfile(), enabled: Boolean = true) {
         val payload = mutableMapOf<String, Any>("name" to name, "description" to description, "command" to command, "args" to args, "enabled" to enabled)
+        // The paired connection uses certificate-pinned TLS.  Secrets supplied during an
+        // explicit live setup are stored only in the desktop's encrypted MCP config and
+        // are never sent back in server/status events or synchronized to other devices.
+        if (env.isNotEmpty()) payload["env"] = env
         if (cwd != null) payload["cwd"] = cwd
         if (imageResponses != null) payload["imageResponses"] = imageResponses
+        payload["sandboxProfile"] = mapOf(
+            "network" to sandboxProfile.network,
+            "childProcesses" to sandboxProfile.childProcesses,
+        )
         send("mcp:add", payload)
     }
-    fun updateMcpServer(id: String, name: String? = null, description: String? = null, command: String? = null, args: List<String>? = null, env: Map<String, String>? = null, cwd: String? = null, enabled: Boolean? = null) {
+    fun updateMcpServer(id: String, name: String? = null, description: String? = null, command: String? = null, args: List<String>? = null, env: Map<String, String>? = null, cwd: String? = null, sandboxProfile: McpSandboxProfile? = null, enabled: Boolean? = null) {
         val payload = mutableMapOf<String, Any>("id" to id)
         if (name != null) payload["name"] = name
         if (description != null) payload["description"] = description
         if (command != null) payload["command"] = command
         if (args != null) payload["args"] = args
-        // Do not send env updates from Android; the desktop remains authoritative.
+        // Environment values are write-only across the companion protocol.
+        if (env != null) payload["env"] = env
         if (cwd != null) payload["cwd"] = cwd
+        if (sandboxProfile != null) payload["sandboxProfile"] = mapOf(
+            "network" to sandboxProfile.network,
+            "childProcesses" to sandboxProfile.childProcesses,
+        )
         if (enabled != null) payload["enabled"] = enabled
         send("mcp:update", payload)
     }
-    fun testMcpServer(command: String, args: List<String>, env: Map<String, String> = emptyMap(), imageResponses: String? = null) {
+    fun testMcpServer(command: String, args: List<String>, env: Map<String, String> = emptyMap(), imageResponses: String? = null, sandboxProfile: McpSandboxProfile = McpSandboxProfile()) {
         val payload = mutableMapOf<String, Any>("command" to command, "args" to args)
+        if (env.isNotEmpty()) payload["env"] = env
         if (imageResponses != null) payload["imageResponses"] = imageResponses
+        payload["sandboxProfile"] = mapOf(
+            "network" to sandboxProfile.network,
+            "childProcesses" to sandboxProfile.childProcesses,
+        )
         send("mcp:test", payload)
     }
     fun removeMcpServer(id: String) { send("mcp:remove", mapOf("id" to id)) }

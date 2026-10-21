@@ -8,16 +8,33 @@ private fun escapeHtml(text: String): String =
         .replace(">", "&gt;")
         .replace("\"", "&quot;")
 
+/** Escapes a Kotlin string for use as a JavaScript string literal inside the generated page. */
+private fun escapeJavaScriptString(text: String): String =
+    text
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+
 /**
  * Builds the minimal HTML shell loaded into the code-block WebView island. References the
  * bundled `theme.css` (ported from src/renderer/styles/global.css) and `highlight.min.js`
  * (vendored highlight.js 11.11.1, matching desktop's resolved version) via relative asset
  * paths — loaded through `loadDataWithBaseURL("file:///android_asset/", ...)` so they resolve.
  */
-fun buildCodeBlockHtml(language: String?, code: String, showFullscreenButton: Boolean = true): String {
+fun buildCodeBlockHtml(
+    language: String?,
+    code: String,
+    showFullscreenButton: Boolean = true,
+    searchQuery: String? = null,
+): String {
     val escapedCode = escapeHtml(code)
     val langClass = if (language != null) "language-$language" else "nohighlight"
     val langLabel = escapeHtml(language ?: "code")
+    val searchTerm = escapeJavaScriptString(searchQuery?.trim().orEmpty())
     return """
         <!DOCTYPE html>
         <html>
@@ -44,6 +61,32 @@ fun buildCodeBlockHtml(language: String?, code: String, showFullscreenButton: Bo
             // height with the code invisible below the fold instead of falling back to
             // plain, unhighlighted text at its real height.
             try { hljs.highlightAll(); } catch (e) {}
+            const searchQuery = "$searchTerm";
+            if (searchQuery) {
+              const walker = document.createTreeWalker(document.querySelector('code'), NodeFilter.SHOW_TEXT);
+              const nodes = [];
+              for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node);
+              const needle = searchQuery.toLocaleLowerCase();
+              for (const node of nodes) {
+                const source = node.data;
+                const lower = source.toLocaleLowerCase();
+                let start = lower.indexOf(needle);
+                if (start < 0) continue;
+                const fragment = document.createDocumentFragment();
+                let cursor = 0;
+                while (start >= 0) {
+                  if (start > cursor) fragment.append(source.slice(cursor, start));
+                  const mark = document.createElement('mark');
+                  mark.style.cssText = 'background:#facc15;color:inherit;border-radius:2px;padding:0 1px';
+                  mark.textContent = source.slice(start, start + searchQuery.length);
+                  fragment.append(mark);
+                  cursor = start + searchQuery.length;
+                  start = lower.indexOf(needle, cursor);
+                }
+                if (cursor < source.length) fragment.append(source.slice(cursor));
+                node.replaceWith(fragment);
+              }
+            }
             function copyCode() {
               AndroidBridge.onCopy(document.querySelector('code').innerText);
             }

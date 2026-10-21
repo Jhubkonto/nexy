@@ -89,6 +89,7 @@ import androidx.compose.runtime.key
 import io.nexy.android.ui.theme.Blue500
 import io.nexy.android.ui.theme.Green500
 import io.nexy.android.ui.theme.Gray400
+import io.nexy.android.ui.theme.NexyChatSurfaceShape
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -561,6 +562,17 @@ fun ChatScreen(
     }
 
     val sendError by vm.sendError.collectAsStateWithLifecycle()
+    var showChatSearch by remember(conversationId) { mutableStateOf(false) }
+    var chatSearchQuery by remember(conversationId) { mutableStateOf("") }
+    var chatSearchIndex by remember(conversationId) { mutableStateOf(0) }
+    val chatSearchMatches = remember(messages, chatSearchQuery) {
+        val query = chatSearchQuery.trim()
+        if (query.isBlank()) emptyList() else messages
+            .filter { !it.isToolCall && it.text.contains(query, ignoreCase = true) }
+            .map { it.id }
+            .filter { it.isNotBlank() }
+    }
+    LaunchedEffect(chatSearchQuery) { chatSearchIndex = 0 }
     var deletingMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var deleteAfterMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var addToProjectMessage by remember { mutableStateOf<ChatMessage?>(null) }
@@ -690,6 +702,37 @@ fun ChatScreen(
     }
     val completedRenderItems = renderItems.orEmpty()
     val isBuildingInitialRenderItems = renderItems == null
+    var highlightedMessageId by remember { mutableStateOf<String?>(null) }
+    val selectedSearchMessageId = chatSearchMatches.getOrNull(chatSearchIndex).takeIf { showChatSearch }
+
+    // Search uses message IDs instead of filtered timeline rows so the chat stays intact while
+    // navigating. A matching assistant message can have several render items (thinking and text
+    // segments), therefore jump to its first item in the existing LazyColumn timeline.
+    LaunchedEffect(showChatSearch, chatSearchMatches, chatSearchIndex, completedRenderItems) {
+        val messageId = chatSearchMatches.getOrNull(chatSearchIndex) ?: return@LaunchedEffect
+        val itemIndex = completedRenderItems.indexOfFirst { item ->
+            when (item) {
+                is ChatRenderItem.UserMessage -> item.message.id == messageId
+                is ChatRenderItem.AssistantMessage -> item.message.id == messageId
+                is ChatRenderItem.ToolCall -> item.message.id == messageId
+                is ChatRenderItem.ThinkingBlockItem -> item.messageId == messageId
+                is ChatRenderItem.TextSegmentItem -> item.messageId == messageId
+                is ChatRenderItem.ArtifactCard -> item.messageId == messageId
+                else -> false
+            }
+        }
+        if (!showChatSearch || itemIndex < 0) return@LaunchedEffect
+        programmaticScrollInProgress = true
+        shouldAutoFollow = false
+        try {
+            listState.scrollToItem(itemIndex + if (completedRenderItems.isNotEmpty()) 1 else 0)
+            highlightedMessageId = messageId
+            kotlinx.coroutines.delay(1600)
+            highlightedMessageId = null
+        } finally {
+            programmaticScrollInProgress = false
+        }
+    }
 
     // Snapshot of where the last item sits relative to the viewport, for the truncated-tail hunt.
     // `tailBelowFold` alongside `canScrollFwd=false` is the contradiction that flags a clipped tail.
@@ -1027,8 +1070,6 @@ fun ChatScreen(
                 }
             }
     }
-
-    var highlightedMessageId by remember { mutableStateOf<String?>(null) }
 
     DisposableEffect(conversationId) {
         WsRepository.activelyViewedConversationId.value = conversationId
@@ -1559,6 +1600,9 @@ fun ChatScreen(
                 },
                 onBack = onBack,
                 actions = {
+                    IconButton(onClick = { showChatSearch = true }) {
+                        NexyIcon(NexyIconName.Search, contentDescription = "Search messages")
+                    }
                     if (assistantBusy) {
                         IconButton(
                             onClick = { vm.stopStream() },
@@ -1734,7 +1778,10 @@ fun ChatScreen(
                     val bannerStepKey = bannerStep?.let { "${it.id}:${it.status}:${it.attempt}" }
                     if (bannerRun != null && bannerStep != null && bannerStepKey != dismissedWorkflowStepId) {
                         val gated = bannerRun.confirmationMode == "gated"
-                        Surface(color = MaterialTheme.colorScheme.primaryContainer) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            shape = NexyChatSurfaceShape,
+                        ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -1891,6 +1938,7 @@ fun ChatScreen(
                                             content = item.block.content,
                                             debugKey = item.key,
                                             viewMode = markdownViewMode,
+                                            searchQuery = if (item.messageId == selectedSearchMessageId) chatSearchQuery else null,
                                         )
                                     }
                                 }
@@ -1970,7 +2018,8 @@ fun ChatScreen(
                                             savePromptScope = if (!chatProjectId.isNullOrBlank()) "project" else "global"
                                         }
                                     } else null,
-                                    isHighlighted = msg.id == highlightedMessageId,
+                                    isHighlighted = msg.id == highlightedMessageId && msg.id != selectedSearchMessageId,
+                                    searchQuery = if (msg.id == selectedSearchMessageId) chatSearchQuery else null,
                                     onRetry = null,
                                     onEditAssistant = null,
                                     onAddToProject = null,
@@ -2031,7 +2080,8 @@ fun ChatScreen(
                                         onResend = null,
                                         onDelete = if (msg.id.isNotBlank()) { { deletingMessage = msg } } else null,
                                     onDeleteAfter = if (msg.id.isNotBlank() && msg.timestamp > 0L) { { deleteAfterMessage = msg } } else null,
-                                    isHighlighted = false,
+                                    isHighlighted = msg.id == highlightedMessageId && msg.id != selectedSearchMessageId,
+                                    searchQuery = if (msg.id == selectedSearchMessageId) chatSearchQuery else null,
                                     onRetry = if (precedingUserMessage != null) {
                                         { vm.retryMessage(precedingUserMessage.id, precedingUserMessage.text) }
                                     } else null,
@@ -2132,6 +2182,64 @@ fun ChatScreen(
                     .align(Alignment.TopStart)
                     .offset { IntOffset(0, topBannersHeightPx) },
             )
+            // Keep find controls above the timeline rather than in the Column: opening it must
+            // not resize the LazyColumn or displace the messages the user is currently reading.
+            if (showChatSearch) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 2.dp,
+                    shadowElevation = 4.dp,
+                    shape = NexyChatSurfaceShape,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = chatSearchQuery,
+                            onValueChange = { chatSearchQuery = it },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                            placeholder = { Text("Find in chat") },
+                            label = { Text("Find in chat") },
+                        )
+                        Text(
+                            if (chatSearchQuery.isBlank()) "0/0" else "${if (chatSearchMatches.isEmpty()) 0 else chatSearchIndex + 1}/${chatSearchMatches.size}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        IconButton(
+                            onClick = {
+                                if (chatSearchMatches.isNotEmpty()) {
+                                    chatSearchIndex = (chatSearchIndex - 1 + chatSearchMatches.size) % chatSearchMatches.size
+                                }
+                            },
+                            enabled = chatSearchMatches.isNotEmpty(),
+                        ) {
+                            NexyIcon(NexyIconName.ChevronUp, contentDescription = "Previous search result")
+                        }
+                        IconButton(
+                            onClick = {
+                                if (chatSearchMatches.isNotEmpty()) {
+                                    chatSearchIndex = (chatSearchIndex + 1) % chatSearchMatches.size
+                                }
+                            },
+                            enabled = chatSearchMatches.isNotEmpty(),
+                        ) {
+                            NexyIcon(NexyIconName.ChevronDown, contentDescription = "Next search result")
+                        }
+                        IconButton(onClick = { showChatSearch = false }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close message search")
+                        }
+                    }
+                }
+            }
             // Scroll-to-bottom button shown whenever the user is scrolled above the bottom
             if (hasInitiallyScrolled && !isAtBottom) {
                 FloatingActionButton(
@@ -2215,7 +2323,7 @@ private fun CapabilitySheet(
             }
             TextButton(onClick = onRefresh) { Text("Check") }
         }
-        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.medium) {
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = NexyChatSurfaceShape) {
             Text(
                 when {
                     !desktopConnected && desktopOnly -> "This setup needs the connected desktop. MCP credentials and browser sessions stay there."
@@ -2391,6 +2499,7 @@ private fun InReplyToBanner(
                 .clickable { onScrollToRequest(groupIdx) },
             color = MaterialTheme.colorScheme.surfaceVariant,
             shadowElevation = 2.dp,
+            shape = NexyChatSurfaceShape,
         ) {
             Row(
                 modifier = Modifier

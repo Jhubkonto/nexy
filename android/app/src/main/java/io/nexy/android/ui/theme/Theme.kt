@@ -29,6 +29,12 @@ val NexySurfaceShape: Shape
     @ReadOnlyComposable
     get() = if (LocalNexyEightBit.current) RectangleShape else MaterialTheme.shapes.medium
 
+/** The compact radius used by interactive chat surfaces. */
+val NexyChatSurfaceShape: Shape
+    @Composable
+    @ReadOnlyComposable
+    get() = MaterialTheme.shapes.small
+
 val NexyNotificationDotShape: Shape
     @Composable
     @ReadOnlyComposable

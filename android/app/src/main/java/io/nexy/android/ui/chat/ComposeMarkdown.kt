@@ -100,6 +100,21 @@ fun spannedToInlineAnnotatedString(spanned: Spanned, colors: InlineMarkdownColor
     return builder.toAnnotatedString()
 }
 
+/** Adds a case-insensitive find-in-chat marker without disturbing existing markdown styles. */
+fun AnnotatedString.withSearchHighlights(query: String?, background: Color): AnnotatedString {
+    val needle = query?.trim().orEmpty()
+    if (needle.isEmpty()) return this
+    val source = text
+    return AnnotatedString.Builder().apply {
+        append(this@withSearchHighlights)
+        var start = source.indexOf(needle, ignoreCase = true)
+        while (start >= 0) {
+            addStyle(SpanStyle(background = background), start, start + needle.length)
+            start = source.indexOf(needle, start + needle.length, ignoreCase = true)
+        }
+    }.toAnnotatedString()
+}
+
 private fun linkAnnotation(url: String, color: Color) = LinkAnnotation.Url(
     url,
     TextLinkStyles(SpanStyle(color = color, textDecoration = TextDecoration.Underline)),
@@ -108,10 +123,13 @@ private fun linkAnnotation(url: String, color: Color) = LinkAnnotation.Url(
 /** Literal Markdown source used by the chat's raw view. Selection is retained, while Compose
  * preserves fences, markers, indentation, and line breaks without invoking Markwon. */
 @Composable
-fun RawMarkdownText(markdown: String, modifier: Modifier = Modifier) {
+fun RawMarkdownText(markdown: String, modifier: Modifier = Modifier, searchQuery: String? = null) {
     SelectionContainer(modifier = modifier.fillMaxWidth()) {
         Text(
-            text = markdown,
+            text = AnnotatedString(markdown).withSearchHighlights(
+                searchQuery,
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+            ),
             color = MaterialTheme.colorScheme.onSurface,
             fontFamily = FontFamily.Monospace,
             fontSize = 14.sp,

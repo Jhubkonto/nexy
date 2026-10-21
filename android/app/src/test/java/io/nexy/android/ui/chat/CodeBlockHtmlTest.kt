@@ -72,4 +72,12 @@ class CodeBlockHtmlTest {
         assertTrue(html.contains("AndroidBridge.onCopy"))
         assertTrue(html.contains("AndroidBridge.reportHeight"))
     }
+
+    @Test
+    fun safelyEmbedsSearchTermForCodeHighlighting() {
+        val html = buildCodeBlockHtml("kotlin", "val needle = 1", searchQuery = "</script>")
+
+        assertTrue(html.contains("const searchQuery = \"\\u003c/script\\u003e\""))
+        assertTrue(html.contains("document.createTreeWalker"))
+    }
 }

@@ -39,6 +39,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -62,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import io.nexy.android.data.ConnectionState
 import io.nexy.android.data.WsRepository
 import io.nexy.android.data.model.McpServerInfo
+import io.nexy.android.data.model.McpSandboxProfile
 import io.nexy.android.data.model.McpToolInfo
 import io.nexy.android.data.model.McpCatalogEntry
 import io.nexy.android.data.model.McpCatalogRequiredEnv
@@ -162,14 +164,14 @@ fun McpServersScreen(onBack: () -> Unit) {
                 registryError = null
                 WsRepository.searchMcpRegistry(query)
             },
-            onConfirm = { name, description, command, args, env, imageResponses, enabled ->
-                WsRepository.addMcpServer(name = name, description = description, command = command, args = args, env = env, imageResponses = imageResponses, enabled = enabled)
+            onConfirm = { name, description, command, args, env, imageResponses, sandboxProfile, enabled ->
+                WsRepository.addMcpServer(name = name, description = description, command = command, args = args, env = env, imageResponses = imageResponses, sandboxProfile = sandboxProfile, enabled = enabled)
                 showAddSheet = false
             },
-            onTest = { command, args, env, imageResponses ->
+            onTest = { command, args, env, imageResponses, sandboxProfile ->
                 testingConnection = true
                 testResult = null
-                WsRepository.testMcpServer(command, args, env, imageResponses)
+                WsRepository.testMcpServer(command, args, env, imageResponses, sandboxProfile)
             },
             testingConnection = testingConnection,
             testResult = testResult,
@@ -180,9 +182,9 @@ fun McpServersScreen(onBack: () -> Unit) {
         McpEditSheet(
             server = editingServer!!,
             initialDescription = editingServer!!.description.ifBlank { catalogDescription(editingServer!!, mcpCatalog) },
-            onConfirm = { name, description, command, args, enabled ->
+            onConfirm = { name, description, command, args, sandboxProfile, enabled ->
                 val existing = editingServer!!
-                WsRepository.updateMcpServer(existing.id, name = name, description = description, command = command, args = args.split(" ").filter { it.isNotBlank() }, enabled = enabled)
+                WsRepository.updateMcpServer(existing.id, name = name, description = description, command = command, args = parseMcpArguments(args), sandboxProfile = sandboxProfile, enabled = enabled)
                 editingServer = null
             },
             onDismiss = { editingServer = null },
@@ -830,6 +832,10 @@ private enum class McpAddType(val label: String, val description: String) {
     Manual("Manual / advanced", "Enter the command and arguments yourself"),
 }
 
+/** Each physical line represents exactly one argv entry; whitespace is never a separator. */
+private fun parseMcpArguments(value: String): List<String> =
+    value.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.toList()
+
 @Composable
 private fun McpCatalogCard(entry: McpCatalogEntry, onClick: () -> Unit) {
     Card(
@@ -924,8 +930,8 @@ private fun McpAddWizard(
     registryLoading: Boolean,
     registryError: String?,
     onSearchRegistry: (String) -> Unit,
-    onConfirm: (name: String, description: String, command: String, args: List<String>, env: Map<String, String>, imageResponses: String?, enabled: Boolean) -> Unit,
-    onTest: (command: String, args: List<String>, env: Map<String, String>, imageResponses: String?) -> Unit,
+    onConfirm: (name: String, description: String, command: String, args: List<String>, env: Map<String, String>, imageResponses: String?, sandboxProfile: McpSandboxProfile, enabled: Boolean) -> Unit,
+    onTest: (command: String, args: List<String>, env: Map<String, String>, imageResponses: String?, sandboxProfile: McpSandboxProfile) -> Unit,
     testingConnection: Boolean,
     testResult: WsEvent.McpTestResult?,
     onDismiss: () -> Unit,
@@ -952,6 +958,8 @@ private fun McpAddWizard(
     var requiredEnvValues by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var registryRequiredEnv by remember { mutableStateOf<List<McpRegistryEnvRequirement>>(emptyList()) }
     var enabled by remember { mutableStateOf(true) }
+    var networkAllowed by remember { mutableStateOf(false) }
+    var childProcessesAllowed by remember { mutableStateOf(false) }
 
     fun chooseCatalog(entry: McpCatalogEntry) {
         registryBrowse = false
@@ -961,12 +969,16 @@ private fun McpAddWizard(
         description = entry.description
         requiredEnvValues = entry.requiredEnv.associate { it.key to entry.env[it.key].orEmpty() }
         enabled = true
+        networkAllowed = false
+        childProcessesAllowed = false
         val packageIndex = if (entry.args.firstOrNull() == "-y") 1 else 0
         val packageName = entry.args.getOrNull(packageIndex).orEmpty()
         if (entry.command == "npx" && packageName.isNotBlank()) {
             selectedType = McpAddType.Npm
             npmPackage = packageName
-            npmExtraArgs = entry.args.drop(packageIndex + 1).joinToString(" ")
+            npmExtraArgs = entry.args.drop(packageIndex + 1).joinToString("\n")
+            networkAllowed = true
+            childProcessesAllowed = true
         } else {
             selectedType = McpAddType.Manual
             manualCommand = entry.command
@@ -983,11 +995,15 @@ private fun McpAddWizard(
         name = entry.title ?: entry.name
         description = entry.description
         enabled = true
+        networkAllowed = false
+        childProcessesAllowed = false
         selectedType = if (install.command == "npx") McpAddType.Npm else McpAddType.Manual
         if (selectedType == McpAddType.Npm) {
             val packageIndex = if (install.args.firstOrNull() == "-y") 1 else 0
             npmPackage = install.args.getOrNull(packageIndex).orEmpty()
-            npmExtraArgs = install.args.drop(packageIndex + 1).joinToString(" ")
+            npmExtraArgs = install.args.drop(packageIndex + 1).joinToString("\n")
+            networkAllowed = true
+            childProcessesAllowed = true
         } else {
             manualCommand = install.command
             manualArgs = install.args.joinToString(" ")
@@ -997,20 +1013,20 @@ private fun McpAddWizard(
 
     fun buildCommandAndArgs(): Pair<String, List<String>> = when (selectedType) {
         McpAddType.Npm -> {
-            val extra = npmExtraArgs.trim().split(" ").filter { it.isNotBlank() }
+            val extra = parseMcpArguments(npmExtraArgs)
             "npx" to (listOf("-y", npmPackage.trim()) + extra)
         }
         McpAddType.LocalScript -> {
             val parts = scriptPath.trim().split(" ").filter { it.isNotBlank() }
             val cmd = parts.firstOrNull() ?: ""
-            cmd to (parts.drop(1) + scriptArgs.trim().split(" ").filter { it.isNotBlank() })
+            cmd to (parts.drop(1) + parseMcpArguments(scriptArgs))
         }
         McpAddType.Docker -> {
-            val extra = dockerArgs.trim().split(" ").filter { it.isNotBlank() }
+            val extra = parseMcpArguments(dockerArgs)
             "docker" to (listOf("run", "--rm", "-i", dockerImage.trim()) + extra)
         }
         McpAddType.Manual -> {
-            manualCommand.trim() to manualArgs.trim().split(" ").filter { it.isNotBlank() }
+            manualCommand.trim() to parseMcpArguments(manualArgs)
         }
         null -> "" to emptyList()
     }
@@ -1188,7 +1204,16 @@ private fun McpAddWizard(
                             Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { selectedType = type },
+                                    .clickable {
+                                        selectedType = type
+                                        if (type == McpAddType.Npm) {
+                                            networkAllowed = true
+                                            childProcessesAllowed = true
+                                        } else {
+                                            networkAllowed = false
+                                            childProcessesAllowed = false
+                                        }
+                                    },
                                 border = BorderStroke(
                                     width = if (selected) 2.dp else 1.dp,
                                     color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
@@ -1226,28 +1251,28 @@ private fun McpAddWizard(
                     when (selectedType) {
                         McpAddType.Npm -> {
                             OutlinedTextField(value = npmPackage, onValueChange = { npmPackage = it }, label = { Text("npm package") }, placeholder = { Text("e.g. @modelcontextprotocol/server-filesystem") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                            OutlinedTextField(value = npmExtraArgs, onValueChange = { npmExtraArgs = it }, label = { Text("Extra arguments (optional)") }, placeholder = { Text("e.g. /Users/me/projects") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            OutlinedTextField(value = npmExtraArgs, onValueChange = { npmExtraArgs = it }, label = { Text("Extra arguments (one per line)") }, placeholder = { Text("e.g. https://easy8.example/mcp\n--header\nX-Easy8-API-Key: your-key") }, minLines = 2, maxLines = 5, modifier = Modifier.fillMaxWidth())
                             Text("Runs: npx -y <package> [args]", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         McpAddType.LocalScript -> {
                             OutlinedTextField(value = scriptPath, onValueChange = { scriptPath = it }, label = { Text("Script or binary path") }, placeholder = { Text("e.g. /usr/local/bin/mcp-server") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                            OutlinedTextField(value = scriptArgs, onValueChange = { scriptArgs = it }, label = { Text("Arguments (optional)") }, placeholder = { Text("e.g. /path/to/script.py") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            OutlinedTextField(value = scriptArgs, onValueChange = { scriptArgs = it }, label = { Text("Arguments (one per line, optional)") }, placeholder = { Text("e.g. /path/to/script.py") }, minLines = 2, maxLines = 5, modifier = Modifier.fillMaxWidth())
                         }
                         McpAddType.Docker -> {
                             OutlinedTextField(value = dockerImage, onValueChange = { dockerImage = it }, label = { Text("Docker image") }, placeholder = { Text("e.g. mcp/filesystem:latest") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                            OutlinedTextField(value = dockerArgs, onValueChange = { dockerArgs = it }, label = { Text("Extra docker run arguments (optional)") }, placeholder = { Text("e.g. -v /host:/container") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            OutlinedTextField(value = dockerArgs, onValueChange = { dockerArgs = it }, label = { Text("Extra docker arguments (one per line)") }, placeholder = { Text("e.g. -v\n/host:/container") }, minLines = 2, maxLines = 5, modifier = Modifier.fillMaxWidth())
                             Text("Runs: docker run --rm -i <image> [args]", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         McpAddType.Manual -> {
                             OutlinedTextField(value = manualCommand, onValueChange = { manualCommand = it }, label = { Text("Command") }, placeholder = { Text("e.g. npx") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                            OutlinedTextField(value = manualArgs, onValueChange = { manualArgs = it }, label = { Text("Arguments (space-separated)") }, placeholder = { Text("e.g. -y @modelcontextprotocol/server-github") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                            Text("Copy these values from the server's installation documentation. The next step lets you test the connection before adding it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            OutlinedTextField(value = manualArgs, onValueChange = { manualArgs = it }, label = { Text("Arguments (one per line)") }, placeholder = { Text("e.g. -y\nmcp-remote\nhttps://easy8.example/mcp\n--header\nX-Easy8-API-Key: your-key") }, minLines = 3, maxLines = 6, modifier = Modifier.fillMaxWidth())
+                            Text("Enter each command argument on its own line. This preserves headers and paths that contain spaces. The next step lets you test the connection before adding it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         null -> {}
                     }
                     activeRequiredEnv.takeIf { it.isNotEmpty() }?.let { requirements ->
                         Text("Credentials", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                        Text("These values are sent to the desktop only as server environment variables.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Sent over the paired, certificate-pinned connection and stored encrypted on this desktop only. They are never shown in the server list or synchronized elsewhere.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         requirements.forEach { requirement ->
                             OutlinedTextField(
                                 value = requiredEnvValues[requirement.key].orEmpty(),
@@ -1270,9 +1295,25 @@ private fun McpAddWizard(
                             }
                         }
                     }
+                    Text("Launch permissions", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    Text("Required by npm bridges such as Easy8. Keep both off unless this server needs them.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Allow network access", style = MaterialTheme.typography.bodyMedium)
+                            Text("Lets the server reach its remote service and download an npm package on first use.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        McpPermissionSwitch(checked = networkAllowed, onCheckedChange = { networkAllowed = it })
+                    }
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Allow child processes", style = MaterialTheme.typography.bodyMedium)
+                            Text("Lets npx start the MCP package while keeping it sandboxed.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        McpPermissionSwitch(checked = childProcessesAllowed, onCheckedChange = { childProcessesAllowed = it })
+                    }
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("Enable on save", style = MaterialTheme.typography.bodyMedium)
-                        Switch(checked = enabled, onCheckedChange = { enabled = it })
+                        McpPermissionSwitch(checked = enabled, onCheckedChange = { enabled = it })
                     }
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         NexyGhostButton(text = "Back", onClick = { step = 0 })
@@ -1296,6 +1337,8 @@ private fun McpAddWizard(
                             ReviewRow("Name", name)
                             ReviewRow("Type", selectedType?.label ?: "")
                             ReviewRow("Enabled", if (enabled) "Yes" else "No")
+                            ReviewRow("Network access", if (networkAllowed) "Allowed" else "Blocked")
+                            ReviewRow("Child processes", if (childProcessesAllowed) "Allowed" else "Blocked")
                             activeRequiredEnv.takeIf { it.isNotEmpty() }?.let {
                                 ReviewRow("Credentials", "${it.size} value(s) provided")
                             }
@@ -1322,7 +1365,7 @@ private fun McpAddWizard(
                                 text = if (testingConnection) "Testing…" else "Test connection",
                                 onClick = {
                                     val env = (selectedCatalog?.env.orEmpty() + requiredEnvValues).filterValues { it.isNotBlank() }
-                                    onTest(previewCommand, previewArgs, env, selectedCatalog?.imageResponses)
+                                    onTest(previewCommand, previewArgs, env, selectedCatalog?.imageResponses, McpSandboxProfile(network = if (networkAllowed) "allowed" else "blocked", childProcesses = if (childProcessesAllowed) "allowed" else "blocked"))
                                 },
                                 enabled = !testingConnection && previewCommand.isNotBlank() && step2Valid,
                             )
@@ -1330,7 +1373,7 @@ private fun McpAddWizard(
                                 text = "Add server",
                                 onClick = {
                                     val env = (selectedCatalog?.env.orEmpty() + requiredEnvValues).filterValues { it.isNotBlank() }
-                                    onConfirm(name.trim(), description.trim(), previewCommand, previewArgs, env, selectedCatalog?.imageResponses, enabled)
+                                    onConfirm(name.trim(), description.trim(), previewCommand, previewArgs, env, selectedCatalog?.imageResponses, McpSandboxProfile(network = if (networkAllowed) "allowed" else "blocked", childProcesses = if (childProcessesAllowed) "allowed" else "blocked"), enabled)
                                 },
                                 enabled = previewCommand.isNotBlank() && step2Valid,
                             )
@@ -1355,19 +1398,21 @@ private fun ReviewRow(label: String, value: String) {
 private fun McpEditSheet(
     server: McpServerInfo,
     initialDescription: String,
-    onConfirm: (name: String, description: String, command: String, args: String, enabled: Boolean) -> Unit,
+    onConfirm: (name: String, description: String, command: String, args: String, sandboxProfile: McpSandboxProfile, enabled: Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var name by remember { mutableStateOf(server.name) }
     var description by remember { mutableStateOf(initialDescription) }
     var command by remember { mutableStateOf(server.command) }
-    var args by remember { mutableStateOf(server.args.joinToString(" ")) }
+    var args by remember { mutableStateOf(server.args.joinToString("\n")) }
+    var networkAllowed by remember { mutableStateOf(server.sandboxProfile.network == "allowed") }
+    var childProcessesAllowed by remember { mutableStateOf(server.sandboxProfile.childProcesses == "allowed") }
     var enabled by remember { mutableStateOf(server.enabled) }
 
     NexyFormSheet(
         title = "Edit MCP Server",
         confirmLabel = "Save",
-        onConfirm = { onConfirm(name.trim(), description.trim(), command.trim(), args.trim(), enabled) },
+        onConfirm = { onConfirm(name.trim(), description.trim(), command.trim(), args.trim(), McpSandboxProfile(network = if (networkAllowed) "allowed" else "blocked", childProcesses = if (childProcessesAllowed) "allowed" else "blocked"), enabled) },
         onDismiss = onDismiss,
         confirmEnabled = name.isNotBlank() && command.isNotBlank(),
     ) {
@@ -1377,11 +1422,34 @@ private fun McpEditSheet(
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(value = command, onValueChange = { command = it }, label = { Text("Command") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         Spacer(Modifier.height(8.dp))
-        OutlinedTextField(value = args, onValueChange = { args = it }, label = { Text("Arguments (space-separated)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(value = args, onValueChange = { args = it }, label = { Text("Arguments (one per line)") }, modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 6)
+        Spacer(Modifier.height(8.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Allow network access", style = MaterialTheme.typography.bodyMedium)
+            McpPermissionSwitch(checked = networkAllowed, onCheckedChange = { networkAllowed = it })
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Allow child processes", style = MaterialTheme.typography.bodyMedium)
+            McpPermissionSwitch(checked = childProcessesAllowed, onCheckedChange = { childProcessesAllowed = it })
+        }
         Spacer(Modifier.height(8.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Enabled", style = MaterialTheme.typography.bodyMedium)
-            Switch(checked = enabled, onCheckedChange = { enabled = it })
+            McpPermissionSwitch(checked = enabled, onCheckedChange = { enabled = it })
         }
     }
+}
+
+/** Keeps an unchecked permission control visibly switchable in every app colour scheme. */
+@Composable
+private fun McpPermissionSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Switch(
+        checked = checked,
+        onCheckedChange = onCheckedChange,
+        colors = SwitchDefaults.colors(
+            uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant,
+            uncheckedBorderColor = MaterialTheme.colorScheme.outline,
+        ),
+    )
 }

@@ -1,6 +1,10 @@
 package io.nexy.android.ui.chat
 
 import android.content.Context
+import android.text.Spannable
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.BackgroundColorSpan
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
@@ -36,6 +40,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -98,6 +103,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -206,19 +212,36 @@ private fun applyMarkdownOrFallback(
     textView: TextView,
     markdown: String,
     parsedMarkdown: android.text.Spanned?,
+    searchQuery: String?,
+    searchHighlightArgb: Int,
 ) {
     // A Spanned is used as the tag so a raw fallback and the final rich text are distinct even
     // though they share the same markdown source. This avoids reparsing/reapplying during
     // unrelated parent recompositions.
-    if (parsedMarkdown == null) {
-        if (textView.tag == markdown) return
-        textView.text = markdown
-        textView.tag = markdown
-    } else {
-        if (textView.tag === parsedMarkdown) return
-        markwon.setParsedMarkdown(textView, parsedMarkdown)
-        textView.tag = parsedMarkdown
+    val normalizedQuery = searchQuery?.trim().orEmpty()
+    val currentTag = textView.tag as? MarkdownRenderTag
+    if (currentTag?.markdown == markdown && currentTag.parsedMarkdown === parsedMarkdown && currentTag.searchQuery == normalizedQuery) {
+        return
     }
+    if (parsedMarkdown == null) {
+        textView.text = markdown
+    } else {
+        markwon.setParsedMarkdown(textView, parsedMarkdown)
+    }
+    if (normalizedQuery.isNotEmpty()) {
+        val highlighted = (textView.text as? Spannable) ?: SpannableStringBuilder(textView.text).also { textView.text = it }
+        var start = highlighted.toString().indexOf(normalizedQuery, ignoreCase = true)
+        while (start >= 0) {
+            highlighted.setSpan(
+                BackgroundColorSpan(searchHighlightArgb),
+                start,
+                start + normalizedQuery.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+            start = highlighted.toString().indexOf(normalizedQuery, start + normalizedQuery.length, ignoreCase = true)
+        }
+    }
+    textView.tag = MarkdownRenderTag(markdown, parsedMarkdown, normalizedQuery)
     // LazyColumn can compose/measure this row (e.g. during prefetch, or right as it scrolls
     // into view) before it has settled on its final width. TextView.setText() only requests a
     // layout pass if the View is already attached with a live parent; when that first pass
@@ -228,6 +251,12 @@ private fun applyMarkdownOrFallback(
     // width Compose is actually imposing right now, instead of leaning on a lucky recycle.
     textView.requestLayout()
 }
+
+private data class MarkdownRenderTag(
+    val markdown: String,
+    val parsedMarkdown: android.text.Spanned?,
+    val searchQuery: String,
+)
 
 internal fun isMarkdownWidthReady(targetWidthPx: Int, viewWidthPx: Int, parentWidthPx: Int): Boolean =
     targetWidthPx > 0 && viewWidthPx >= targetWidthPx && parentWidthPx >= targetWidthPx
@@ -297,10 +326,11 @@ internal fun ChatMarkdownText(
     streaming: Boolean,
     debugKey: String,
     viewMode: MarkdownViewMode = MarkdownViewMode.Rendered,
+    searchQuery: String? = null,
     modifier: Modifier = Modifier,
 ) {
     if (viewMode == MarkdownViewMode.Raw) {
-        RawMarkdownText(markdown, modifier)
+        RawMarkdownText(markdown, modifier, searchQuery)
         return
     }
     if (!streaming) {
@@ -324,7 +354,10 @@ internal fun ChatMarkdownText(
         if (annotated != null) {
             SelectionContainer(modifier = modifier.fillMaxWidth()) {
                 Text(
-                    text = annotated,
+                    text = annotated.withSearchHighlights(
+                        searchQuery,
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                    ),
                     color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 14.sp,
                     lineHeight = 20.sp,
@@ -333,7 +366,7 @@ internal fun ChatMarkdownText(
             return
         }
     }
-    ChatMarkdownAndroidView(markdown = markdown, streaming = streaming, debugKey = debugKey, modifier = modifier)
+    ChatMarkdownAndroidView(markdown = markdown, streaming = streaming, debugKey = debugKey, searchQuery = searchQuery, modifier = modifier)
 }
 
 /** Width-safe Android TextView boundary for streaming text and block-level Markwon content. */
@@ -342,6 +375,7 @@ private fun ChatMarkdownAndroidView(
     markdown: String,
     streaming: Boolean,
     debugKey: String,
+    searchQuery: String?,
     modifier: Modifier = Modifier,
 ) {
     val textColorArgb = MaterialTheme.colorScheme.onSurface.toArgb()
@@ -349,6 +383,7 @@ private fun ChatMarkdownAndroidView(
     // SelectionContainer background (primary @ 0.4 alpha) so selected block-level markdown
     // (headings/lists) shows a visible tinted band instead of an invisible highlight.
     val selectionHighlightArgb = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f).toArgb()
+    val searchHighlightArgb = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f).toArgb()
     val markwon = LocalMarkwon.current
     val parsedMarkdown = if (streaming) null else rememberParsedMarkdown(markwon, markdown)
     val displayedText = if (streaming) rememberRevealedText(markdown) else markdown
@@ -448,7 +483,7 @@ private fun ChatMarkdownAndroidView(
                     // a tap forced a relayout. Cancel any leftover streaming defer and apply the
                     // markdown synchronously so the very first pass measures the true height.
                     view.cancelPendingRender()
-                    applyMarkdownOrFallback(markwon, view, markdown, parsedMarkdown)
+                    applyMarkdownOrFallback(markwon, view, markdown, parsedMarkdown, searchQuery, searchHighlightArgb)
                 }
                 view.post {
                     val textLayout = view.layout
@@ -580,23 +615,32 @@ fun ThinkingBubble(activity: ChatTurnActivity, generationStartedAt: Long? = null
 
 @Composable
 fun TypingDots(dotColor: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
+    val transition = rememberInfiniteTransition(label = "typing-dots")
     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-        repeat(3) {
+        repeat(3) { index ->
+            val delayMs = index * 120
+            val verticalOffset by transition.animateFloat(
+                initialValue = 0f,
+                targetValue = 0f,
+                animationSpec = infiniteRepeatable(
+                    animation = keyframes {
+                        durationMillis = 900
+                        0f at 0
+                        if (delayMs > 0) 0f at delayMs
+                        -5f at delayMs + 150 using FastOutSlowInEasing
+                        0f at delayMs + 300 using LinearOutSlowInEasing
+                        0f at 900
+                    },
+                    repeatMode = RepeatMode.Restart,
+                ),
+                label = "typing-dot-$index",
+            )
             Box(
                 modifier = Modifier
                     .size(8.dp)
-                    .background(
-                        dotColor,
-                        RoundedCornerShape(1.dp),
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .background(dotColor, RoundedCornerShape(1.dp)),
-                )
-            }
+                    .offset(y = verticalOffset.dp)
+                    .background(dotColor, CircleShape),
+            )
         }
     }
 }
@@ -771,10 +815,11 @@ fun ExpandedResponseTextSegment(
     content: String,
     debugKey: String = "response-text-segment",
     viewMode: MarkdownViewMode = MarkdownViewMode.Rendered,
+    searchQuery: String? = null,
 ) {
     if (content.isBlank()) return
     if (viewMode == MarkdownViewMode.Raw) {
-        RawMarkdownText(content)
+        RawMarkdownText(content, searchQuery = searchQuery)
         return
     }
     val segments = remember(content) { splitCodeBlocks(content) }
@@ -791,11 +836,12 @@ fun ExpandedResponseTextSegment(
                                 segment.markdown,
                                 streaming = false,
                                 debugKey = "$debugKey:$index",
+                                searchQuery = searchQuery,
                             )
                         }
                     }
                     is MessageSegment.Code -> {
-                        CodeBlockWebView(language = segment.language, code = segment.code)
+                        CodeBlockWebView(language = segment.language, code = segment.code, searchQuery = searchQuery)
                     }
                 }
             }
@@ -825,6 +871,7 @@ fun MessageBubble(
     onShare: (() -> Unit)? = null,
     isHighlighted: Boolean = false,
     markdownViewMode: MarkdownViewMode = MarkdownViewMode.Rendered,
+    searchQuery: String? = null,
 ) {
     val isUser = msg.isUser
     val timeLabel = relativeTime(msg.timestamp)
@@ -850,6 +897,10 @@ fun MessageBubble(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .background(
+                        if (isHighlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else Color.Transparent,
+                        RoundedCornerShape(6.dp),
+                    )
                     .combinedClickable(onClick = {}, onLongClick = { menuExpanded = true }),
             ) {
                 DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
@@ -908,7 +959,7 @@ fun MessageBubble(
                     ) {
                         if (effectiveText.isNotBlank()) {
                             if (markdownViewMode == MarkdownViewMode.Raw) {
-                                RawMarkdownText(effectiveRawText)
+                                RawMarkdownText(effectiveRawText, searchQuery = searchQuery)
                             } else {
                             // Fenced code blocks are pulled out of the markdown before Markwon
                             // ever sees it and rendered by a dedicated composable (plain text
@@ -935,6 +986,7 @@ fun MessageBubble(
                                                         markdown = segment.markdown,
                                                         streaming = msg.isStreaming,
                                                         debugKey = "message:${msg.id.ifBlank { msg.timestamp.toString() }}:$index",
+                                                        searchQuery = searchQuery,
                                                     )
                                                 }
                                             }
@@ -950,7 +1002,10 @@ fun MessageBubble(
                                                         shape = RoundedCornerShape(8.dp),
                                                     ) {
                                                         Text(
-                                                            segment.code,
+                                                            AnnotatedString(segment.code).withSearchHighlights(
+                                                                searchQuery,
+                                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                                                            ),
                                                             modifier = Modifier.padding(12.dp),
                                                             color = Color(0xFFCDD6F4),
                                                             fontFamily = FontFamily.Monospace,
@@ -961,6 +1016,7 @@ fun MessageBubble(
                                                     CodeBlockWebView(
                                                         language = segment.language,
                                                         code = segment.code,
+                                                        searchQuery = searchQuery,
                                                     )
                                                 }
                                             }
@@ -1057,7 +1113,7 @@ fun MessageBubble(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(bubbleColor, bubbleShape)
-                    .border(2.dp, MaterialTheme.colorScheme.outline, bubbleShape)
+                    .border(2.dp, if (isHighlighted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, bubbleShape)
                     .combinedClickable(onClick = {}, onLongClick = { menuExpanded = true })
                     .padding(horizontal = 16.dp, vertical = 12.dp),
             ) {
@@ -1071,7 +1127,14 @@ fun MessageBubble(
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     if (displayText.isNotBlank()) {
-                        Text(displayText, color = textColor, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            AnnotatedString(displayText).withSearchHighlights(
+                                searchQuery,
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                            ),
+                            color = textColor,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
                     }
                     if (msg.attachments.isNotEmpty()) {
                         val thumbs = msg.attachments.filter { it.type == "image" && it.thumbnailDataUrl != null }
