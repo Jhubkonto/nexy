@@ -1301,7 +1301,7 @@ export async function dispatchChatSend(
       const cliMcpServers =
         (effectiveBackend === 'claude-cli' || effectiveBackend === 'codex-cli' || effectiveBackend === 'hermes-cli') &&
         agentHasAssignedMcpServers
-          ? getMcpServerConfigsForCli(effectiveMcpServerIds)
+          ? await getMcpServerConfigsForCli(effectiveMcpServerIds)
           : undefined
 
       type PendingTool = { name: string; input: Record<string, unknown>; startTime: number }

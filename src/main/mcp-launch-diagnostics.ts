@@ -13,6 +13,8 @@ import type { McpLaunchAction, McpLaunchFailure, McpLaunchStage } from '../share
 export interface LaunchObservation {
   /** Present for Nexy's managed Playwright runtime. */
   managedMode?: 'launch' | 'cdp'
+  /** Present when a Windows npx configuration uses Nexy's managed Node runtime. */
+  managedNodeRuntime?: boolean
   platform?: NodeJS.Platform
   /** Thrown before the helper ran: runtime not installed, helper unavailable, … */
   preflightError?: string
@@ -63,8 +65,9 @@ function win32Hint(text: string): string {
 /** The most informative single line of server error output, for the summary. */
 export function keyErrorLine(stderr: string): string | undefined {
   const lines = stderr.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const npmFailure = lines.find((line) => /^npm (?:error|ERR!)\s+(?:Error:|[^\s]*Error:)/i.test(line))
   const preferred = lines.find((line) => /^(?:mcp-sandbox:|error\b|[A-Za-z]*Error:|fatal\b)/i.test(line))
-  return preferred ?? lines.at(-1)
+  return preferred ?? npmFailure ?? lines.at(-1)
 }
 
 function withoutEditSetup(actions: McpLaunchAction[], managed: boolean): McpLaunchAction[] {
@@ -81,6 +84,17 @@ export function classifyLaunchFailure(observation: LaunchObservation): McpLaunch
     ({ ...failure, actions: withoutEditSetup(failure.actions, managed) })
 
   if (preflightError) {
+    if (/Managed Node runtime installation requires network access/i.test(preflightError)) {
+      return make({
+        kind: 'runtime-download-failed',
+        title: 'Managed Node needs network access',
+        explanation: 'Enable network access in this MCP server’s setup so Nexy can install its managed Node runtime, then retry.',
+        actions: ['edit-setup', 'retry'],
+      })
+    }
+    if (/Managed Node runtime (?:installation|download|requires network)|Managed Node download/i.test(preflightError)) {
+      return make({ kind: 'runtime-download-failed', title: 'Managed Node runtime could not be installed', explanation: preflightError, actions: ['retry'] })
+    }
     if (/Managed Chromium is downloading/i.test(preflightError)) {
       return make({ kind: 'runtime-downloading', title: 'Chromium is still downloading', explanation: 'Wait for the managed Chromium download to finish, then retry.', actions: ['retry'] })
     }
@@ -162,13 +176,14 @@ const SANDBOX_KINDS = new Set(['helper-unavailable', 'sandbox', 'filesystem', 'c
 export function buildLaunchStages(observation: LaunchObservation, failure: McpLaunchFailure | undefined): McpLaunchStage[] {
   const stages: McpLaunchStage[] = []
   const managed = observation.managedMode
+  const managedNode = Boolean(observation.managedNodeRuntime)
   const preflightFailed = Boolean(observation.preflightError)
-  const runtimeFailed = failure?.kind === 'runtime-missing' || failure?.kind === 'runtime-downloading'
+  const runtimeFailed = failure?.kind === 'runtime-missing' || failure?.kind === 'runtime-downloading' || failure?.kind === 'runtime-download-failed'
 
-  if (managed) {
+  if (managed || managedNode) {
     stages.push({
       id: 'runtime',
-      label: 'Managed Chromium installed',
+      label: managed ? 'Managed Chromium installed' : 'Managed Node runtime ready',
       state: runtimeFailed ? 'failed' : preflightFailed ? 'not-run' : 'passed',
       ...(runtimeFailed ? { detail: failure.title } : {}),
     })

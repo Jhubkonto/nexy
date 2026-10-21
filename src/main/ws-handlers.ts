@@ -126,7 +126,7 @@ import {
 } from './rating-handlers'
 import { getActivitySnapshot, endActivity } from './activity-tracker'
 import { clearUnseenDestination, getNewContentConversations, markAllConversationsRead } from './activity-badge'
-import { getMcpServersForCompanion, getMcpServerStatus, addMcpServer, updateMcpServer, removeMcpServer, restartMcpServer, listMcpTools, listMcpToolsForAgent, testMcpServer } from './mcp'
+import { getMcpServersForCompanion, getMcpServersWithStatus, getMcpServerStatus, addMcpServer, updateMcpServer, removeMcpServer, restartMcpServer, listMcpTools, listMcpToolsForAgent, testMcpServer, preserveCompanionSecretArguments } from './mcp'
 import { searchMcpRegistry } from './mcp-registry'
 import { MCP_CATALOG } from '../shared/mcp-catalog'
 import { normalizeMcpSandboxProfile } from '../shared/mcp-sandbox'
@@ -2124,13 +2124,18 @@ export function registerWsHandlers(): void {
       const command2 = typeof data.command === 'string' ? data.command.trim() : ''
       if (!name || !command2) return
       const args = Array.isArray(data.args) ? (data.args as string[]) : []
+      const env = data.env && typeof data.env === 'object' && !Array.isArray(data.env)
+        ? Object.fromEntries(Object.entries(data.env as Record<string, unknown>).flatMap(([key, value]) =>
+          typeof value === 'string' && key.length > 0 ? [[key, value]] : []))
+        : {}
       const cwd = typeof data.cwd === 'string' ? data.cwd : undefined
       const imageResponses = data.imageResponses === 'allow' || data.imageResponses === 'omit' ? data.imageResponses : undefined
       const enabled = typeof data.enabled === 'boolean' ? data.enabled : true
       const sandboxProfile = normalizeMcpSandboxProfile(data.sandboxProfile)
-      // Environment secrets are desktop-owned. Android can create a server, but it
-      // cannot inject or overwrite the encrypted env map through the companion link.
-      void addMcpServer({ name, description, command: command2, args, env: {}, cwd, imageResponses, sandboxProfile, enabled }).then((server) => {
+      // A paired device may explicitly provide credentials during live setup. The
+      // certificate-pinned companion connection carries them to the desktop-only,
+      // encrypted MCP configuration; they are never included in companion responses.
+      void addMcpServer({ name, description, command: command2, args, env, cwd, imageResponses, sandboxProfile, enabled }).then((server) => {
         const s = getMcpServerStatus(server.id)
         const safeServer = getMcpServersForCompanion().find((entry) => entry.id === server.id)
         if (!safeServer) return
@@ -2148,7 +2153,14 @@ export function registerWsHandlers(): void {
       if (typeof data.name === 'string') updates.name = data.name
       if (typeof data.description === 'string') updates.description = data.description
       if (typeof data.command === 'string') updates.command = data.command
-      if (Array.isArray(data.args)) updates.args = data.args
+      if (Array.isArray(data.args)) {
+        const existing = getMcpServersWithStatus().find((server) => server.id === id)
+        updates.args = existing ? preserveCompanionSecretArguments(existing.args, data.args as string[]) : data.args
+      }
+      if (data.env && typeof data.env === 'object' && !Array.isArray(data.env)) {
+        updates.env = Object.fromEntries(Object.entries(data.env as Record<string, unknown>).flatMap(([key, value]) =>
+          typeof value === 'string' && key.length > 0 ? [[key, value]] : []))
+      }
       if (typeof data.cwd === 'string') updates.cwd = data.cwd || undefined
       if (typeof data.enabled === 'boolean') updates.enabled = data.enabled
       if (data.imageResponses === 'allow' || data.imageResponses === 'omit') updates.imageResponses = data.imageResponses
@@ -2211,10 +2223,14 @@ export function registerWsHandlers(): void {
     if (command === 'mcp:test') {
       const command2 = typeof data.command === 'string' ? data.command.trim() : ''
       const args = Array.isArray(data.args) ? data.args as string[] : []
+      const env = data.env && typeof data.env === 'object' && !Array.isArray(data.env)
+        ? Object.fromEntries(Object.entries(data.env as Record<string, unknown>).flatMap(([key, value]) =>
+          typeof value === 'string' && key.length > 0 ? [[key, value]] : []))
+        : {}
       const cwd = typeof data.cwd === 'string' ? data.cwd : undefined
       const imageResponses = data.imageResponses === 'allow' || data.imageResponses === 'omit' ? data.imageResponses : undefined
       const sandboxProfile = normalizeMcpSandboxProfile(data.sandboxProfile)
-      void testMcpServer({ command: command2, args, env: {}, cwd, imageResponses, sandboxProfile }).then((result) => {
+      void testMcpServer({ command: command2, args, env, cwd, imageResponses, sandboxProfile }).then((result) => {
         reply({ event: 'mcp:test-result', data: result })
       })
       return

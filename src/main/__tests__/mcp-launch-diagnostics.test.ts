@@ -90,6 +90,33 @@ describe('classifyLaunchFailure', () => {
     expect(stageStates(helper.stages)).toEqual({ sandbox: 'failed', server: 'not-run', tools: 'not-run' })
   })
 
+  it('reports a managed Node installation failure before attempting the sandbox', () => {
+    const { failure, stages } = explain({
+      managedNodeRuntime: true,
+      preflightError: 'Managed Node runtime installation failed: Managed Node download failed SHA-256 verification.',
+    })
+    expect(failure).toMatchObject({ kind: 'runtime-download-failed', title: 'Managed Node runtime could not be installed' })
+    expect(stages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'runtime', label: 'Managed Node runtime ready', state: 'failed' }),
+      expect.objectContaining({ id: 'sandbox', state: 'not-run' }),
+    ]))
+  })
+
+  it('points to setup when managed Node needs the server network permission', () => {
+    const { failure, stages } = explain({
+      managedNodeRuntime: true,
+      preflightError: 'Managed Node runtime installation requires network access. Enable network access for this MCP server, then retry.',
+    })
+    expect(failure).toMatchObject({
+      kind: 'runtime-download-failed',
+      title: 'Managed Node needs network access',
+      actions: ['edit-setup', 'retry'],
+    })
+    expect(stages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'runtime', state: 'failed' }),
+    ]))
+  })
+
   it('does not offer a Windows repair on other platforms', () => {
     const failure = classifyLaunchFailure({ platform: 'darwin', connectError: CLOSED, stderr: 'mcp-sandbox: sandbox-exec failed' })
     expect(failure).toMatchObject({ kind: 'sandbox', title: 'The sandbox could not start the server', actions: ['retry'] })
@@ -118,6 +145,16 @@ describe('redactDiagnostics', () => {
 })
 
 describe('report helpers', () => {
+  it('reports the npm syscall failure instead of the final logs-max notice', () => {
+    expect(keyErrorLine([
+      'npm error code EPERM',
+      'npm error syscall lstat',
+      'npm error path C:\\Users',
+      "npm error Error: EPERM: operation not permitted, lstat 'C:\\Users'",
+      'npm error Log files were not written due to the config logs-max=0',
+    ].join('\n'))).toBe("npm error Error: EPERM: operation not permitted, lstat 'C:\\Users'")
+  })
+
   it('prefers an explicit error line as the key line', () => {
     expect(keyErrorLine('at foo\nError: Cannot find module x\n   at bar')).toBe('Error: Cannot find module x')
     expect(keyErrorLine('just output\nlast line')).toBe('last line')
