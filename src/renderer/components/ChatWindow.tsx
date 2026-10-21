@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/exhaustive-deps -- chat/actions are aggregate hook objects; individual members are stable. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle, ChevronDown, ChevronRight, Download, ListChecks, Loader2, Lock, MoreHorizontal, Pin, PinOff, Sparkles, Star, Upload, Users, X, Zap } from 'lucide-react'
+import { CheckCircle, ChevronDown, ChevronRight, ChevronUp, Download, ListChecks, Loader2, Lock, MoreHorizontal, Pin, PinOff, Search, Sparkles, Star, Upload, Users, X, Zap } from 'lucide-react'
 import { getModelLabel, modelIdSupportsTools } from '../../shared/models'
 import { isApiError, type AgentConfig, type ArtifactPromotionRequest, type AvailableModelEntry, type AvailableModelGroup, type CliBackend, type CliModeOverride, type CodexExecutionModeOverride, type ConversationExportPackFormat, type AutomatedWorkflowRunDetail, type AutomatedWorkflowRunStep, type HermesProfileInfo, type WikiCandidate } from '../../shared/types'
 import type { ComposerKeyEvent, ContextRef, ToastType } from '../hooks/chat-types'
@@ -179,6 +179,10 @@ export function ChatWindow() {
   const [isExporting, setIsExporting] = useState(false)
   const [isImporting, setIsImporting] = useState(false)
   const [showActionsMenu, setShowActionsMenu] = useState(false)
+  const [chatSearchOpen, setChatSearchOpen] = useState(false)
+  const [chatSearchQuery, setChatSearchQuery] = useState('')
+  const [chatSearchIndex, setChatSearchIndex] = useState(0)
+  const chatSearchInputRef = useRef<HTMLInputElement>(null)
   const [showRenameDialog, setShowRenameDialog] = useState(false)
   const [menuRatingOpen, setMenuRatingOpen] = useState(false)
   const [menuExportOpen, setMenuExportOpen] = useState(false)
@@ -1001,6 +1005,56 @@ export function ChatWindow() {
     },
   })
 
+  // Search is deliberately scoped to the open transcript rather than the chat list. Keeping the
+  // matches as message IDs lets us use the same DOM anchors as reply navigation, including for
+  // older messages that remain mounted for the windowed timeline.
+  const chatSearchMatches = useMemo(() => {
+    const query = chatSearchQuery.trim().toLocaleLowerCase()
+    if (!query) return []
+    return chat.messages
+      .filter((message) => (message.role === 'user' || message.role === 'assistant') && message.content.toLocaleLowerCase().includes(query))
+      .map((message) => message.id)
+  }, [chat.messages, chatSearchQuery])
+
+  useEffect(() => {
+    setChatSearchIndex(0)
+  }, [chatSearchQuery, conversationId])
+
+  useEffect(() => {
+    if (!chatSearchOpen) return
+    const frame = requestAnimationFrame(() => chatSearchInputRef.current?.focus())
+    return () => cancelAnimationFrame(frame)
+  }, [chatSearchOpen])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing || event.key.toLowerCase() !== 'f' || (!event.ctrlKey && !event.metaKey)) return
+      event.preventDefault()
+      setChatSearchOpen(true)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  useEffect(() => {
+    const messageId = chatSearchMatches[chatSearchIndex]
+    if (!chatSearchOpen || !messageId) return
+    const frame = requestAnimationFrame(() => {
+      const target = Array.from(document.querySelectorAll<HTMLElement>('[data-message-id]'))
+        .find((element) => element.dataset.messageId === messageId)
+      if (!target) return
+      suppressAutoFollow()
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      target.focus({ preventScroll: true })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [chatSearchIndex, chatSearchMatches, chatSearchOpen, suppressAutoFollow])
+
+  const navigateChatSearch = useCallback((direction: 1 | -1) => {
+    if (chatSearchMatches.length === 0) return
+    setChatSearchIndex((index) => (index + direction + chatSearchMatches.length) % chatSearchMatches.length)
+  }, [chatSearchMatches.length])
+
   useEffect(() => {
     const targetId = pendingSourceMessageIdRef.current
     if (!targetId || chat.messages.every((message) => message.id !== targetId)) return
@@ -1806,6 +1860,15 @@ export function ChatWindow() {
         )}
         {(conversationId || chat.messages.length > 0) && !chat.isGenerating && (
           <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setChatSearchOpen(true)}
+              className="inline-flex items-center justify-center w-8 h-8 rounded-full border border-gray-200 dark:border-gray-700 bg-white/95 dark:bg-gray-800/95 text-gray-600 dark:text-gray-300 opacity-70 shadow-sm hover:opacity-100 hover:bg-gray-100 dark:hover:bg-gray-700 transition-[background-color,opacity]"
+              aria-label="Search messages"
+              title="Search messages (Ctrl+F)"
+            >
+              <Search className="w-4 h-4" />
+            </button>
             <DropdownPanel
               open={showActionsMenu}
               onClose={() => {
@@ -2076,6 +2139,41 @@ export function ChatWindow() {
             </DropdownPanel>
           </div>
         )}
+        {chatSearchOpen && (
+          <div className="absolute right-4 top-3 z-20 flex w-[32rem] max-w-[calc(100%-2rem)] items-center gap-2 rounded-md border border-gray-200 bg-white px-2 py-1.5 shadow-md dark:border-gray-700 dark:bg-gray-800">
+            <Search className="ml-1 h-4 w-4 shrink-0 text-gray-400" aria-hidden="true" />
+            <input
+              ref={chatSearchInputRef}
+              type="search"
+              value={chatSearchQuery}
+              onChange={(event) => setChatSearchQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setChatSearchOpen(false)
+                } else if (event.key === 'Enter') {
+                  event.preventDefault()
+                  navigateChatSearch(event.shiftKey ? -1 : 1)
+                }
+              }}
+              placeholder="Find in chat"
+              aria-label="Find in chat"
+              className="min-w-0 flex-1 bg-transparent px-1 py-1 text-sm text-gray-900 outline-none placeholder:text-gray-400 dark:text-gray-100"
+            />
+            <span className="min-w-12 text-right text-xs tabular-nums text-gray-500 dark:text-gray-400" aria-live="polite">
+              {chatSearchQuery.trim() ? `${chatSearchMatches.length === 0 ? 0 : chatSearchIndex + 1}/${chatSearchMatches.length}` : '0/0'}
+            </span>
+            <button type="button" onClick={() => navigateChatSearch(-1)} disabled={chatSearchMatches.length === 0} className="rounded p-1 text-gray-500 hover:bg-gray-100 disabled:opacity-40 dark:text-gray-300 dark:hover:bg-gray-700" aria-label="Previous search result">
+              <ChevronUp className="h-4 w-4" />
+            </button>
+            <button type="button" onClick={() => navigateChatSearch(1)} disabled={chatSearchMatches.length === 0} className="rounded p-1 text-gray-500 hover:bg-gray-100 disabled:opacity-40 dark:text-gray-300 dark:hover:bg-gray-700" aria-label="Next search result">
+              <ChevronDown className="h-4 w-4" />
+            </button>
+            <button type="button" onClick={() => setChatSearchOpen(false)} className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700" aria-label="Close message search">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
         <ChatMessages
           messages={chat.messages}
           isLoadingMessages={chat.isLoadingMessages}
@@ -2113,6 +2211,8 @@ export function ChatWindow() {
           }}
           liveTurnState={chat.liveTurnState}
           markdownViewMode={markdownViewMode}
+          searchMatchMessageId={chatSearchOpen ? chatSearchMatches[chatSearchIndex] : undefined}
+          searchQuery={chatSearchOpen ? chatSearchQuery : undefined}
         />
         {isUserScrolledUp && (
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 pointer-events-none">

@@ -2117,6 +2117,7 @@ export interface McpLaunchStage {
 export type McpLaunchFailureKind =
   | 'runtime-missing'
   | 'runtime-downloading'
+  | 'runtime-download-failed'
   | 'helper-unavailable'
   | 'sandbox'
   | 'filesystem'

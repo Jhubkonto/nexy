@@ -23,6 +23,17 @@ const CONTEXT_OBJECT_KEYS = [
   '"files',
   '"agents',
 ]
+
+function HighlightedPlainText({ content, query }: { content: string; query?: string }) {
+  const normalizedQuery = query?.trim()
+  if (!normalizedQuery) return <>{content}</>
+  const escapedQuery = normalizedQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const parts = content.split(new RegExp(`(${escapedQuery})`, 'gi'))
+  return <>{parts.map((part, index) => part.toLocaleLowerCase() === normalizedQuery.toLocaleLowerCase()
+    ? <mark key={index} data-chat-search-match="true" className="rounded-sm bg-yellow-200 px-0.5 text-inherit dark:bg-yellow-400/45">{part}</mark>
+    : part,
+  )}</>
+}
 export function stripInjectedBlocks(text: string): string {
   return stripLeadingContextObject(text.replace(INJECTED_BLOCK_RE, '').trimStart()).trimStart()
 }
@@ -119,6 +130,8 @@ interface MessageBubbleProps {
   hasWikiEntry?: boolean
   timestamp?: number
   isHighlighted?: boolean
+  /** The selected in-chat find phrase, marked within this message's text. */
+  searchQuery?: string
   onRetry?: () => void
   onSignIn?: () => void
   onPickModel?: () => void
@@ -158,6 +171,7 @@ export function MessageBubbleBase({
   onSignIn,
   onPickModel,
   isHighlighted,
+  searchQuery,
   markdownViewMode = 'rendered',
 }: MessageBubbleProps) {
   const [showActions, setShowActions] = useState(false)
@@ -215,7 +229,7 @@ export function MessageBubbleBase({
         <div className={`relative w-full pl-3 border-l-2 text-sm text-gray-900 dark:text-gray-100 transition-shadow ${
           isHighlighted ? 'border-blue-400/70 dark:border-blue-300/70' : 'border-gray-200 dark:border-gray-700'
         }`}>
-          <MarkdownRenderer content={displayContent ?? content} citations={citations} viewMode={markdownViewMode} />
+          <MarkdownRenderer content={displayContent ?? content} citations={citations} viewMode={markdownViewMode} searchQuery={searchQuery} />
           {isStopped && (
             <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-400 dark:text-gray-500">
               <StopCircle className="w-3 h-3" />
@@ -422,14 +436,16 @@ export function MessageBubbleBase({
           )}
 
           {isUser || isError ? (
-            <div className="whitespace-pre-wrap break-words">{isUser ? stripInjectedBlocks(content) : content}</div>
+            <div className="whitespace-pre-wrap break-words">
+              {isUser ? <HighlightedPlainText content={stripInjectedBlocks(content)} query={searchQuery} /> : content}
+            </div>
           ) : (
             // System messages (/help, /usage, /code-plan, /code-status, ...) are frequently
             // markdown-formatted (bold labels, bullet lists, headers) — rendering them as plain
             // whitespace-pre-wrap text left every '**label**'/'- item'/'## heading' visible as
             // literal characters instead of formatted, the exact "raw markdown dumped in the UI"
             // complaint that motivated retiring the old wizard in the first place.
-            <MarkdownRenderer content={content} viewMode={markdownViewMode} />
+            <MarkdownRenderer content={content} viewMode={markdownViewMode} searchQuery={searchQuery} />
           )}
           {isUser && isEdited && (
             <div className="mt-2 text-[11px] text-gray-400 dark:text-gray-500">edited</div>

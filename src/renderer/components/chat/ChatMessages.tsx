@@ -52,6 +52,10 @@ interface ChatMessagesProps {
   onUseImageAsContext?: (dataUrl: string) => void
   liveTurnState?: ChatTurnState
   markdownViewMode?: MarkdownViewMode
+  /** The in-chat find result currently selected by ChatWindow. */
+  searchMatchMessageId?: string
+  /** Phrase to mark inside the selected in-chat find result. */
+  searchQuery?: string
 }
 
 interface RequestReference {
@@ -202,6 +206,8 @@ export function ChatMessagesBase({
   onUseImageAsContext,
   liveTurnState,
   markdownViewMode = 'rendered',
+  searchMatchMessageId,
+  searchQuery,
 }: ChatMessagesProps) {
   const catalogModels = useAppStore((state) => state.catalogModels)
   const generationElapsedSec = useGenerationTimer(isGenerating, generationStartedAt)
@@ -595,7 +601,7 @@ export function ChatMessagesBase({
                       return (
                         <TimelineEntry key={item.block.blockId} colorClass="bg-gray-400 dark:bg-gray-500">
                           <div className="text-sm text-gray-900 dark:text-gray-100">
-                            <MarkdownRenderer content={item.block.content} viewMode={markdownViewMode} />
+                            <MarkdownRenderer content={item.block.content} viewMode={markdownViewMode} searchQuery={main.id === searchMatchMessageId ? searchQuery : undefined} />
                           </div>
                         </TimelineEntry>
                       )
@@ -665,6 +671,7 @@ export function ChatMessagesBase({
                 messageIndex={index}
                 timestamp={main.timestamp}
                 isHighlighted={main.id === highlightedRequestId}
+                searchQuery={main.id === searchMatchMessageId ? searchQuery : undefined}
                 onCopy={onCopy}
                 onSaveAsPrompt={main.role === 'system' ? undefined : onSaveAsPrompt}
                 onSaveToWiki={main.role === 'assistant' ? onSaveToWiki : undefined}

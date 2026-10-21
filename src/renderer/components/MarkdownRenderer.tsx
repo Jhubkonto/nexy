@@ -1,4 +1,4 @@
-import { memo, useRef, useState, type ReactNode } from 'react'
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
@@ -125,9 +125,58 @@ interface MarkdownRendererProps {
   content: string
   citations?: Citation[]
   viewMode?: 'rendered' | 'raw'
+  /** Phrase to mark in the rendered message body for in-chat find. */
+  searchQuery?: string
   /** Draft previews must show the exact source string, without message-only citation cleanup. */
   preserveSource?: boolean
   /** Uses plain semantic DOM suitable for a contenteditable Markdown composer. */
+}
+
+function markSearchMatches(root: HTMLElement, query: string) {
+  const normalizedQuery = query.trim()
+  if (!normalizedQuery) return
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      return node.parentElement?.closest('mark[data-chat-search-match]')
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT
+    },
+  })
+  const textNodes: Text[] = []
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    textNodes.push(node as Text)
+  }
+  for (const textNode of textNodes) {
+    const text = textNode.data
+    const lowerText = text.toLocaleLowerCase()
+    const lowerQuery = normalizedQuery.toLocaleLowerCase()
+    let start = lowerText.indexOf(lowerQuery)
+    if (start < 0) continue
+    const fragment = document.createDocumentFragment()
+    let cursor = 0
+    while (start >= 0) {
+      if (start > cursor) fragment.append(text.slice(cursor, start))
+      const match = document.createElement('mark')
+      match.dataset.chatSearchMatch = 'true'
+      match.className = 'rounded-sm bg-yellow-200 px-0.5 text-inherit dark:bg-yellow-400/45'
+      match.textContent = text.slice(start, start + normalizedQuery.length)
+      fragment.append(match)
+      cursor = start + normalizedQuery.length
+      start = lowerText.indexOf(lowerQuery, cursor)
+    }
+    if (cursor < text.length) fragment.append(text.slice(cursor))
+    textNode.replaceWith(fragment)
+  }
+}
+
+function SearchablePlainText({ content, query }: { content: string; query?: string }) {
+  const normalizedQuery = query?.trim()
+  if (!normalizedQuery) return <>{content}</>
+  const parts = content.split(new RegExp(`(${escapeRegExp(normalizedQuery)})`, 'gi'))
+  return <>{parts.map((part, index) => part.toLocaleLowerCase() === normalizedQuery.toLocaleLowerCase()
+    ? <mark key={index} data-chat-search-match="true" className="rounded-sm bg-yellow-200 px-0.5 text-inherit dark:bg-yellow-400/45">{part}</mark>
+    : part,
+  )}</>
 }
 
 function escapeRegExp(value: string): string {
@@ -182,16 +231,23 @@ function CitationSources({ citations }: { citations: Citation[] }) {
   )
 }
 
-function MarkdownRendererBase({ content, citations = [], viewMode = 'rendered', preserveSource = false }: MarkdownRendererProps) {
+function MarkdownRendererBase({ content, citations = [], viewMode = 'rendered', preserveSource = false, searchQuery }: MarkdownRendererProps) {
+  const rootRef = useRef<HTMLDivElement>(null)
+  const normalizedSearchQuery = searchQuery?.trim() ?? ''
+
+  useEffect(() => {
+    if (rootRef.current && normalizedSearchQuery) markSearchMatches(rootRef.current, normalizedSearchQuery)
+  }, [content, normalizedSearchQuery, viewMode, preserveSource, citations])
+
   if (viewMode === 'raw') {
     return (
       <pre className="my-0 whitespace-pre-wrap break-words font-mono text-sm leading-relaxed text-gray-900 dark:text-gray-100">
-        {content}
+        <SearchablePlainText content={content} query={normalizedSearchQuery} />
       </pre>
     )
   }
   return (
-    <div className="markdown-body prose prose-sm dark:prose-invert max-w-none break-words
+    <div ref={rootRef} className="markdown-body prose prose-sm dark:prose-invert max-w-none break-words
       prose-blockquote:border-l-2 prose-blockquote:border-gray-300 dark:prose-blockquote:border-gray-600
       prose-blockquote:bg-gray-50 dark:prose-blockquote:bg-gray-800/40
       prose-blockquote:px-3 prose-blockquote:py-0.5 prose-blockquote:rounded-r
@@ -205,6 +261,7 @@ function MarkdownRendererBase({ content, citations = [], viewMode = 'rendered', 
       prose-tr:even:bg-gray-50 dark:prose-tr:even:bg-gray-800/40"
     >
       <ReactMarkdown
+        key={`${content}\u0000${normalizedSearchQuery}`}
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
         components={{
