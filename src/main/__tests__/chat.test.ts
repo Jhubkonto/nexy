@@ -235,7 +235,7 @@ describe('chat handlers', () => {
     vi.mocked(retrieveAuthMode).mockReturnValue('byok')
     vi.mocked(getAgentConfig).mockReturnValue(null)
     vi.mocked(getAvailableMcpTools).mockReturnValue([])
-    vi.mocked(getMcpServerConfigsForCli).mockReturnValue([])
+    vi.mocked(getMcpServerConfigsForCli).mockResolvedValue([])
     vi.mocked(getApiKey).mockReturnValue('test-key')
     vi.mocked(runProviderMcpToolLoop).mockReset()
     vi.mocked(runProviderMcpToolLoop).mockImplementation(async (...args) => {
@@ -787,7 +787,7 @@ describe('chat handlers', () => {
     vi.mocked(ClaudeAdapter.isAvailable).mockReturnValue(true)
     vi.mocked(retrieveAuthMode).mockReturnValue('none')
     vi.mocked(getApiKey).mockReturnValue(null)
-    vi.mocked(getMcpServerConfigsForCli).mockReturnValue([{
+    vi.mocked(getMcpServerConfigsForCli).mockResolvedValue([{
       id: 'server-1',
       key: 'playwright_chromium',
       command: 'npx',
@@ -882,7 +882,7 @@ describe('chat handlers', () => {
     vi.mocked(CodexAdapter.isAvailable).mockReturnValue(true)
     vi.mocked(retrieveAuthMode).mockReturnValue('none')
     vi.mocked(getApiKey).mockReturnValue(null)
-    vi.mocked(getMcpServerConfigsForCli).mockReturnValue([{
+    vi.mocked(getMcpServerConfigsForCli).mockResolvedValue([{
       id: 'server-1',
       key: 'playwright_chromium',
       command: 'npx',
