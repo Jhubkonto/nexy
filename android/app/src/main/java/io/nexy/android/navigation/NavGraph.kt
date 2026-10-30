@@ -48,6 +48,7 @@ import io.nexy.android.ui.home.AgentConfigScreen
 import io.nexy.android.ui.home.HistoryScope
 import io.nexy.android.ui.home.HomeScreen
 import io.nexy.android.ui.home.ScopedChatHistoryScreen
+import io.nexy.android.ui.home.WorkHistoryScreen
 import io.nexy.android.ui.pairing.PairingScreen
 import io.nexy.android.ui.pairing.PairingStartScreen
 import io.nexy.android.ui.artifacts.ArtifactsScreen
@@ -274,6 +275,7 @@ fun NavGraph(
                 onOpenRatings = {
                     navController.navigate("ratings")
                 },
+                onOpenWorkHistory = { navController.navigate("work-history") },
                 onOpenSkillGenerator = {
                     navController.navigate("skill-generator")
                 },
@@ -728,6 +730,13 @@ fun NavGraph(
                     )
                 },
                 onOpenConversation = { conversationId -> navController.navigate("chat/$conversationId") },
+            )
+        }
+
+        composable(route = "work-history") {
+            WorkHistoryScreen(
+                onBack = { navController.popBackStack() },
+                onOpenChat = { id -> navController.navigate("chat/${Uri.encode(id)}") },
             )
         }
 

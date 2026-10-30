@@ -2152,6 +2152,17 @@ object WsRepository : WsClient {
     }
 
     override fun send(command: String, data: Map<String, Any>) {
+        // History requests have a caller deadline; never deliver one from the reconnect queue.
+        if (command.startsWith("work-history:")) {
+            val socket = ws
+            val token = currentToken
+            check(_connectionState.value == ConnectionState.CONNECTED && pendingForegroundProbeId == null && socket != null && token != null) {
+                "Desktop connection is not ready. Reconnect and try again."
+            }
+            val obj = JSONObject().put("token", token).put("command", command).put("data", mapToJson(data))
+            check(socket.send(obj.toString())) { "Desktop connection could not send the request." }
+            return
+        }
         // Per-device local settings (settings:*) are Android-local preferences with no desktop
         // counterpart — they must resolve locally even while connected, or they silently vanish
         // since the desktop has no handler for them.
@@ -2219,6 +2230,7 @@ object WsRepository : WsClient {
             "conversation:list-page" -> {
                 val scopeType = data["scopeType"] as? String ?: "all"
                 val scopeId = data["scopeId"] as? String
+                val completion = data["completion"] as? String ?: "all"
                 val query = (data["query"] as? String).orEmpty().trim()
                 val offset = (data["cursor"] as? String)
                     ?.removePrefix("local:")?.toIntOrNull()?.coerceAtLeast(0) ?: 0
@@ -2229,6 +2241,14 @@ object WsRepository : WsClient {
                         when (scopeType) {
                             "project" -> conversation.project_id == scopeId
                             "agent" -> conversation.agent_id == scopeId
+                            "pinned" -> conversation.pinned
+                            else -> true
+                        }
+                    }
+                    .filter { conversation ->
+                        when (completion) {
+                            "ongoing" -> conversation.completed_at == null
+                            "completed" -> conversation.completed_at != null
                             else -> true
                         }
                     }
@@ -2711,12 +2731,14 @@ object WsRepository : WsClient {
         cursor: String?,
         requestId: String,
         limit: Int = 30,
+        completion: String = "all",
     ) {
         val payload = mutableMapOf<String, Any>(
             "scopeType" to scopeType,
             "query" to query,
             "requestId" to requestId,
             "limit" to limit,
+            "completion" to completion,
         )
         scopeId?.let { payload["scopeId"] = it }
         cursor?.let { payload["cursor"] = it }

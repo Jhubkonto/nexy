@@ -243,6 +243,12 @@ fun parseWsEvent(
         val data = obj.optJSONObject("data")
 
         val wsEvent: WsEvent = when (event) {
+            "work-history:result" -> WsEvent.WorkHistoryResult(
+                requestId = data?.optString("requestId").orEmpty(),
+                operation = data?.optString("operation").orEmpty(),
+                result = data?.opt("result")?.takeUnless { it == JSONObject.NULL },
+                error = data?.optString("error")?.takeIf { it.isNotBlank() && it != "null" },
+            )
             "connected" -> {
                 val version = data?.optString("version") ?: ""
                 serverVersion.value = version.takeIf { it.isNotBlank() }
@@ -2389,12 +2395,18 @@ fun parseWsEvent(
                 val conversationId = data?.optString("conversationId") ?: return
                 val completedAt = data.optLong("completedAt", 0L)
                 completedConversationIds.value = completedConversationIds.value + conversationId
+                conversations.value = conversations.value.map { conversation ->
+                    if (conversation.id == conversationId) conversation.copy(completed_at = completedAt) else conversation
+                }
                 WsEvent.DebriefConversationCompleted(conversationId, completedAt)
             }
 
             "debrief:conversation-incompleted" -> {
                 val conversationId = data?.optString("conversationId") ?: return
                 completedConversationIds.value = completedConversationIds.value - conversationId
+                conversations.value = conversations.value.map { conversation ->
+                    if (conversation.id == conversationId) conversation.copy(completed_at = null) else conversation
+                }
                 WsEvent.DebriefConversationIncompleted(conversationId)
             }
 

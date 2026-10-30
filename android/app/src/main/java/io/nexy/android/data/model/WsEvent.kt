@@ -37,6 +37,13 @@ data class VoiceCapabilitiesWire(
 )
 
 sealed class WsEvent {
+    /** Correlated response from the paired desktop's work history service. */
+    data class WorkHistoryResult(
+        val requestId: String,
+        val operation: String,
+        val result: Any?,
+        val error: String?,
+    ) : WsEvent()
     data class Connected(
         val version: String,
         val macAddress: String? = null,

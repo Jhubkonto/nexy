@@ -162,6 +162,17 @@ class RatingEventParserTest {
         assertTrue((event as WsEvent.RatingError).message.contains("integer"))
     }
 
+    @Test
+    fun parsesWorkHistoryResponses() = runTest {
+        val success = parseEvent("""{"event":"work-history:result","data":{"requestId":"a","operation":"work-history:preview","result":[{"id":"chat"}]}}""") as WsEvent.WorkHistoryResult
+        assertEquals("a", success.requestId)
+        assertEquals("work-history:preview", success.operation)
+        assertEquals("chat", (success.result as org.json.JSONArray).getJSONObject(0).getString("id"))
+        val failure = parseEvent("""{"event":"work-history:result","data":{"requestId":"b","operation":"work-history:start","error":"Invalid date range"}}""") as WsEvent.WorkHistoryResult
+        assertEquals("Invalid date range", failure.error)
+        assertEquals(null, failure.result)
+    }
+
     private suspend fun TestScope.parseEvent(
         raw: String,
         conversations: MutableStateFlow<List<Conversation>> = MutableStateFlow(emptyList()),
