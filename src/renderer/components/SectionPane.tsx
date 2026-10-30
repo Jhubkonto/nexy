@@ -2,7 +2,7 @@ import { useRef, useState, useCallback } from 'react'
 import { X, ArrowLeft } from 'lucide-react'
 import { useAppStore } from '../store/app-store'
 import { ResizeHandle } from './ResizeHandle'
-import { PANE_MIN, PANE_MAX } from './section-pane/shared'
+import { CHAT_HISTORY_PANE_MIN, PANE_MIN, PANE_MAX } from './section-pane/shared'
 import { ProjectsPane } from './section-pane/ProjectsPane'
 import { AgentsPane } from './section-pane/AgentsPane'
 import { AgentHistoryPane } from './section-pane/AgentHistoryPane'
@@ -14,8 +14,9 @@ import { ScheduledPane } from './section-pane/ScheduledPane'
 import { AutomatedWorkflowsPane } from './section-pane/AutomatedWorkflowsPane'
 import { ArtifactsPane } from './section-pane/ArtifactsPane'
 import { RatingsPane } from './section-pane/RatingsPane'
+import { WorkHistoryPane } from './section-pane/WorkHistoryPane'
 
-type SectionType = 'projects' | 'agents' | 'chats' | 'pinned' | 'skills' | 'scheduled' | 'workflows' | 'artifacts' | 'ratings'
+type SectionType = 'projects' | 'agents' | 'chats' | 'pinned' | 'skills' | 'scheduled' | 'workflows' | 'artifacts' | 'ratings' | 'work-history'
 
 const SECTION_LABELS: Record<SectionType, string> = {
   projects: 'Projects',
@@ -27,6 +28,7 @@ const SECTION_LABELS: Record<SectionType, string> = {
   workflows: 'Automated Workflows',
   artifacts: 'Artifacts',
   ratings: 'Ratings',
+  'work-history': 'Work history',
 }
 
 interface SectionPaneProps {
@@ -43,12 +45,15 @@ export function SectionPane({ section }: SectionPaneProps) {
   const agents = useAppStore((s) => s.agents)
   const containerRef = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(320)
+  const minWidth = section === 'chats' || (section === 'projects' && historyProjectId !== null)
+    ? CHAT_HISTORY_PANE_MIN
+    : PANE_MIN
 
   const getMaxSize = useCallback(() => Math.min(PANE_MAX, Math.floor(window.innerWidth * 0.32)), [])
 
   const handleSetSize = useCallback((size: number) => {
-    setWidth(Math.max(PANE_MIN, Math.min(getMaxSize(), size)))
-  }, [getMaxSize])
+    setWidth(Math.max(minWidth, Math.min(getMaxSize(), size)))
+  }, [getMaxSize, minWidth])
 
   const showingProjectHistory = section === 'projects' && historyProjectId !== null
   const historyProjectName = historyProjectId === '__none__'
@@ -117,6 +122,7 @@ export function SectionPane({ section }: SectionPaneProps) {
         {section === 'workflows' && <AutomatedWorkflowsPane />}
         {section === 'artifacts' && <ArtifactsPane />}
         {section === 'ratings' && <RatingsPane />}
+        {section === 'work-history' && <WorkHistoryPane />}
       </div>
 
       <ResizeHandle
@@ -124,7 +130,7 @@ export function SectionPane({ section }: SectionPaneProps) {
         containerRef={containerRef as React.RefObject<HTMLElement>}
         onSetSize={handleSetSize}
         align="end"
-        minSize={PANE_MIN}
+        minSize={minWidth}
         maxSize={getMaxSize}
       />
     </div>

@@ -84,6 +84,45 @@ describe('McpServerPanel — Rendering', () => {
     })
   })
 
+  it('does not claim a sandbox for absent legacy status data', async () => {
+    mockApi.listMcpServers = vi.fn().mockResolvedValue([SAMPLE_SERVERS[0]])
+    render(<McpServerPanel />)
+
+    await waitFor(() => expect(screen.getByText('Sandbox status unknown')).toBeInTheDocument())
+    expect(screen.queryByText('Sandboxed')).not.toBeInTheDocument()
+    await user.click(screen.getByText('Technical details'))
+    expect(screen.getByText(/Sandbox: Sandbox status unknown/)).toBeInTheDocument()
+    expect(screen.getByText('Diagnose sandbox')).toBeInTheDocument()
+  })
+
+  it('presents the internal Desktop Navigator as Nexy-managed everywhere', async () => {
+    mockApi.listMcpServers = vi.fn().mockResolvedValue([{
+      id: '__desktop-navigator__',
+      name: 'Desktop Navigator', command: '', args: [], env: {}, enabled: true,
+      status: 'connected', toolCount: 8, managed: true,
+      sandbox: { status: 'not-applicable', backend: 'internal' },
+    }])
+    render(<McpServerPanel />)
+
+    await waitFor(() => expect(screen.getByText('Nexy-managed')).toBeInTheDocument())
+    await user.click(screen.getByText('Technical details'))
+    expect(screen.getByText(/Sandbox: Nexy-managed · internal bridge/)).toBeInTheDocument()
+    expect(screen.queryByText('Diagnose sandbox')).not.toBeInTheDocument()
+  })
+
+  it('offers sandbox diagnosis for a failed external sandbox', async () => {
+    mockApi.listMcpServers = vi.fn().mockResolvedValue([{
+      ...SAMPLE_SERVERS[0],
+      sandbox: { status: 'failed', backend: 'win32', diagnostics: 'AppContainer could not start' },
+    }])
+    render(<McpServerPanel />)
+
+    expect(await screen.findByText('Sandbox failed')).toBeInTheDocument()
+    expect(screen.getByText('Diagnose sandbox')).toBeInTheDocument()
+    await user.click(screen.getByText('Technical details'))
+    expect(screen.getByText(/Sandbox: Sandbox failed · win32/)).toBeInTheDocument()
+  })
+
   it('shows the add-a-server gallery when no servers', async () => {
     mockApi.listMcpServers = vi.fn().mockResolvedValue([])
     render(<McpServerPanel />)
@@ -313,7 +352,8 @@ describe('McpServerPanel — CRUD Operations', () => {
     })
     render(<McpServerPanel />)
 
-    await user.click(await screen.findByText('Diagnose connection'))
+    const diagnoseButtons = await screen.findAllByText('Diagnose sandbox')
+    await user.click(diagnoseButtons[1])
 
     expect(mockApi.diagnoseMcpServer).toHaveBeenCalledWith('srv-2')
     expect(await screen.findByText('Connection diagnosis')).toBeInTheDocument()

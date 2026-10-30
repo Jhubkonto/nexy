@@ -116,7 +116,7 @@ export function Sidebar() {
   const pinnedConvs = conversations.filter((c) => c.pinned === 1)
   const visiblePinnedConvs = pinnedConvs.slice(0, 5)
   const recentConvs = conversations
-    .filter((c) => c.pinned !== 1)
+    .filter((c) => c.pinned !== 1 && c.completed_at == null)
     .slice(0, Math.max(0, 5 - pendingNew.length))
 
   const [newArtifactCount, setNewArtifactCount] = useState(0)
@@ -287,6 +287,12 @@ export function Sidebar() {
           onClick={() => openSectionPane('chats')}
           active={activeSectionPane === 'chats'}
           ariaLabel={`Open chat history${unreadConversationIds.length > 0 ? ` (${unreadConversationIds.length} unread)` : ''}`}
+        />
+        <NavButton
+          icon={<NexyIcon name="chat" size={14} />}
+          label="Work history"
+          onClick={() => openSectionPane('work-history')}
+          active={activeSectionPane === 'work-history'}
         />
         <NavButton
           icon={<NexyIcon name="project" size={14} />}

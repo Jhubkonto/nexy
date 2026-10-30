@@ -868,7 +868,7 @@ describe("SectionPane — No Project bucket & Project History (Q1/Q2)", () => {
     expect(indicator.querySelector("svg")).toHaveClass("lucide-loader-circle", "animate-spin");
   });
 
-  it("q2-7: completed conversation action uses a static incomplete indicator", () => {
+  it("q2-7: completed conversation action is a left-side hover control", () => {
     mockStore = createMockAppStore({
       ...mockStore,
       historyProjectId: "p1",
@@ -879,11 +879,11 @@ describe("SectionPane — No Project bucket & Project History (Q1/Q2)", () => {
     render(<SectionPane section="projects" />);
 
     const markIncomplete = screen.getByRole("button", { name: /mark conversation incomplete/i });
-    expect(markIncomplete.querySelector("svg")).not.toBeInTheDocument();
-    expect(markIncomplete.firstElementChild).toHaveClass("border-2", "border-current");
+    expect(markIncomplete).toHaveClass("absolute", "left-3", "opacity-0", "group-hover:opacity-100");
+    expect(markIncomplete.querySelector("svg")).toBeInTheDocument();
   });
 
-  it("q2-8: completed conversation shows the tick from completed_at even when absent from completedConversationIds", () => {
+  it("q2-8: completed_at controls the left hover action even when absent from completedConversationIds", async () => {
     // Regression: scoped (project) conversations arrive via pagination and are not seeded into
     // completedConversationIds (which is derived only from the global conversation load), so the
     // completion checkmark must fall back to the conversation's own completed_at.
@@ -897,6 +897,7 @@ describe("SectionPane — No Project bucket & Project History (Q1/Q2)", () => {
     setupStoreMock(useAppStore, mockStore);
     render(<SectionPane section="projects" />);
 
-    expect(screen.getByTitle("Complete")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "Completed" }));
+    expect(screen.getByRole("button", { name: /mark conversation incomplete/i })).toBeInTheDocument();
   });
 });

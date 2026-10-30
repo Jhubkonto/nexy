@@ -44,6 +44,48 @@ interface McpServerStatus extends McpServerConfig {
   errorLogId?: string
 }
 
+type SandboxPresentation = {
+  label: string
+  detail: string
+  tone: 'success' | 'neutral' | 'warning' | 'error'
+  canDiagnose: boolean
+}
+
+/** One operator-facing interpretation for both the card badge and its details. */
+export function getSandboxPresentation(server: Pick<McpServerStatus, 'managed' | 'sandbox'>): SandboxPresentation {
+  if (server.managed || server.sandbox?.status === 'not-applicable' || server.sandbox?.backend === 'internal') {
+    return {
+      label: 'Nexy-managed',
+      detail: 'Nexy-managed · internal bridge; a third-party MCP sandbox does not apply.',
+      tone: 'neutral',
+      canDiagnose: false,
+    }
+  }
+
+  switch (server.sandbox?.status) {
+    case 'sandboxed':
+      return { label: 'Sandboxed', detail: `Sandboxed${server.sandbox.backend ? ` · ${server.sandbox.backend}` : ''}`, tone: 'success', canDiagnose: false }
+    case 'starting':
+      return { label: 'Sandbox starting', detail: `Sandbox starting${server.sandbox.backend ? ` · ${server.sandbox.backend}` : ''}`, tone: 'neutral', canDiagnose: false }
+    case 'stopped':
+      return { label: 'Sandbox stopped', detail: 'Sandbox stopped · the external server is not running.', tone: 'neutral', canDiagnose: false }
+    case 'unavailable':
+      return { label: 'Sandbox unavailable', detail: `Sandbox unavailable${server.sandbox.backend ? ` · ${server.sandbox.backend}` : ''}`, tone: 'error', canDiagnose: true }
+    case 'failed':
+      return { label: 'Sandbox failed', detail: `Sandbox failed${server.sandbox.backend ? ` · ${server.sandbox.backend}` : ''}`, tone: 'error', canDiagnose: true }
+    default:
+      // Legacy or malformed status data must not imply sandbox protection.
+      return { label: 'Sandbox status unknown', detail: 'Sandbox status unknown · Nexy could not verify third-party process isolation.', tone: 'warning', canDiagnose: true }
+  }
+}
+
+const SANDBOX_TONE_CLASSES: Record<SandboxPresentation['tone'], string> = {
+  success: 'text-emerald-700 dark:text-emerald-300',
+  neutral: 'text-nexy-muted',
+  warning: 'text-amber-700 dark:text-amber-300',
+  error: 'text-nexy-error',
+}
+
 type PanelView = 'gallery' | 'tools' | 'access' | 'form' | 'json' | 'registry' | 'assign'
 
 type AssignmentTrust = 'auto' | 'always-ask' | 'block'
@@ -1584,6 +1626,8 @@ export function McpServerPanel() {
                 const connectionActionBusy = connectionBusy.has(server.id)
                 const statusLabel = server.status === 'connected' ? 'Connected' : server.status === 'connecting' ? 'Connecting' : server.status === 'error' ? 'Needs attention' : server.enabled ? 'Offline' : 'Disabled'
                 const assignedAgentCount = agentCountByServer.get(server.id) ?? 0
+                const sandboxPresentation = getSandboxPresentation(server)
+                const showDiagnosis = !server.managed && (server.status !== 'connected' || sandboxPresentation.canDiagnose)
                 return (
                   <article key={server.id} className="overflow-hidden rounded-nexy-md border-2 border-nexy-border bg-nexy-raised">
                     <div className="flex items-start gap-3 p-3">
@@ -1593,8 +1637,10 @@ export function McpServerPanel() {
                           <h4 className="truncate text-xs font-bold text-nexy-text">{server.name}</h4>
                           <span className="rounded-full border border-nexy-border bg-nexy-recessed px-1.5 py-0.5 text-[10px] font-bold text-nexy-muted">{statusLabel}</span>
                           <span className="text-[10px] text-nexy-muted">{server.toolCount} tool{server.toolCount !== 1 ? 's' : ''}</span>
-                          {server.managed && <span className="rounded-full border border-nexy-border bg-nexy-recessed px-1.5 py-0.5 text-[10px] font-bold text-nexy-muted">Built in</span>}
-                          <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 dark:text-emerald-300"><ShieldCheck className="h-3 w-3" /> {server.sandbox?.status === 'unavailable' ? 'Sandbox unavailable' : 'Sandboxed'}</span>
+                          <span className={`inline-flex items-center gap-1 text-[10px] ${SANDBOX_TONE_CLASSES[sandboxPresentation.tone]}`}>
+                            {sandboxPresentation.tone === 'success' ? <ShieldCheck className="h-3 w-3" /> : sandboxPresentation.tone === 'neutral' ? <ShieldCheck className="h-3 w-3" /> : <AlertCircle className="h-3 w-3" />}
+                            {sandboxPresentation.label}
+                          </span>
                           {assignedAgentCount > 0 && <span className="text-[10px] text-nexy-muted">· {assignedAgentCount} agent{assignedAgentCount === 1 ? '' : 's'}</span>}
                         </div>
                         {server.error ? (
@@ -1611,12 +1657,12 @@ export function McpServerPanel() {
                         <button onClick={() => handleDelete(server.id)} className="rounded-nexy-sm border-2 border-transparent p-1.5 text-nexy-muted hover:border-nexy-error hover:bg-red-50 hover:text-nexy-error dark:hover:bg-red-950/30" title="Remove" aria-label="Remove server"><Trash2 className="h-3.5 w-3.5" /></button>
                       </div>}
                     </div>
-                    {!server.managed && server.status !== 'connected' && (
+                    {showDiagnosis && (
                       <div className="flex flex-wrap items-center gap-2 border-t-2 border-nexy-border bg-amber-50 px-3 py-2 dark:bg-amber-950/20">
-                        <span className="text-[10px] text-nexy-muted">{server.enabled ? 'Connection unavailable.' : 'Disabled servers are not started.'}</span>
+                        <span className="text-[10px] text-nexy-muted">{sandboxPresentation.canDiagnose ? 'Sandbox status requires attention.' : server.enabled ? 'Connection unavailable.' : 'Disabled servers are not started.'}</span>
                         <button type="button" onClick={() => handleDiagnose(server)} disabled={connectionActionBusy} className="inline-flex items-center gap-1 rounded-nexy-sm border border-nexy-border bg-nexy-raised px-2 py-1 text-[10px] font-bold text-nexy-text hover:bg-nexy-recessed disabled:cursor-wait disabled:opacity-50">
                           {connectionActionBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wrench className="h-3 w-3" />}
-                          Diagnose connection
+                          {sandboxPresentation.canDiagnose ? 'Diagnose sandbox' : 'Diagnose connection'}
                         </button>
                         {!server.enabled && <button type="button" onClick={() => handleToggle(server)} className="text-[10px] font-bold text-nexy-accent hover:underline">Enable &amp; connect</button>}
                       </div>
@@ -1643,7 +1689,7 @@ export function McpServerPanel() {
                     <button type="button" onClick={() => setExpandedServerDetails((previous) => { const next = new Set(previous); if (next.has(server.id)) next.delete(server.id); else next.add(server.id); return next })} className="flex w-full items-center gap-1 border-t-2 border-nexy-border bg-nexy-surface px-3 py-2 text-left text-[10px] font-bold text-nexy-muted hover:bg-nexy-recessed" aria-expanded={detailsOpen}>
                       {detailsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />} Technical details
                     </button>
-                    {detailsOpen && <div className="space-y-1 border-t-2 border-nexy-border bg-nexy-recessed px-3 py-2 text-[10px] text-nexy-muted"><p className="break-all font-mono">{server.command} {server.args.join(' ')}</p>{server.cwd && <p>Working directory: {server.cwd}</p>}<p>Sandbox: {server.sandbox?.status ?? 'pending'}{server.sandbox?.backend ? ` · ${server.sandbox.backend}` : ''}</p>{server.sandbox?.diagnostics && <p className="break-words text-nexy-error">{server.sandbox.diagnostics}</p>}</div>}
+                    {detailsOpen && <div className="space-y-1 border-t-2 border-nexy-border bg-nexy-recessed px-3 py-2 text-[10px] text-nexy-muted"><p className="break-all font-mono">{server.command} {server.args.join(' ')}</p>{server.cwd && <p>Working directory: {server.cwd}</p>}<p>Sandbox: {sandboxPresentation.detail}</p>{server.sandbox?.diagnostics && <p className="break-words text-nexy-error">{server.sandbox.diagnostics}</p>}</div>}
                   </article>
                 )
               })}

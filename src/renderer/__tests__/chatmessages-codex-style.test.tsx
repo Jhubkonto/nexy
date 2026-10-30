@@ -51,6 +51,7 @@ describe('ChatMessages Codex CLI bulleted timeline', () => {
 
     expect(screen.getByText('Ran')).toBeInTheDocument()
     expect(screen.getByText('ls -la')).toBeInTheDocument()
+    expect(screen.getByText('Ran').closest('.chat-timeline')).toBeInTheDocument()
     // ToolCallBlock renders the server-name badge as its own pill; the bulleted
     // Codex variant never does, so its absence confirms the boxed card didn't render.
     expect(screen.queryByText('codex-cli')).not.toBeInTheDocument()

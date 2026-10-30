@@ -96,7 +96,7 @@ function TimelineEntry({ children, colorClass, pulse }: { children: ReactNode; c
     <div className="relative">
       <span
         aria-hidden="true"
-        className={`absolute -left-[17px] top-1.5 h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-white dark:ring-gray-900 ${colorClass} ${pulse ? 'animate-pulse' : ''}`}
+        className={`absolute -left-[18px] top-1.5 h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-white dark:ring-gray-900 ${colorClass} ${pulse ? 'animate-pulse' : ''}`}
       />
       {children}
     </div>
@@ -519,7 +519,7 @@ export function ChatMessagesBase({
               <div
                 key={main.id}
                 ref={registerMessageElement(main.id)}
-                className={`max-w-3xl mx-auto message-enter pl-3 border-l-2 border-gray-200 dark:border-gray-700 space-y-3${windowedMessageClass}`}
+                className={`max-w-3xl mx-auto message-enter chat-timeline space-y-3${windowedMessageClass}`}
                 data-message-id={main.id}
                 data-message-role={main.role}
               >
@@ -579,7 +579,7 @@ export function ChatMessagesBase({
                 // than separately-bordered blocks, with generous spacing between them
                 // along it. Interleaved chronologically (see buildHistoricalTimeline)
                 // rather than all-thinking-then-all-tools.
-                <div className="mb-2 pl-3 border-l-2 border-gray-200 dark:border-gray-700 space-y-3">
+                <div className="chat-timeline mb-2 space-y-3">
                   {historicalTimeline.map((item) => {
                     if (item.kind === 'thinking') {
                       const block = item.block
@@ -712,7 +712,7 @@ export function ChatMessagesBase({
           // One shared left-border thread for the whole live sequence, with generous
           // spacing between steps along it — reads as a chained timeline rather than a
           // stack of separately-bordered blocks.
-          <div className="pl-3 border-l-2 border-gray-200 dark:border-gray-700 space-y-3">
+          <div className="chat-timeline space-y-3">
             {liveRenderItems.map((item) => {
               if (item.type === 'live-thinking-block') {
                 // The reducer marks blocks done the instant the backend's turn-completion

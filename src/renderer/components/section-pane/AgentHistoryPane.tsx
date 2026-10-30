@@ -10,6 +10,8 @@ import { PaneEmptyState } from './pane-primitives'
 import { PaginationFooter } from '../ui/PaginationFooter'
 import { useConversationPagination } from '../../hooks/useConversationPagination'
 import { useDebouncedSearchQuery } from '../../hooks/useDebouncedSearchQuery'
+import { CompletionFilterTabs } from './CompletionFilterTabs'
+import type { ConversationCompletionFilter } from '../../../shared/types'
 
 export function AgentHistoryPane() {
   const cachedConversations = useAppStore((s) => s.conversations)
@@ -22,22 +24,29 @@ export function AgentHistoryPane() {
   const renameConversation = useAppStore((s) => s.renameConversation)
   const newChat = useAppStore((s) => s.newChat)
   const unreadConversationIds = useAppStore((s) => s.unreadConversationIds)
+  const generatingConversationIds = useAppStore((s) => s.generatingConversationIds)
   const completedConversationIds = useAppStore((s) => s.completedConversationIds)
   const markConversationComplete = useAppStore((s) => s.markConversationComplete)
   const markConversationIncomplete = useAppStore((s) => s.markConversationIncomplete)
   const setConversationPinned = useAppStore((s) => s.setConversationPinned)
   const [query, setQuery] = useState('')
+  const [completion, setCompletion] = useState<ConversationCompletionFilter>('ongoing')
   const debouncedQuery = useDebouncedSearchQuery(query)
   const pagination = useConversationPagination(
     { type: 'agent', id: historyAgentId ?? '' },
     debouncedQuery,
+    '',
+    completion,
   )
   const conversations = useMemo(() => {
     const source = pagination.hasLoaded || debouncedQuery
       ? pagination.items
-      : cachedConversations.filter((conversation) => conversation.agent_id === historyAgentId)
+      : cachedConversations.filter((conversation) =>
+          conversation.agent_id === historyAgentId &&
+          (completion === 'all' || (completion === 'completed') === (conversation.completed_at != null))
+        )
     return withLivePinState(source, cachedConversations)
-  }, [cachedConversations, debouncedQuery, historyAgentId, pagination.hasLoaded, pagination.items])
+  }, [cachedConversations, completion, debouncedQuery, historyAgentId, pagination.hasLoaded, pagination.items])
   const [pendingDeleteConv, setPendingDeleteConv] = useState<{ id: string; title: string } | null>(null)
   const [pendingRenameConv, setPendingRenameConv] = useState<{ id: string; title: string } | null>(null)
 
@@ -53,6 +62,7 @@ export function AgentHistoryPane() {
     const isActive = currentConversationId === conv.id
     const project = conv.project_id ? projects.find((p) => p.id === conv.project_id) : null
     const isUnread = unreadConversationIds.includes(conv.id)
+    const isGenerating = generatingConversationIds.includes(conv.id)
     // completedConversationIds is only seeded from the global conversation load, so an agent-scoped
     // conversation that arrived via pagination wouldn't be in it — fall back to the conversation's
     // own completed_at (the source of truth the all-chats list and chat header use).
@@ -62,16 +72,29 @@ export function AgentHistoryPane() {
         key={conv.id}
         onClick={() => selectConversation(conv.id)}
         aria-current={isActive ? 'page' : undefined}
-        className={`group relative flex items-start gap-2 px-3 py-2 rounded-nexy-sm border cursor-pointer transition-colors ${
+        className={`group relative flex items-start gap-2 py-2 pl-10 pr-3 rounded-nexy-sm border cursor-pointer transition-colors ${
           isActive
             ? 'border-nexy-accent bg-nexy-raised shadow-nexy'
             : 'border-transparent hover:border-nexy-border-soft hover:bg-nexy-recessed'
         }`}
       >
+        <button
+          type="button"
+          disabled={isGenerating}
+          onClick={(event) => {
+            event.stopPropagation()
+            void (isCompleted ? markConversationIncomplete(conv.id) : markConversationComplete(conv.id)).then(pagination.refresh)
+          }}
+          className={`pointer-events-none absolute left-3 top-1/2 z-10 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-nexy-sm border bg-nexy-raised opacity-0 shadow-nexy transition-all group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 focus:pointer-events-auto focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-40 ${
+            isCompleted ? 'border-nexy-success bg-nexy-success/10 text-nexy-success' : 'border-nexy-border text-nexy-muted hover:border-nexy-success hover:text-nexy-success'
+          }`}
+          title={isGenerating ? 'Cannot change completion while generating' : isCompleted ? 'Mark incomplete' : 'Mark complete'}
+          aria-label={isCompleted ? 'Mark conversation incomplete' : 'Mark conversation complete'}
+        >
+          <NexyIcon name={isCompleted ? 'checked-box' : 'check'} className="w-3 h-3" />
+        </button>
         {isPinned(conv) && <NexyIcon name="pin" className="w-3 h-3 text-nexy-muted shrink-0 mt-0.5" />}
-        {isCompleted ? (
-          <span title="Complete"><NexyIcon name="checked-box" className="w-4 h-4 text-nexy-success shrink-0" /></span>
-        ) : isUnread ? (
+        {isUnread ? (
           <span className="nexy-notification-dot w-2 h-2 bg-blue-500 animate-pulse shrink-0 mt-1.5" />
         ) : null}
         <div className="flex-1 min-w-0">
@@ -97,35 +120,6 @@ export function AgentHistoryPane() {
           >
             <NexyIcon name={isPinned(conv) ? 'unpin' : 'pin'} className="w-3 h-3" />
           </button>
-          {isCompleted ? (
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                void markConversationIncomplete(conv.id).then(() =>
-                  pagination.updateItem(conv.id, (c) => ({ ...c, completed_at: null }))
-                )
-              }}
-              className="p-1 rounded text-emerald-500 hover:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"
-              title="Mark incomplete"
-              aria-label="Mark conversation incomplete"
-            >
-              <NexyIcon name="busy" className="w-3 h-3" />
-            </button>
-          ) : (
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                void markConversationComplete(conv.id).then(() =>
-                  pagination.updateItem(conv.id, (c) => ({ ...c, completed_at: Date.now() }))
-                )
-              }}
-              className="p-1 rounded text-gray-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20"
-              title="Mark complete"
-              aria-label="Mark conversation complete"
-            >
-              <NexyIcon name="check" className="w-3 h-3" />
-            </button>
-          )}
           <button
             onClick={(e) => { e.stopPropagation(); setPendingDeleteConv({ id: conv.id, title: conv.title }) }}
             className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 shrink-0"
@@ -157,6 +151,7 @@ export function AgentHistoryPane() {
             </button>
           )}
         </div>
+        <CompletionFilterTabs value={completion} onChange={setCompletion} />
         <button
           onClick={() => newChat({ agentId: historyAgentId ?? undefined })}
           className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 px-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors shrink-0"

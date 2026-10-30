@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronRight, CheckCircle, XCircle, Loader2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, CheckCircle, XCircle, Loader2, Square } from 'lucide-react'
 import type { TeamActivityStep } from '../hooks/chat-types'
 
 interface TeamActivityBlockProps {
@@ -10,6 +10,7 @@ interface TeamActivityBlockProps {
 export function TeamActivityBlock({ steps, isLive = false }: TeamActivityBlockProps) {
   const [expanded, setExpanded] = useState(isLive)
   const [collapsedSteps, setCollapsedSteps] = useState<Set<string>>(new Set())
+  const [cancellingSteps, setCancellingSteps] = useState<Set<string>>(new Set())
 
   const toggleStep = (stepId: string) => {
     setCollapsedSteps((prev) => {
@@ -23,6 +24,24 @@ export function TeamActivityBlock({ steps, isLive = false }: TeamActivityBlockPr
   const doneCount = steps.filter((s) => s.status === 'done').length
   const hasError = steps.some((s) => s.status === 'error')
   const allDone = steps.length > 0 && steps.every((s) => s.status !== 'delegating')
+
+  const cancelStep = async (stepId: string) => {
+    setCancellingSteps((current) => new Set(current).add(stepId))
+    try {
+      const result = await window.api.cancelDelegationNode(stepId)
+      if (result !== 'accepted') setCancellingSteps((current) => {
+        const next = new Set(current)
+        next.delete(stepId)
+        return next
+      })
+    } catch {
+      setCancellingSteps((current) => {
+        const next = new Set(current)
+        next.delete(stepId)
+        return next
+      })
+    }
+  }
 
   return (
     <div className="my-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 overflow-hidden text-sm">
@@ -53,6 +72,7 @@ export function TeamActivityBlock({ steps, isLive = false }: TeamActivityBlockPr
         <div className="border-t border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700">
           {steps.map((step) => {
             const isActive = step.status === 'delegating'
+            const cancelling = cancellingSteps.has(step.stepId)
             const isCollapsed = collapsedSteps.has(step.stepId)
             const hasBody = !!(step.result ?? step.liveContent)
             const showBody = (isActive || hasBody) && !isCollapsed
@@ -69,6 +89,7 @@ export function TeamActivityBlock({ steps, isLive = false }: TeamActivityBlockPr
                     {step.status === 'delegating' && <Loader2 size={13} className="animate-spin text-blue-500" />}
                     {step.status === 'done'       && <CheckCircle size={13} className="text-green-500" />}
                     {step.status === 'error'      && <XCircle size={13} className="text-red-500" />}
+                    {step.status === 'cancelled'  && <Square size={12} className="text-gray-400" />}
                   </span>
 
                   {/* Agent badge */}
@@ -95,6 +116,19 @@ export function TeamActivityBlock({ steps, isLive = false }: TeamActivityBlockPr
                     )}
                   </span>
                 </button>
+
+                {isLive && isActive && (
+                  <div className="px-3 pb-2 ml-6">
+                    <button
+                      type="button"
+                      disabled={cancelling}
+                      onClick={() => void cancelStep(step.stepId)}
+                      className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:cursor-wait disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                    >
+                      {cancelling ? 'Stopping…' : 'Stop this agent'}
+                    </button>
+                  </div>
+                )}
 
                 {/* Step body — streamed / final result */}
                 {showBody && (

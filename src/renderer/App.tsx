@@ -215,7 +215,7 @@ export default function App() {
   // Sync completion state pushed from Android via WebSocket
   useEffect(() => {
     const unsub1 = window.api.onConversationCompleted((data) => {
-      handleConversationCompleted(data.conversationId)
+      handleConversationCompleted(data.conversationId, data.completedAt)
     })
     const unsub2 = window.api.onConversationIncompleted((data) => {
       handleConversationIncompleted(data.conversationId)

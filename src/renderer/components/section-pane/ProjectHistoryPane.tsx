@@ -11,6 +11,8 @@ import { PaneEmptyState } from './pane-primitives'
 import { PaginationFooter } from '../ui/PaginationFooter'
 import { useConversationPagination } from '../../hooks/useConversationPagination'
 import { useDebouncedSearchQuery } from '../../hooks/useDebouncedSearchQuery'
+import { CompletionFilterTabs } from './CompletionFilterTabs'
+import type { ConversationCompletionFilter } from '../../../shared/types'
 
 export function ProjectHistoryPane() {
   const cachedConversations = useAppStore((s) => s.conversations)
@@ -29,6 +31,7 @@ export function ProjectHistoryPane() {
   const markConversationIncomplete = useAppStore((s) => s.markConversationIncomplete)
   const setConversationPinned = useAppStore((s) => s.setConversationPinned)
   const [query, setQuery] = useState('')
+  const [completion, setCompletion] = useState<ConversationCompletionFilter>('ongoing')
   const debouncedQuery = useDebouncedSearchQuery(query)
   // The project page can initially load just before the first send has created its
   // conversation record. Once the common cache observes that active record, use
@@ -46,15 +49,17 @@ export function ProjectHistoryPane() {
     { type: 'project', id: historyProjectId === '__none__' ? null : historyProjectId },
     debouncedQuery,
     activeConversationRevision,
+    completion,
   )
   const conversations = useMemo(() => {
     const source = pagination.hasLoaded || debouncedQuery
       ? pagination.items
       : cachedConversations.filter((conversation) =>
-          historyProjectId === '__none__' ? !conversation.project_id : conversation.project_id === historyProjectId
+          (historyProjectId === '__none__' ? !conversation.project_id : conversation.project_id === historyProjectId) &&
+          (completion === 'all' || (completion === 'completed') === (conversation.completed_at != null))
         )
     return withLivePinState(source, cachedConversations)
-  }, [cachedConversations, debouncedQuery, historyProjectId, pagination.hasLoaded, pagination.items])
+  }, [cachedConversations, completion, debouncedQuery, historyProjectId, pagination.hasLoaded, pagination.items])
   const [pendingDeleteConv, setPendingDeleteConv] = useState<{ id: string; title: string } | null>(null)
   const [pendingRenameConv, setPendingRenameConv] = useState<{ id: string; title: string } | null>(null)
 
@@ -90,14 +95,27 @@ export function ProjectHistoryPane() {
           ? <div className={`w-1 shrink-0 ${colors.dot}`} style={{ backgroundColor: projectColorHex(project?.color ?? 'blue') }} />
           : <div className="w-1 shrink-0" />
         }
-        <div className="flex items-start gap-2 px-3 py-2 flex-1 min-w-0">
+        <button
+          type="button"
+          disabled={isGenerating}
+          onClick={(event) => {
+            event.stopPropagation()
+            void (isCompleted ? markConversationIncomplete(conv.id) : markConversationComplete(conv.id)).then(pagination.refresh)
+          }}
+          className={`pointer-events-none absolute left-3 top-1/2 z-10 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-nexy-sm border bg-nexy-raised opacity-0 shadow-nexy transition-all group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 focus:pointer-events-auto focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-0 group-hover:disabled:opacity-40 group-focus-within:disabled:opacity-40 ${
+            isCompleted ? 'border-nexy-success bg-nexy-success/10 text-nexy-success' : `border-nexy-border text-nexy-muted ${isActive ? '' : 'hover:border-nexy-success hover:text-nexy-success'}`
+          }`}
+          title={isGenerating ? 'Cannot change completion while generating' : isCompleted ? 'Mark incomplete' : 'Mark complete'}
+          aria-label={isCompleted ? 'Mark conversation incomplete' : 'Mark conversation complete'}
+        >
+          <NexyIcon name={isCompleted ? 'checked-box' : 'check'} className="w-3 h-3" />
+        </button>
+        <div className="flex items-start gap-2 py-2 pl-10 pr-3 flex-1 min-w-0">
           {isPinned(conv) && <NexyIcon name="pin" className="w-3 h-3 text-nexy-muted shrink-0 mt-0.5" />}
           {isGenerating ? (
             <span title="Generating…"><Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin shrink-0 mt-0.5" /></span>
           ) : isUnread ? (
             <span className="nexy-notification-dot w-2 h-2 bg-nexy-info shrink-0 mt-1.5" />
-          ) : isCompleted ? (
-            <span title="Complete"><NexyIcon name="checked-box" className="w-4 h-4 text-nexy-success shrink-0" /></span>
           ) : null}
           <div className="flex-1 min-w-0">
             <p className="text-xs font-medium text-nexy-text truncate">{conv.title}</p>
@@ -119,35 +137,6 @@ export function ProjectHistoryPane() {
           >
             <NexyIcon name={isPinned(conv) ? 'unpin' : 'pin'} className="w-3 h-3" />
           </button>
-          {isCompleted ? (
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                void markConversationIncomplete(conv.id).then(() =>
-                  pagination.updateItem(conv.id, (c) => ({ ...c, completed_at: null }))
-                )
-              }}
-              className="p-1 rounded-nexy-sm text-nexy-success hover:text-nexy-muted hover:bg-nexy-recessed"
-              title="Mark incomplete"
-              aria-label="Mark conversation incomplete"
-            >
-              <span className="block h-3 w-3 border-2 border-current" />
-            </button>
-          ) : (
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                void markConversationComplete(conv.id).then(() =>
-                  pagination.updateItem(conv.id, (c) => ({ ...c, completed_at: Date.now() }))
-                )
-              }}
-              className="p-1 rounded-nexy-sm text-nexy-muted hover:text-nexy-success hover:bg-nexy-recessed"
-              title="Mark complete"
-              aria-label="Mark conversation complete"
-            >
-              <NexyIcon name="check" className="w-3 h-3" />
-            </button>
-          )}
           <button
             onClick={(e) => { e.stopPropagation(); setPendingDeleteConv({ id: conv.id, title: conv.title }) }}
             className="p-1 rounded-nexy-sm text-nexy-muted hover:text-nexy-error hover:bg-nexy-recessed shrink-0"
@@ -165,13 +154,13 @@ export function ProjectHistoryPane() {
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 px-3 h-9 border-b border-gray-100 dark:border-gray-800">
-        <div className="flex-1 flex items-center gap-1.5 bg-gray-100 dark:bg-gray-800 rounded-lg px-2 py-0.5">
+        <div className="flex-1 min-w-0 flex items-center gap-1.5 bg-gray-100 dark:bg-gray-800 rounded-lg px-2 py-0.5">
           <NexyIcon name="search" className="w-3.5 h-3.5 text-nexy-muted shrink-0" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search chats…"
-            className="flex-1 text-xs bg-transparent focus:outline-none text-gray-700 dark:text-gray-200 placeholder-gray-400"
+            className="flex-1 min-w-0 text-xs bg-transparent focus:outline-none text-gray-700 dark:text-gray-200 placeholder-gray-400"
             aria-label="Search project chats"
           />
           {query && (
@@ -180,6 +169,7 @@ export function ProjectHistoryPane() {
             </button>
           )}
         </div>
+        <CompletionFilterTabs value={completion} onChange={setCompletion} />
         <button
           onClick={() => newChat({ projectId: historyProjectId === '__none__' ? null : historyProjectId })}
           className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 px-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors shrink-0"

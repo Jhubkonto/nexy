@@ -11,6 +11,8 @@ import { NexyIcon } from '../ui/icons/NexyIcon'
 import { PaginationFooter } from '../ui/PaginationFooter'
 import { useConversationPagination } from '../../hooks/useConversationPagination'
 import { useDebouncedSearchQuery } from '../../hooks/useDebouncedSearchQuery'
+import { CompletionFilterTabs } from './CompletionFilterTabs'
+import type { ConversationCompletionFilter } from '../../../shared/types'
 
 export function ChatsPane({ pinnedOnly = false }: { pinnedOnly?: boolean } = {}) {
   const cachedConversations = useAppStore((s) => s.conversations)
@@ -29,14 +31,17 @@ export function ChatsPane({ pinnedOnly = false }: { pinnedOnly?: boolean } = {})
   const markConversationIncomplete = useAppStore((s) => s.markConversationIncomplete)
   const setConversationPinned = useAppStore((s) => s.setConversationPinned)
   const [query, setQuery] = useState('')
+  const [completion, setCompletion] = useState<ConversationCompletionFilter>(pinnedOnly ? 'all' : 'ongoing')
   const debouncedQuery = useDebouncedSearchQuery(query)
-  const pagination = useConversationPagination({ type: pinnedOnly ? 'pinned' : 'all' }, debouncedQuery)
+  const pagination = useConversationPagination({ type: pinnedOnly ? 'pinned' : 'all' }, debouncedQuery, '', completion)
   const conversations = useMemo(() => {
     const source = !pagination.hasLoaded && !debouncedQuery
-      ? (pinnedOnly ? cachedConversations.filter(isPinned) : cachedConversations.slice(0, 30))
+      ? (pinnedOnly
+          ? cachedConversations.filter(isPinned)
+          : cachedConversations.filter((conversation) => completion === 'all' || (completion === 'completed') === (conversation.completed_at != null)).slice(0, 30))
       : pagination.items
     return withLivePinState(source, cachedConversations)
-  }, [cachedConversations, debouncedQuery, pagination.hasLoaded, pagination.items, pinnedOnly])
+  }, [cachedConversations, completion, debouncedQuery, pagination.hasLoaded, pagination.items, pinnedOnly])
   const [pendingDeleteConv, setPendingDeleteConv] = useState<{ id: string; title: string } | null>(null)
   const [pendingRenameConv, setPendingRenameConv] = useState<{ id: string; title: string } | null>(null)
 
@@ -52,7 +57,7 @@ export function ChatsPane({ pinnedOnly = false }: { pinnedOnly?: boolean } = {})
     const agent = conv.agent_id ? agents.find((a) => a.id === conv.agent_id) : null
     const isUnread = unreadConversationIds.includes(conv.id)
     const isGenerating = generatingConversationIds.includes(conv.id)
-    const isCompleted = completedConversationIds.includes(conv.id)
+    const isCompleted = conv.completed_at != null || completedConversationIds.includes(conv.id)
     const colors = project ? (PROJECT_COLOR_MAP[project.color] ?? PROJECT_COLOR_MAP.blue) : null
 
     return (
@@ -70,14 +75,27 @@ export function ChatsPane({ pinnedOnly = false }: { pinnedOnly?: boolean } = {})
           ? <div className={`w-1 shrink-0 ${colors.dot}`} style={{ backgroundColor: projectColorHex(project?.color ?? 'blue') }} />
           : <div className="w-1 shrink-0" />
         }
-        <div className="flex items-start gap-2 px-3 py-2 flex-1 min-w-0">
+        <button
+          type="button"
+          disabled={isGenerating}
+          onClick={(e) => {
+            e.stopPropagation()
+            void (isCompleted ? markConversationIncomplete(conv.id) : markConversationComplete(conv.id)).then(pagination.refresh)
+          }}
+          className={`pointer-events-none absolute left-3 top-1/2 z-10 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-nexy-sm border bg-nexy-raised opacity-0 shadow-nexy transition-all group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 focus:pointer-events-auto focus:opacity-100 disabled:cursor-not-allowed disabled:opacity-0 group-hover:disabled:opacity-40 group-focus-within:disabled:opacity-40 ${
+            isCompleted ? 'border-nexy-success bg-nexy-success/10 text-nexy-success' : `border-nexy-border text-nexy-muted ${isActive ? '' : 'hover:border-nexy-success hover:text-nexy-success'}`
+          }`}
+          title={isGenerating ? 'Cannot change completion while generating' : isCompleted ? 'Mark incomplete' : 'Mark complete'}
+          aria-label={isCompleted ? 'Mark conversation incomplete' : 'Mark conversation complete'}
+        >
+          <NexyIcon name={isCompleted ? 'checked-box' : 'check'} className="w-3 h-3" />
+        </button>
+        <div className="flex items-start gap-2 py-2 pl-10 pr-3 flex-1 min-w-0">
           {isPinned(conv) && <NexyIcon name="pin" className="w-3 h-3 text-nexy-muted shrink-0 mt-0.5" />}
           {isGenerating ? (
             <span title="Generating…"><Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin shrink-0 mt-0.5" /></span>
           ) : isUnread ? (
             <span className="nexy-notification-dot w-2 h-2 bg-nexy-info shrink-0 mt-1.5" />
-          ) : isCompleted ? (
-            <span title="Complete"><NexyIcon name="checked-box" className="w-4 h-4 text-nexy-success shrink-0" /></span>
           ) : null}
           <div className="flex-1 min-w-0">
             <p className="text-xs font-medium text-nexy-text truncate">{conv.title}</p>
@@ -99,25 +117,6 @@ export function ChatsPane({ pinnedOnly = false }: { pinnedOnly?: boolean } = {})
             >
               <NexyIcon name={isPinned(conv) ? 'unpin' : 'pin'} className="w-3 h-3" />
             </button>
-            {isCompleted ? (
-              <button
-                onClick={(e) => { e.stopPropagation(); void markConversationIncomplete(conv.id) }}
-                className="p-1 rounded-nexy-sm text-nexy-success hover:text-nexy-muted hover:bg-nexy-recessed"
-                title="Mark incomplete"
-                aria-label="Mark conversation incomplete"
-              >
-                <span className="block h-3 w-3 border-2 border-current" />
-              </button>
-            ) : (
-              <button
-                onClick={(e) => { e.stopPropagation(); void markConversationComplete(conv.id) }}
-                className="p-1 rounded-nexy-sm text-nexy-muted hover:text-nexy-success hover:bg-nexy-recessed"
-                title="Mark complete"
-                aria-label="Mark conversation complete"
-              >
-                <NexyIcon name="check" className="w-3 h-3" />
-              </button>
-            )}
             <button
               onClick={(e) => { e.stopPropagation(); setPendingDeleteConv({ id: conv.id, title: conv.title }) }}
               className="p-1 rounded-nexy-sm text-nexy-muted hover:text-nexy-error hover:bg-nexy-recessed"
@@ -135,13 +134,13 @@ export function ChatsPane({ pinnedOnly = false }: { pinnedOnly?: boolean } = {})
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 px-3 h-9 border-b-2 border-nexy-border bg-nexy-surface">
-        <div className="flex-1 flex items-center gap-1.5 bg-nexy-recessed border border-nexy-border rounded-nexy-sm px-2 py-0.5">
+        <div className="flex-1 min-w-0 flex items-center gap-1.5 bg-nexy-recessed border border-nexy-border rounded-nexy-sm px-2 py-0.5">
           <NexyIcon name="search" className="w-3.5 h-3.5 text-nexy-muted shrink-0" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={pinnedOnly ? 'Search pinned chats…' : 'Search chats…'}
-            className="flex-1 text-xs bg-transparent focus:outline-none text-nexy-text placeholder:text-nexy-muted"
+            className="flex-1 min-w-0 text-xs bg-transparent focus:outline-none text-nexy-text placeholder:text-nexy-muted"
           />
           {query && (
             <button onClick={() => setQuery('')} className="text-nexy-muted hover:text-nexy-text">
@@ -149,6 +148,7 @@ export function ChatsPane({ pinnedOnly = false }: { pinnedOnly?: boolean } = {})
             </button>
           )}
         </div>
+        {!pinnedOnly && <CompletionFilterTabs value={completion} onChange={setCompletion} />}
         <button
           onClick={() => newChat()}
           className="flex items-center gap-1 text-xs font-bold text-nexy-muted hover:text-nexy-text px-2 py-1 rounded-nexy-sm border border-transparent hover:border-nexy-border hover:bg-nexy-recessed transition-colors shrink-0"

@@ -3,6 +3,7 @@ import { normalizeProjectColor, PROJECT_COLOR_OPTIONS } from '../../../shared/pr
 export type { Conversation } from '../../store/types'
 
 export const PANE_MIN = 220
+export const CHAT_HISTORY_PANE_MIN = 320
 export const PANE_MAX = 500
 
 export const PROJECT_COLOR_MAP: Record<string, { bg: string; dot: string; ring: string }> = {
