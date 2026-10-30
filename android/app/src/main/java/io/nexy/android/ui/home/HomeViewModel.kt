@@ -43,6 +43,10 @@ class HomeViewModel(
     private val _conversationHasMore = MutableStateFlow(false)
     val conversationHasMore: StateFlow<Boolean> = _conversationHasMore.asStateFlow()
     private val _conversationNextCursor = MutableStateFlow<String?>(null)
+    private var conversationScopeType = "all"
+    private var conversationScopeId: String? = null
+    private val _completionFilter = MutableStateFlow("ongoing")
+    val completionFilter: StateFlow<String> = _completionFilter.asStateFlow()
     private val pendingConversationPages = mutableMapOf<String, Boolean>()
     val agents: StateFlow<List<Agent>> = WsRepository.agents
     val projects: StateFlow<List<Project>> = WsRepository.projects
@@ -187,6 +191,24 @@ class HomeViewModel(
                         _isPullRefreshingConversations.value = false
                         _searchResults.value = if (_searchQuery.value.isBlank()) null else _conversations.value
                     }
+                    is WsEvent.DebriefConversationCompleted -> {
+                        _conversations.value = _conversations.value.map {
+                            if (it.id == event.conversationId) it.copy(completed_at = event.completedAt) else it
+                        }
+                        if (_completionFilter.value == "ongoing") {
+                            _conversations.value = _conversations.value.filterNot { it.id == event.conversationId }
+                        }
+                        refreshConversations()
+                    }
+                    is WsEvent.DebriefConversationIncompleted -> {
+                        _conversations.value = _conversations.value.map {
+                            if (it.id == event.conversationId) it.copy(completed_at = null) else it
+                        }
+                        if (_completionFilter.value == "completed") {
+                            _conversations.value = _conversations.value.filterNot { it.id == event.conversationId }
+                        }
+                        refreshConversations()
+                    }
                     is WsEvent.AgentList -> {
                         _isRefreshingAgents.value = false
                         _isPullRefreshingAgents.value = false
@@ -230,11 +252,16 @@ class HomeViewModel(
         pendingConversationPages[requestId] = append
         val payload = mutableMapOf<String, Any>(
             "requestId" to requestId,
-            "scopeType" to "all",
-            "scope" to mapOf("type" to "all"),
+            "scopeType" to conversationScopeType,
+            "scope" to buildMap<String, Any> {
+                put("type", conversationScopeType)
+                conversationScopeId?.let { put("id", it) }
+            },
+            "completion" to _completionFilter.value,
             "query" to query,
             "limit" to 30,
         )
+        conversationScopeId?.let { payload["scopeId"] = it }
         if (append) _conversationNextCursor.value?.let { payload["cursor"] = it }
         wsClient.send("conversation:list-page", payload)
     }
@@ -299,6 +326,34 @@ class HomeViewModel(
             _isRefreshingConversations.value = true
             requestConversationPage(append = false, query = q.trim())
         }
+    }
+
+    /** Scope and completion are server-side query inputs, never a filter over loaded pages. */
+    fun setConversationScope(type: String, id: String? = null) {
+        if (conversationScopeType == type && conversationScopeId == id) return
+        conversationScopeType = type
+        conversationScopeId = id
+        refreshConversations()
+    }
+
+    fun setCompletionFilter(filter: String) {
+        if (filter !in setOf("ongoing", "completed", "all") || _completionFilter.value == filter) return
+        _completionFilter.value = filter
+        refreshConversations()
+    }
+
+    fun markConversationComplete(id: String) {
+        WsRepository.markConversationComplete(id)
+        _conversations.value = _conversations.value.map { if (it.id == id) it.copy(completed_at = System.currentTimeMillis()) else it }
+        if (_completionFilter.value == "ongoing") _conversations.value = _conversations.value.filterNot { it.id == id }
+        refreshConversations()
+    }
+
+    fun markConversationIncomplete(id: String) {
+        WsRepository.markConversationIncomplete(id)
+        _conversations.value = _conversations.value.map { if (it.id == id) it.copy(completed_at = null) else it }
+        if (_completionFilter.value == "completed") _conversations.value = _conversations.value.filterNot { it.id == id }
+        refreshConversations()
     }
 
     fun renameConversation(id: String, title: String) = WsRepository.renameConversation(id, title)

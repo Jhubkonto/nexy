@@ -90,6 +90,7 @@ fun HomeScreen(
     onOpenScheduled: () -> Unit,
     onOpenAutomatedWorkflows: () -> Unit,
     onOpenRatings: () -> Unit,
+    onOpenWorkHistory: () -> Unit = {},
     onOpenSkillGenerator: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenNewContent: () -> Unit,
@@ -116,6 +117,7 @@ fun HomeScreen(
     val activeConversationIds by vm.activeConversationIds.collectAsStateWithLifecycle()
     val pendingConversationIds by vm.pendingConversationIds.collectAsStateWithLifecycle()
     val completedWhileAwayIds by vm.completedWhileAwayIds.collectAsStateWithLifecycle()
+    val completionFilter by vm.completionFilter.collectAsStateWithLifecycle()
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var showNewChatSheet by remember { mutableStateOf(false) }
     var newChatQuery by remember { mutableStateOf("") }
@@ -350,6 +352,11 @@ fun HomeScreen(
                                 enabled = connectionState == ConnectionState.CONNECTED,
                             )
                             DropdownMenuItem(
+                                text = { Text(if (connectionState == ConnectionState.CONNECTED) "Work history" else "Work history · desktop required") },
+                                onClick = { showOverflowMenu = false; onOpenWorkHistory() },
+                                enabled = connectionState == ConnectionState.CONNECTED,
+                            )
+                            DropdownMenuItem(
                                 text = { Text(if (connectionState == ConnectionState.CONNECTED) "Ratings" else "Ratings · desktop required") },
                                 leadingIcon = { NexyIcon(NexyIconName.Rating, contentDescription = null) },
                                 onClick = { showOverflowMenu = false; onOpenRatings() },
@@ -435,12 +442,17 @@ fun HomeScreen(
                     searchQuery = searchQuery,
                     searchResults = searchResults,
                     onSearchQueryChange = { vm.setSearchQuery(it) },
+                    completionFilter = completionFilter,
+                    onCompletionFilterChange = { vm.setCompletionFilter(it) },
+                    onScopeChange = { type, id -> vm.setConversationScope(type, id) },
                     onOpenChat = onOpenChat,
                     onRefresh = { vm.pullRefreshConversations() },
                     onDisconnect = { vm.disconnect() },
                     onRenameConversation = { id, title -> vm.renameConversation(id, title) },
                     onDeleteConversation = { id -> vm.deleteConversation(id) },
                     onTogglePinConversation = { id, pinned -> vm.setPinnedConversation(id, pinned) },
+                    onMarkComplete = { vm.markConversationComplete(it) },
+                    onMarkIncomplete = { vm.markConversationIncomplete(it) },
                     activeConversationIds = activeConversationIds,
                     pendingConversationIds = pendingConversationIds,
                     completedWhileAwayIds = completedWhileAwayIds,

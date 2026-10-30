@@ -47,6 +47,7 @@ class HomeViewModelTest {
         val command = fakeWs.sentCommands.single()
         assertEquals("conversation:list-page", command.command)
         assertEquals(mapOf("type" to "all"), command.data["scope"])
+        assertEquals("ongoing", command.data["completion"])
         assertEquals(30, command.data["limit"])
         assertTrue((command.data["requestId"] as? String).orEmpty().isNotBlank())
         assertTrue(vm.isRefreshingConversations.value)
@@ -272,6 +273,20 @@ class HomeViewModelTest {
         dispatcher.scheduler.runCurrent()
         assertEquals(2, fakeWs.sentCommands.size)
 
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun completionAndScopeChangesRequestServerFilteredPages() = runTest {
+        val fakeWs = FakeWsClient()
+        val vm = HomeViewModel(Application(), fakeWs, FakeApprovalEffects())
+
+        vm.setConversationScope("project", "project-1")
+        vm.setCompletionFilter("completed")
+
+        val command = fakeWs.sentCommands.last()
+        assertEquals(mapOf("type" to "project", "id" to "project-1"), command.data["scope"])
+        assertEquals("completed", command.data["completion"])
         vm.viewModelScope.cancel()
     }
 
