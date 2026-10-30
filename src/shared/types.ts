@@ -1188,7 +1188,7 @@ export interface AutomatedWorkflowTemplateDetail extends AutomatedWorkflowTempla
 export type ArtifactKind =
   | 'document' | 'code' | 'ui' | 'data'
   | 'prompt' | 'agent-config' | 'plan' | 'bundle' | 'other'
-  | 'debrief' | 'quiz' | 'teachback' | 'test-report'
+  | 'debrief' | 'quiz' | 'teachback' | 'test-report' | 'history-report'
 
 export type ArtifactStatus = 'draft' | 'generating' | 'ready' | 'exported' | 'archived' | 'failed'
 
@@ -1512,9 +1512,14 @@ export type ConversationPageScope =
   | { type: 'project'; id: string | null }
   | { type: 'agent'; id: string }
 
+/** Completion is the reversible, user-facing archive state; `archived` remains a separate system flag. */
+export type ConversationCompletionFilter = 'ongoing' | 'completed' | 'all'
+
 export interface ConversationPageRequest {
   requestId?: string
   scope?: ConversationPageScope
+  /** Omitted requests preserve the legacy unfiltered (`all`) behaviour. */
+  completion?: ConversationCompletionFilter
   query?: string
   limit?: number
   cursor?: string | null
@@ -2036,7 +2041,12 @@ export interface ManagedBrowserRuntimeStatus {
   errorLogId?: string
 }
 
-export type McpSandboxStatus = 'sandboxed' | 'starting' | 'unavailable' | 'failed' | 'stopped'
+/**
+ * Runtime state of the OS sandbox used for an external MCP process. `not-applicable`
+ * is reserved for Nexy-owned, in-process bridges; it must never be presented as a
+ * successful third-party sandbox.
+ */
+export type McpSandboxStatus = 'sandboxed' | 'starting' | 'unavailable' | 'failed' | 'stopped' | 'not-applicable'
 
 export interface McpSandboxRuntimeStatus {
   status: McpSandboxStatus
@@ -2341,6 +2351,15 @@ export interface CatalogModel {
 // ---------------------------------------------------------------------------
 
 export type IpcReturnMap = {
+  'work-history:preview': import('./work-history').WorkHistorySource[]
+  'work-history:capabilities': import('./work-history').WorkHistoryCapability[]
+  'work-history:list': import('./work-history').WorkHistoryRun[]
+  'work-history:get': import('./work-history').WorkHistoryRun | null
+  'work-history:start': string
+  'work-history:cancel': boolean
+  'work-history:external-status': import('./work-history').WorkHistoryExternalAccess
+  'work-history:external-enable': import('./work-history').WorkHistoryExternalAccess
+  'work-history:external-disable': import('./work-history').WorkHistoryExternalAccess
   // Agent
   'agent:add-knowledge-file': KnowledgeFile | null
   'agent:create': AgentConfig
@@ -2401,6 +2420,8 @@ export type IpcReturnMap = {
   'chat:respond-user-input': boolean
   'chat:send-message': void
   'chat:stop-generation': void
+  'chat:get-delegation-runs': import('./delegation').DelegationRunSnapshot[]
+  'chat:cancel-delegation-node': import('./delegation').DelegationCancelResult
   'chat:get-emergency-stop': { active: boolean; activatedAt: number | null }
   'chat:activate-emergency-stop': { active: boolean; activatedAt: number | null }
   'chat:resume-conversations': { active: boolean; activatedAt: number | null }
@@ -2413,6 +2434,7 @@ export type IpcReturnMap = {
   'chat:tool-call-event': void
   'chat:team-activity': void
   'chat:team-step-stream': void
+  'chat:delegation-updated': void
   'chat:activity': void
   'chat:activity-global': void
   'chat:turn-event': void
@@ -2840,6 +2862,15 @@ export function isApiError(result: unknown): result is ApiError {
 export type IpcReturn<C extends IpcChannels> = C extends keyof IpcReturnMap ? IpcReturnMap[C] : never
 
 export type IpcChannels =
+  | 'work-history:preview'
+  | 'work-history:capabilities'
+  | 'work-history:list'
+  | 'work-history:get'
+  | 'work-history:start'
+  | 'work-history:cancel'
+  | 'work-history:external-status'
+  | 'work-history:external-enable'
+  | 'work-history:external-disable'
   | 'agent:add-knowledge-file'
   | 'agent:create'
   | 'agent:delete'
@@ -2892,6 +2923,8 @@ export type IpcChannels =
   | 'chat:new'
   | 'chat:send-message'
   | 'chat:stop-generation'
+  | 'chat:get-delegation-runs'
+  | 'chat:cancel-delegation-node'
   | 'chat:get-emergency-stop'
   | 'chat:activate-emergency-stop'
   | 'chat:resume-conversations'
@@ -2904,6 +2937,7 @@ export type IpcChannels =
   | 'chat:tool-call-event'
   | 'chat:team-activity'
   | 'chat:team-step-stream'
+  | 'chat:delegation-updated'
   | 'chat:activity'
   | 'chat:activity-global'
   | 'chat:turn-event'
