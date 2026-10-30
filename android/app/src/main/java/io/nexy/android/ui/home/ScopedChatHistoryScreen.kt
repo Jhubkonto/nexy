@@ -22,6 +22,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import io.nexy.android.ui.components.NexyConfirmDialog
 import io.nexy.android.ui.components.NexyTopAppBar
@@ -73,6 +74,7 @@ fun ScopedChatHistoryScreen(
     val isLoadingMore by vm.isLoadingMore.collectAsStateWithLifecycle()
     val isPullRefreshing by vm.isPullRefreshing.collectAsStateWithLifecycle()
     val searchQuery by vm.searchQuery.collectAsStateWithLifecycle()
+    val completionFilter by vm.completionFilter.collectAsStateWithLifecycle()
     val freshPageGeneration by vm.freshPageGeneration.collectAsStateWithLifecycle()
 
     var deletingConversation by remember { mutableStateOf<Conversation?>(null) }
@@ -166,6 +168,18 @@ fun ScopedChatHistoryScreen(
                 shape = MaterialTheme.shapes.small,
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, autoCorrectEnabled = true),
             )
+            androidx.compose.foundation.layout.Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                listOf("ongoing" to "Ongoing", "completed" to "Completed", "all" to "All").forEach { (value, label) ->
+                    FilterChip(
+                        selected = completionFilter == value,
+                        onClick = { vm.setCompletionFilter(value) },
+                        label = { Text(label) },
+                    )
+                }
+            }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(top = 8.dp))
             // Non-destructive refresh affordance: while refreshing over already-cached rows, show a
             // thin progress bar instead of blanking to the skeleton, matching the global Chats tab.
@@ -217,10 +231,12 @@ fun ScopedChatHistoryScreen(
                             onMarkComplete = { id ->
                                 WsRepository.markConversationComplete(id)
                                 vm.updateCompletedAt(id, System.currentTimeMillis())
+                                vm.onResume()
                             },
                             onMarkIncomplete = { id ->
                                 WsRepository.markConversationIncomplete(id)
                                 vm.updateCompletedAt(id, null)
+                                vm.onResume()
                             },
                             onQuiz = if (onOpenQuiz != null) { id -> onOpenQuiz(id) } else null,
                         )

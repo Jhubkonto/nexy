@@ -63,6 +63,8 @@ class ScopedChatHistoryViewModel(
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+    private val _completionFilter = MutableStateFlow("ongoing")
+    val completionFilter: StateFlow<String> = _completionFilter.asStateFlow()
 
     // Bumped whenever a fresh (non-append) page replaces the list, so the screen can return the
     // LazyColumn to the newest conversation. Appended pages leave the user's scroll position alone.
@@ -89,6 +91,20 @@ class ScopedChatHistoryViewModel(
                     _isRefreshing.value = false
                     _isLoadingMore.value = false
                     _isPullRefreshing.value = false
+                }
+                if (event is WsEvent.DebriefConversationCompleted) {
+                    updateCompletedAt(event.conversationId, event.completedAt)
+                    if (_completionFilter.value == "ongoing") {
+                        _conversations.value = _conversations.value.filterNot { it.id == event.conversationId }
+                    }
+                    requestPage(append = false)
+                }
+                if (event is WsEvent.DebriefConversationIncompleted) {
+                    updateCompletedAt(event.conversationId, null)
+                    if (_completionFilter.value == "completed") {
+                        _conversations.value = _conversations.value.filterNot { it.id == event.conversationId }
+                    }
+                    requestPage(append = false)
                 }
             }
         }
@@ -154,6 +170,12 @@ class ScopedChatHistoryViewModel(
         }
     }
 
+    fun setCompletionFilter(filter: String) {
+        if (filter !in setOf("ongoing", "completed", "all") || _completionFilter.value == filter) return
+        _completionFilter.value = filter
+        requestPage(append = false)
+    }
+
     private fun requestPage(append: Boolean) {
         val type = scopeType ?: return
         val requestId = UUID.randomUUID().toString()
@@ -172,6 +194,7 @@ class ScopedChatHistoryViewModel(
             "scopeType" to type.name.lowercase(),
             "scopeId" to scopeId,
             "query" to _searchQuery.value.trim(),
+            "completion" to _completionFilter.value,
             "requestId" to requestId,
             "limit" to PAGE_LIMIT,
             "scope" to mapOf("type" to type.name.lowercase(), "id" to scopeId),

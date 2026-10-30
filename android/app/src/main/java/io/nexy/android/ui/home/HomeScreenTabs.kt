@@ -79,7 +79,7 @@ import kotlinx.coroutines.launch
 
 private sealed class ChatFilter {
     object All : ChatFilter()
-    data class ByAgent(val agentName: String) : ChatFilter()
+    data class ByAgent(val agentId: String, val agentName: String) : ChatFilter()
     data class ByProject(val projectId: String, val projectName: String) : ChatFilter()
 }
 
@@ -94,12 +94,17 @@ fun ChatsTab(
     searchQuery: String,
     searchResults: List<Conversation>?,
     onSearchQueryChange: (String) -> Unit,
+    completionFilter: String = "ongoing",
+    onCompletionFilterChange: (String) -> Unit = {},
+    onScopeChange: (String, String?) -> Unit = { _, _ -> },
     onOpenChat: (String) -> Unit,
     onRefresh: () -> Unit,
     onDisconnect: () -> Unit,
     onRenameConversation: (id: String, title: String) -> Unit,
     onDeleteConversation: (id: String) -> Unit,
     onTogglePinConversation: (id: String, pinned: Boolean) -> Unit = { _, _ -> },
+    onMarkComplete: (String) -> Unit = {},
+    onMarkIncomplete: (String) -> Unit = {},
     activeConversationIds: Set<String> = emptySet(),
     pendingConversationIds: Set<String> = emptySet(),
     completedWhileAwayIds: Set<String> = emptySet(),
@@ -114,28 +119,13 @@ fun ChatsTab(
     var renameText by remember { mutableStateOf("") }
     val filterSheetState = rememberModalBottomSheetState()
     val scope = rememberCoroutineScope()
-    val uniqueAgentNames = remember(conversations) {
-        conversations.mapNotNull { it.agent_name }.distinct()
-    }
-    val uniqueProjectsWithChats = remember(conversations, projects) {
-        projects.filter { p -> conversations.any { c -> c.project_id == p.id } }
-    }
+    val uniqueAgents = remember(agents) { agents.sortedBy { it.name } }
+    val uniqueProjectsWithChats = remember(projects) { projects.sortedBy { it.name } }
 
-    // When a search query is active show server results; otherwise apply local scope filter
-    val displayList: List<Conversation> = if (searchQuery.isNotBlank()) {
-        searchResults ?: emptyList()
-    } else {
-        remember(conversations, activeFilter) {
-            val filtered = when (val f = activeFilter) {
-                is ChatFilter.All -> conversations
-                is ChatFilter.ByAgent -> conversations.filter { it.agent_name == f.agentName }
-                is ChatFilter.ByProject -> conversations.filter { it.project_id == f.projectId }
-            }
-            filtered.sortedWith(compareByDescending { it.pinned })
-        }
-    }
+    // Scope, completion and search are all applied by the desktop's paginated query.
+    val displayList: List<Conversation> = if (searchQuery.isNotBlank()) searchResults ?: emptyList() else conversations
 
-    val showFilters = searchQuery.isBlank() && (uniqueAgentNames.isNotEmpty() || uniqueProjectsWithChats.isNotEmpty())
+    val showFilters = uniqueAgents.isNotEmpty() || uniqueProjectsWithChats.isNotEmpty()
     val activeFilterLabel = when (val f = activeFilter) {
         is ChatFilter.All -> "All chats"
         is ChatFilter.ByAgent -> "Agent: ${f.agentName}"
@@ -197,22 +187,36 @@ fun ChatsTab(
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             FilterSheetItem(label = "All chats", selected = activeFilter is ChatFilter.All) {
                 activeFilter = ChatFilter.All
+                onScopeChange("all", null)
                 scope.launch { filterSheetState.hide() }.invokeOnCompletion { showFilterSheet = false }
             }
-            if (uniqueAgentNames.isNotEmpty()) {
+            Text(
+                "Status",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+            )
+            listOf("ongoing" to "Ongoing", "completed" to "Completed", "all" to "All statuses").forEach { (value, label) ->
+                FilterSheetItem(label = label, prefix = "Status", selected = completionFilter == value) {
+                    onCompletionFilterChange(value)
+                    scope.launch { filterSheetState.hide() }.invokeOnCompletion { showFilterSheet = false }
+                }
+            }
+            if (uniqueAgents.isNotEmpty()) {
                 Text(
                     "Agents",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
                 )
-                uniqueAgentNames.forEach { name ->
+                uniqueAgents.forEach { agent ->
                     FilterSheetItem(
-                        label = name,
+                        label = agent.name,
                         prefix = "Agent",
-                        selected = activeFilter == ChatFilter.ByAgent(name),
+                        selected = activeFilter == ChatFilter.ByAgent(agent.id, agent.name),
                     ) {
-                        activeFilter = ChatFilter.ByAgent(name)
+                        activeFilter = ChatFilter.ByAgent(agent.id, agent.name)
+                        onScopeChange("agent", agent.id)
                         scope.launch { filterSheetState.hide() }.invokeOnCompletion { showFilterSheet = false }
                     }
                 }
@@ -231,6 +235,7 @@ fun ChatsTab(
                         selected = activeFilter == ChatFilter.ByProject(project.id, project.name),
                     ) {
                         activeFilter = ChatFilter.ByProject(project.id, project.name)
+                        onScopeChange("project", project.id)
                         scope.launch { filterSheetState.hide() }.invokeOnCompletion { showFilterSheet = false }
                     }
                 }
@@ -280,7 +285,7 @@ fun ChatsTab(
                             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, autoCorrectEnabled = true),
                         )
                         FilterChip(
-                            selected = activeFilter !is ChatFilter.All,
+                            selected = activeFilter !is ChatFilter.All || completionFilter != "ongoing",
                             onClick = { if (showFilters) showFilterSheet = true },
                             label = {
                                 Text(
@@ -348,7 +353,7 @@ fun ChatsTab(
                                         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, autoCorrectEnabled = true),
                                     )
                                     FilterChip(
-                                        selected = activeFilter !is ChatFilter.All,
+                                        selected = activeFilter !is ChatFilter.All || completionFilter != "ongoing",
                                         onClick = { if (showFilters) showFilterSheet = true },
                                         label = {
                                             Text(
@@ -393,8 +398,8 @@ fun ChatsTab(
                                 },
                                 onDelete = { deletingConversation = conv },
                                 onTogglePin = { id, pinned -> onTogglePinConversation(id, pinned) },
-                                onMarkComplete = { id -> WsRepository.markConversationComplete(id) },
-                                onMarkIncomplete = { id -> WsRepository.markConversationIncomplete(id) },
+                                onMarkComplete = onMarkComplete,
+                                onMarkIncomplete = onMarkIncomplete,
                             )
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         }

@@ -48,6 +48,7 @@ class ScopedChatHistoryViewModelTest {
         assertEquals("project", command.data["scopeType"])
         assertEquals("proj-1", command.data["scopeId"])
         assertEquals(mapOf("type" to "project", "id" to "proj-1"), command.data["scope"])
+        assertEquals("ongoing", command.data["completion"])
         assertTrue(vm.isRefreshing.value)
 
         vm.viewModelScope.cancel()
@@ -154,6 +155,20 @@ class ScopedChatHistoryViewModelTest {
         assertEquals(initialCount + 1, fakeWs.sentCommands.size)
         assertEquals("nexy", fakeWs.sentCommands.last().data["query"])
 
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun completionFilterReplacesTheCursorPage() = runTest {
+        val fakeWs = FakeWsClient()
+        val vm = ScopedChatHistoryViewModel(Application(), fakeWs)
+        vm.start(HistoryScope.Agent, "agent-1")
+        advanceUntilIdle()
+
+        vm.setCompletionFilter("completed")
+
+        assertEquals("completed", fakeWs.sentCommands.last().data["completion"])
+        assertEquals("agent", fakeWs.sentCommands.last().data["scopeType"])
         vm.viewModelScope.cancel()
     }
 
