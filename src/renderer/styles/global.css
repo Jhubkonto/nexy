@@ -56,6 +56,30 @@
   contain-intrinsic-size: 0 240px;
 }
 
+/* Timeline markers used to straddle a border at the element's left edge. That works in a
+ * normal flow, but `content-visibility: auto` gives long-transcript messages paint
+ * containment and clips the marker/halo that overhangs its box. Keep the line and marker
+ * in a dedicated internal gutter instead, so their geometry is identical for both regular
+ * and windowed transcript entries. */
+.chat-timeline {
+  position: relative;
+  padding-left: 1.25rem;
+}
+
+.chat-timeline::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0.375rem;
+  width: 2px;
+  content: '';
+  background: rgb(229 231 235);
+}
+
+.dark .chat-timeline::before {
+  background: rgb(55 65 81);
+}
+
 /* Classic and 8-bit are visual styles; `.dark` remains the independent brightness axis. */
 [data-ui-style='classic'] {
   --nexy-outer-frame: 249 250 251;

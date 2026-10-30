@@ -2048,6 +2048,50 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
         ON credential_bindings(conversation_id, capability, expires_at);
     `,
   },
+  {
+    // SQLite cannot extend a CHECK constraint in place. Preserve historical rows while allowing
+    // the operator-visible cancellation terminal state introduced by delegated-work controls.
+    version: 103,
+    run: (db) => {
+      db.exec(`
+        ALTER TABLE agent_delegations RENAME TO agent_delegations_legacy;
+        CREATE TABLE agent_delegations (
+          id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL,
+          leader_agent_id TEXT NOT NULL,
+          specialist_agent_id TEXT NOT NULL,
+          task TEXT NOT NULL,
+          result TEXT,
+          status TEXT NOT NULL CHECK (status IN ('done', 'error', 'cancelled')),
+          duration_ms INTEGER,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+        );
+        INSERT INTO agent_delegations (id, conversation_id, leader_agent_id, specialist_agent_id, task, result, status, duration_ms, created_at)
+          SELECT id, conversation_id, leader_agent_id, specialist_agent_id, task, result, status, duration_ms, created_at
+          FROM agent_delegations_legacy;
+        DROP TABLE agent_delegations_legacy;
+        CREATE INDEX IF NOT EXISTS idx_delegations_conversation ON agent_delegations(conversation_id, created_at);
+      `);
+    },
+  },
+  {
+    version: 104,
+    sql: `
+      CREATE INDEX IF NOT EXISTS idx_messages_history_timestamp ON messages(timestamp, conversation_id);
+      CREATE TABLE IF NOT EXISTS work_history_runs (
+        id TEXT PRIMARY KEY, request_json TEXT NOT NULL, sources_json TEXT NOT NULL,
+        status TEXT NOT NULL, progress TEXT NOT NULL, report TEXT, error TEXT,
+        created_at INTEGER NOT NULL, finished_at INTEGER
+      );
+    `,
+  },
+  {
+    version: 105,
+    sql: `
+      ALTER TABLE work_history_runs ADD COLUMN artifact_id TEXT;
+      ALTER TABLE work_history_runs ADD COLUMN artifact_version_id TEXT;
+    `,
+  },
 ];
 
 
