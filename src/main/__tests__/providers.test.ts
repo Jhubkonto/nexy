@@ -439,6 +439,22 @@ describe('Providers — IPC Handlers', () => {
       expect(activeStreamingRequests.has('conv-2')).toBe(true)
     })
 
+    it('fans a conversation stop out to delegated specialist stream ids', async () => {
+      const { abortActiveStream, activeStreamingRequests } = await import('../providers')
+      const root = { destroy: vi.fn() }
+      const child = { destroy: vi.fn() }
+      const unrelated = { destroy: vi.fn() }
+      activeStreamingRequests.set('conv-1', root as never)
+      activeStreamingRequests.set('conv-1:step-a', child as never)
+      activeStreamingRequests.set('conv-10:step-b', unrelated as never)
+
+      abortActiveStream('conv-1')
+
+      expect(root.destroy).toHaveBeenCalledOnce()
+      expect(child.destroy).toHaveBeenCalledOnce()
+      expect(unrelated.destroy).not.toHaveBeenCalled()
+    })
+
     it('aborts all active streams when no conversation id is provided', async () => {
       const { abortActiveStream, activeStreamingRequests } = await import('../providers')
       const req1 = { destroy: vi.fn() } as unknown as { destroy: ReturnType<typeof vi.fn> }

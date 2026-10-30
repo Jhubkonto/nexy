@@ -463,7 +463,7 @@ export async function sendOpenAINonStreaming(
   apiKey: ProviderCredentialInput,
   model: string,
   messages: ProviderMessage[],
-  options: { maxTokens?: number; temperature?: number } = {},
+  options: { maxTokens?: number; temperature?: number; conversationId?: string } = {},
   baseUrl?: string,
 ): Promise<ProviderNonStreamResult> {
   apiKey = resolveProviderCredentialInput(apiKey)
@@ -475,12 +475,13 @@ export async function sendOpenAINonStreaming(
     temperature: options.temperature ?? 0.3
   })
 
-  const parsed = await chatCompletionsRequest(openAiEndpoint(apiKey, baseUrl), body)
+  const parsed = await chatCompletionsRequest(openAiEndpoint(apiKey, baseUrl), body, options.conversationId)
   const msg = extractMessage(parsed)
   const citations = extractCitations(parsed)
   return {
     content: typeof msg?.content === 'string' ? msg.content : null,
     toolCalls: [],
+    ...(extractFinishReason(parsed) ? { finishReason: extractFinishReason(parsed) } : {}),
     ...(citations.length > 0 ? { citations } : {}),
   }
 }
@@ -648,7 +649,7 @@ export async function sendAzureNonStreaming(
   endpoint: string,
   deployment: string,
   messages: ProviderMessage[],
-  options: { maxTokens?: number; temperature?: number } = {}
+  options: { maxTokens?: number; temperature?: number; conversationId?: string } = {}
 ): Promise<ProviderNonStreamResult> {
   apiKey = resolveProviderCredentialInput(apiKey)
   const body = JSON.stringify({
@@ -658,12 +659,13 @@ export async function sendAzureNonStreaming(
     temperature: options.temperature ?? 0.3
   })
 
-  const parsed = await chatCompletionsRequest(azureEndpoint(apiKey, endpoint, deployment), body)
+  const parsed = await chatCompletionsRequest(azureEndpoint(apiKey, endpoint, deployment), body, options.conversationId)
   const msg = extractMessage(parsed)
   const citations = extractCitations(parsed)
   return {
     content: typeof msg?.content === 'string' ? msg.content : null,
     toolCalls: [],
+    ...(extractFinishReason(parsed) ? { finishReason: extractFinishReason(parsed) } : {}),
     ...(citations.length > 0 ? { citations } : {}),
   }
 }

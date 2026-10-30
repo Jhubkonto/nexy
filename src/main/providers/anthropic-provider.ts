@@ -162,6 +162,7 @@ export async function sendAnthropicWithTools(
   return {
     content,
     toolCalls,
+    ...(typeof parsed.stop_reason === 'string' ? { finishReason: parsed.stop_reason } : {}),
     ...(typeof parsed.model === 'string' ? { model: parsed.model } : {}),
     ...(usage ? { usage } : {}),
   }
