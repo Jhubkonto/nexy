@@ -80,6 +80,15 @@ function typedOff(channel: IpcChannels, handler: IpcEventHandler): void {
 // ---------------------------------------------------------------------------
 
 const api = {
+  workHistoryPreview: (request: import('../shared/work-history').WorkHistoryRequest) => typedInvoke('work-history:preview', request),
+  workHistoryCapabilities: () => typedInvoke('work-history:capabilities'),
+  workHistoryStart: (request: import('../shared/work-history').WorkHistoryRequest) => typedInvoke('work-history:start', request),
+  workHistoryList: () => typedInvoke('work-history:list'),
+  workHistoryGet: (id: string) => typedInvoke('work-history:get', id),
+  workHistoryCancel: (id: string) => typedInvoke('work-history:cancel', id),
+  workHistoryExternalStatus: () => typedInvoke('work-history:external-status'),
+  workHistoryExternalEnable: () => typedInvoke('work-history:external-enable'),
+  workHistoryExternalDisable: () => typedInvoke('work-history:external-disable'),
   // Platform
   platform: process.platform,
 
@@ -268,6 +277,8 @@ const api = {
     return () => typedOff('chat:thinking-end', handler)
   },
   stopGeneration: (conversationId?: string) => typedInvoke('chat:stop-generation', conversationId),
+  getDelegationRuns: (conversationId?: string) => typedInvoke('chat:get-delegation-runs', conversationId),
+  cancelDelegationNode: (nodeId: string) => typedInvoke('chat:cancel-delegation-node', nodeId),
   getEmergencyStop: () => typedInvoke('chat:get-emergency-stop'),
   activateEmergencyStop: () => typedInvoke('chat:activate-emergency-stop'),
   resumeConversations: () => typedInvoke('chat:resume-conversations'),
@@ -703,7 +714,7 @@ const api = {
     agentName: string
     agentIcon: string
     task: string
-    status: 'delegating' | 'done' | 'error'
+    status: 'delegating' | 'done' | 'error' | 'cancelled'
     result?: string
     durationMs?: number
   }) => void) => {
@@ -711,6 +722,11 @@ const api = {
       callback(step)
     typedOn('chat:team-activity', handler)
     return () => typedOff('chat:team-activity', handler)
+  },
+  onDelegationUpdated: (callback: (run: import('../shared/delegation').DelegationRunSnapshot) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, run: import('../shared/delegation').DelegationRunSnapshot) => callback(run)
+    typedOn('chat:delegation-updated', handler)
+    return () => typedOff('chat:delegation-updated', handler)
   },
   onTeamStepStream: (callback: (event: { stepId: string; chunk: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: Parameters<typeof callback>[0]) =>
