@@ -62,7 +62,7 @@ export async function sendProviderNonStreaming(
   apiKey: ProviderCredentialInput | null,
   model: string,
   messages: ProviderMessage[],
-  options: { maxTokens?: number; temperature?: number } = {}
+  options: { maxTokens?: number; temperature?: number; conversationId?: string } = {}
 ): Promise<ProviderNonStreamResult> {
   if (!apiKey) {
     throw new Error(NO_PROVIDER_CONFIGURED_MESSAGE)

@@ -7,9 +7,11 @@ import { safeHandle } from './safe-handle'
 import { requestApproval } from './tools'
 import { DESKTOP_NAVIGATOR_ID, DESKTOP_NAVIGATOR_TOOLS, createDesktopNavigatorHandler } from './desktop-navigator-mcp'
 import { startDesktopNavigatorBridge, getDesktopNavigatorCliConfig } from './desktop-navigator-bridge'
+import { WORK_HISTORY_ID, WORK_HISTORY_NAME, WORK_HISTORY_TOOLS, createWorkHistoryHandler } from './work-history-mcp'
+import { getWorkHistoryCliConfig, startInternalWorkHistoryBridge } from './work-history-bridge'
 import { debugLog } from './debug-mode'
 import { searchMcpRegistry } from './mcp-registry'
-import type { McpServerConfig, McpSandboxRuntimeStatus, McpRestartResult, McpServerDiagnosis, McpTestResult, McpLaunchFailure, McpLaunchStage } from '../shared/types'
+import type { McpServerConfig, McpSandboxRuntimeStatus, McpRestartResult, McpServerDiagnosis, McpTestResult, McpLaunchFailure, McpLaunchStage, McpServerWithStatus, McpServerStatus } from '../shared/types'
 import { normalizeMcpSandboxProfile } from '../shared/mcp-sandbox'
 import { createSandboxedMcpTransport, getMcpSandboxProxyConfig, repairMcpSandboxProfile, shutdownMcpSandboxBroker, type McpSandboxHandle, type McpSandboxLaunchRequest } from './mcp-sandbox'
 import { createManagedPlaywrightLaunch, getManagedBrowserStatus, installManagedBrowser } from './managed-playwright'
@@ -115,21 +117,40 @@ function migrateLegacyPlaywrightConfigs(): void {
   }
 }
 
+/**
+ * The only projection of MCP runtime state sent outside the main process.
+ * This keeps initial list responses, IPC status events, and companion metadata
+ * in agreement, including when a configured external process is not running.
+ */
+function projectServerStatus(config: McpServerConfig, instance?: McpServerInstance): McpServerWithStatus {
+  const managed = Boolean(instance?.inProcessHandler)
+  const sandbox: McpSandboxRuntimeStatus = managed
+    ? { status: 'not-applicable', backend: 'internal' }
+    : instance?.sandbox ?? { status: 'stopped' }
+
+  return {
+    ...config,
+    status: instance?.status ?? 'disconnected',
+    ...(instance?.error ? { error: instance.error } : {}),
+    toolCount: instance?.tools.length ?? 0,
+    resourceCount: instance?.resources?.length ?? 0,
+    promptCount: instance?.prompts?.length ?? 0,
+    managed,
+    sandbox,
+    ...(instance?.capabilities ? { capabilities: instance.capabilities } : {}),
+    ...(instance?.serverVersion ? { serverVersion: instance.serverVersion } : {}),
+    ...(instance?.instructions ? { instructions: instance.instructions } : {}),
+    ...(instance?.failure ? { failure: instance.failure } : {}),
+    ...(instance?.errorLogId ? { errorLogId: instance.errorLogId } : {}),
+  }
+}
+
 function broadcastServerStatus(id: string): void {
   const instance = servers.get(id)
   const dbConfig = loadServerConfigs().find((c) => c.id === id)
   const config = dbConfig ?? instance?.config
   if (!config) return
-  const payload = {
-    ...config,
-    status: instance?.status ?? 'disconnected',
-    error: instance?.error,
-    toolCount: instance?.tools.length ?? 0,
-    managed: Boolean(instance?.inProcessHandler),
-    ...(instance?.sandbox ? { sandbox: instance.sandbox } : {}),
-    ...(instance?.failure ? { failure: instance.failure } : {}),
-    ...(instance?.errorLogId ? { errorLogId: instance.errorLogId } : {}),
-  }
+  const payload = projectServerStatus(config, instance)
   let windows: BrowserWindow[]
   try {
     windows = BrowserWindow.getAllWindows()
@@ -331,7 +352,7 @@ async function connectServer(config: McpServerConfig): Promise<void> {
 
   const extraArgs: string[] = []
   if (config.imageResponses === 'omit') {
-    extraArgs.push('--imageResponses', 'omit')
+    extraArgs.push('--image-responses', 'omit')
   }
 
   let sandboxHandle: McpSandboxHandle
@@ -376,6 +397,9 @@ async function connectServer(config: McpServerConfig): Promise<void> {
   }
 
   servers.set(config.id, instance)
+  // Publish the lifecycle transition immediately; callers must not infer that a
+  // process is sandboxed before the helper and MCP handshake have succeeded.
+  broadcastServerStatus(config.id)
 
   debugLog('mcp', `connecting: ${config.name} (${config.id}) cmd="${config.command}"`)
   try {
@@ -390,9 +414,11 @@ async function connectServer(config: McpServerConfig): Promise<void> {
       : undefined
     instance.instructions = typeof client.getInstructions === 'function' ? client.getInstructions() : undefined
 
+    const sdkOnClose = transport.onclose
     transport.onclose = () => {
+      sdkOnClose?.()
       const inst = servers.get(config.id)
-      if (inst && inst.status === 'connected') {
+      if (inst === instance && inst.status === 'connected' && !intentionallyDisconnected.has(config.id)) {
         debugLog('mcp', `transport closed unexpectedly: ${config.name} — scheduling reconnect`)
         inst.status = 'disconnected'
         servers.delete(config.id)
@@ -412,10 +438,14 @@ async function connectServer(config: McpServerConfig): Promise<void> {
         serverName: config.name
       }))
       debugLog('mcp', `connected: ${config.name} tools=[${instance.tools.map((t) => t.name).join(', ')}]`)
-    } catch {
-      // Server may not support tools
-      instance.tools = []
-      debugLog('mcp', `connected: ${config.name} (no tools listed)`)
+    } catch (error) {
+      // A server that explicitly advertises no tools is valid; a failed discovery
+      // on a tool-capable (or older unspecified) server is not a healthy connection.
+      if (instance.capabilities && !instance.capabilities.tools) {
+        instance.tools = []
+      } else {
+        throw new Error(`Tool discovery failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
     if (instance.capabilities?.resources && typeof client.listResources === 'function') {
       try {
@@ -455,6 +485,8 @@ async function connectServer(config: McpServerConfig): Promise<void> {
     try { await sandboxHandle.close() } catch { /* the process already exited */ }
     debugLog('mcp', `connect failed: ${config.name} — ${message}`)
     console.error(`[mcp] failed to start ${config.name}:`, error)
+    broadcastServerStatus(config.id)
+    throw error
   }
 
   broadcastServerStatus(config.id)
@@ -481,7 +513,7 @@ export async function testMcpServer(
 
   const extraArgs: string[] = []
   if (config.imageResponses === 'omit') {
-    extraArgs.push('--imageResponses', 'omit')
+    extraArgs.push('--image-responses', 'omit')
   }
 
   let sandboxHandle: McpSandboxHandle
@@ -507,9 +539,10 @@ export async function testMcpServer(
     try {
       const result = await client.listTools()
       tools = (result.tools || []).map((t) => ({ name: t.name, description: t.description }))
-    } catch {
-      // Server connected but exposes no tools list — still a successful connection.
-      tools = []
+    } catch (error) {
+      const capabilities = typeof client.getServerCapabilities === 'function' ? client.getServerCapabilities() : undefined
+      if (capabilities && !capabilities.tools) tools = []
+      else throw new Error(`Tool discovery failed: ${error instanceof Error ? error.message : String(error)}`)
     }
     observation.toolCount = tools.length
     if (managedMode === 'launch') observation.browser = await verifyManagedBrowser(client, tools.map((tool) => tool.name))
@@ -580,7 +613,7 @@ export async function ensureMcpServersReady(serverIds: string[]): Promise<void> 
   const configs = loadServerConfigs()
   for (const serverId of serverIds) {
     const instance = servers.get(serverId)
-    if (instance?.status === 'connected' && instance.tools.length > 0) continue
+    if (instance?.status === 'connected') continue
 
     const config = configs.find((c) => c.id === serverId)
     if (!config || !config.enabled) continue
@@ -599,16 +632,20 @@ function toCliMcpServerKey(config: McpServerConfig): string {
   return base || `mcp_${config.id.replace(/[^a-zA-Z0-9_-]+/g, '_')}`
 }
 
-export async function getMcpServerConfigsForCli(serverIds: string[]): Promise<CliMcpServerConfig[]> {
+export async function getMcpServerConfigsForCli(serverIds: string[], prepareLaunch = true): Promise<CliMcpServerConfig[]> {
   const allowed = new Set(serverIds)
   const configs: CliMcpServerConfig[] = []
   for (const config of loadServerConfigs().filter((candidate) => candidate.enabled && allowed.has(candidate.id))) {
+    if (!prepareLaunch) {
+      configs.push({ id: config.id, key: toCliMcpServerKey(config), command: '', args: [] })
+      continue
+    }
     // CLI adapters use the same sandbox broker as Nexy's own MCP client. Make
     // sure their descriptor cannot be created before the managed Node runtime
     // exists, which would otherwise tempt a host-npx fallback.
     await ensureManagedNodeNpxRuntime(config)
     const extraArgs = config.imageResponses === 'omit'
-      ? ['--imageResponses', 'omit']
+      ? ['--image-responses', 'omit']
       : []
     const resolved = resolveLaunch(config)
     const proxy = getMcpSandboxProxyConfig({ ...resolved.request, args: [...resolved.request.args, ...extraArgs], cleanup: resolved.cleanup })
@@ -619,6 +656,10 @@ export async function getMcpServerConfigsForCli(serverIds: string[]): Promise<Cl
   if (allowed.has(DESKTOP_NAVIGATOR_ID)) {
     const bridgeConfig = getDesktopNavigatorCliConfig()
     if (bridgeConfig) configs.push(bridgeConfig)
+  }
+  if (allowed.has(WORK_HISTORY_ID)) {
+    const historyConfig = prepareLaunch ? getWorkHistoryCliConfig() : { id: WORK_HISTORY_ID, key: 'nexy_work_history', command: '', args: [] }
+    if (historyConfig) configs.push(historyConfig)
   }
 
   return configs
@@ -803,8 +844,9 @@ export function initDesktopNavigatorMcp(win: BrowserWindow): void {
     inProcessHandler: handler,
     status: 'connected',
     tools: DESKTOP_NAVIGATOR_TOOLS,
-    sandbox: { status: 'sandboxed', backend: 'internal' },
+    sandbox: { status: 'not-applicable', backend: 'internal' },
   })
+  broadcastServerStatus(DESKTOP_NAVIGATOR_ID)
   // Start the HTTP bridge so CLI adapters (claude, codex) can also reach Desktop
   // Navigator tools via the stdio bridge worker script.
   startDesktopNavigatorBridge(handler).catch((err) => {
@@ -813,41 +855,42 @@ export function initDesktopNavigatorMcp(win: BrowserWindow): void {
   })
 }
 
-export function getMcpServersWithStatus(): (McpServerConfig & { status: string; error?: string; toolCount: number; resourceCount: number; promptCount: number; capabilities?: Record<string, unknown>; serverVersion?: { name: string; version: string }; instructions?: string; sandbox?: McpSandboxRuntimeStatus; failure?: McpLaunchFailure; errorLogId?: string })[] {
+/**
+ * Register the built-in Work history server. API chats call it in process; CLI chats reach it
+ * through a token-protected loopback bridge. Either way it is only offered to a chat whose
+ * capabilities include it, and Nexy's normal MCP approval policy applies.
+ */
+export function initWorkHistoryMcp(): void {
+  const handler = createWorkHistoryHandler(getDatabase())
+  servers.set(WORK_HISTORY_ID, {
+    config: {
+      id: WORK_HISTORY_ID,
+      name: WORK_HISTORY_NAME,
+      description: 'Find chats by activity date and summarise the work done in a day, week or range. Sends selected chat content to the chat model.',
+      command: '',
+      args: [],
+      env: {},
+      enabled: true,
+    },
+    inProcessHandler: handler,
+    status: 'connected',
+    tools: WORK_HISTORY_TOOLS,
+    sandbox: { status: 'not-applicable', backend: 'internal' },
+  })
+  broadcastServerStatus(WORK_HISTORY_ID)
+  startInternalWorkHistoryBridge(handler).catch((err) => {
+    debugLog('mcp', `Work history CLI bridge failed to start: ${err instanceof Error ? err.message : String(err)}`)
+    console.error('[mcp] Work history CLI bridge failed to start:', err)
+  })
+}
+
+export function getMcpServersWithStatus(): McpServerWithStatus[] {
   const configs = loadServerConfigs()
   const configIds = new Set(configs.map((c) => c.id))
-  const result = configs.map((config) => {
-    const instance = servers.get(config.id)
-    return {
-      ...config,
-      status: instance?.status ?? 'disconnected',
-      error: instance?.error,
-      toolCount: instance?.tools.length ?? 0,
-      resourceCount: instance?.resources?.length ?? 0,
-      promptCount: instance?.prompts?.length ?? 0,
-      managed: Boolean(instance?.inProcessHandler),
-      ...(instance?.capabilities ? { capabilities: instance.capabilities } : {}),
-      ...(instance?.serverVersion ? { serverVersion: instance.serverVersion } : {}),
-      ...(instance?.instructions ? { instructions: instance.instructions } : {}),
-      ...(instance?.sandbox ? { sandbox: instance.sandbox } : {}),
-      ...(instance?.failure ? { failure: instance.failure } : {}),
-      ...(instance?.errorLogId ? { errorLogId: instance.errorLogId } : {}),
-    }
-  })
+  const result = configs.map((config) => projectServerStatus(config, servers.get(config.id)))
   for (const [id, instance] of servers) {
     if (!configIds.has(id) && instance.inProcessHandler) {
-      result.push({
-        ...instance.config,
-        status: instance.status,
-        error: instance.error,
-        toolCount: instance.tools.length,
-        resourceCount: instance.resources?.length ?? 0,
-        promptCount: instance.prompts?.length ?? 0,
-        managed: true,
-        ...(instance.capabilities ? { capabilities: instance.capabilities } : {}),
-        ...(instance.serverVersion ? { serverVersion: instance.serverVersion } : {}),
-        ...(instance.instructions ? { instructions: instance.instructions } : {}),
-      })
+      result.push(projectServerStatus(instance.config, instance))
     }
   }
   return result
@@ -897,20 +940,22 @@ export function getMcpServersForCompanion(): Array<Omit<ReturnType<typeof getMcp
   }))
 }
 
-export function getMcpServerStatus(id: string): { status: string; error?: string; tools: McpTool[]; resources: McpResource[]; prompts: McpPrompt[]; capabilities?: Record<string, unknown>; serverVersion?: { name: string; version: string }; instructions?: string; sandbox?: McpSandboxRuntimeStatus; failure?: McpLaunchFailure; errorLogId?: string } {
+export function getMcpServerStatus(id: string): McpServerStatus {
   const instance = servers.get(id)
+  const config = loadServerConfigs().find((candidate) => candidate.id === id) ?? instance?.config
+  const projected = config ? projectServerStatus(config, instance) : undefined
   return {
-    status: instance?.status ?? 'disconnected',
-    error: instance?.error,
+    status: projected?.status ?? 'disconnected',
+    ...(projected?.error ? { error: projected.error } : {}),
     tools: instance?.tools ?? [],
     resources: instance?.resources ?? [],
     prompts: instance?.prompts ?? [],
-    ...(instance?.capabilities ? { capabilities: instance.capabilities } : {}),
-    ...(instance?.serverVersion ? { serverVersion: instance.serverVersion } : {}),
-    ...(instance?.instructions ? { instructions: instance.instructions } : {}),
-    ...(instance?.sandbox ? { sandbox: instance.sandbox } : {}),
-    ...(instance?.failure ? { failure: instance.failure } : {}),
-    ...(instance?.errorLogId ? { errorLogId: instance.errorLogId } : {}),
+    ...(projected?.capabilities ? { capabilities: projected.capabilities } : {}),
+    ...(projected?.serverVersion ? { serverVersion: projected.serverVersion } : {}),
+    ...(projected?.instructions ? { instructions: projected.instructions } : {}),
+    ...(projected ? { sandbox: projected.sandbox, managed: projected.managed } : {}),
+    ...(projected?.failure ? { failure: projected.failure } : {}),
+    ...(projected?.errorLogId ? { errorLogId: projected.errorLogId } : {}),
   }
 }
 
@@ -943,7 +988,7 @@ export async function removeMcpServer(id: string): Promise<void> {
 
 export async function restartMcpServer(id: string): Promise<McpRestartResult> {
   // Nexy-owned bridges do not have a user launch configuration to restart.
-  if (id === DESKTOP_NAVIGATOR_ID) {
+  if (id === DESKTOP_NAVIGATOR_ID || id === WORK_HISTORY_ID) {
     return { attempted: false, connected: true, error: 'This Nexy-managed server cannot be restarted here.' }
   }
   const configs = loadServerConfigs()

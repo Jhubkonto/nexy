@@ -86,7 +86,7 @@ const { mockRequestApproval } = vi.hoisted(() => ({
 
 const { MockClient, MockTransport, launchControl } = vi.hoisted(() => {
   /** Per-test control of the next launch: helper stderr and handshake outcome. */
-  const launchControl: { stderr?: string; connectError?: string } = {}
+  const launchControl: { stderr?: string; connectError?: string; listError?: string; sdkClose?: () => void } = {}
 
   class MockTransport {
     close = vi.fn().mockResolvedValue(undefined)
@@ -103,8 +103,11 @@ const { MockClient, MockTransport, launchControl } = vi.hoisted(() => {
   }
 
   class MockClient {
-    connect = vi.fn(() => launchControl.connectError ? Promise.reject(new Error(launchControl.connectError)) : Promise.resolve(undefined))
-    listTools = vi.fn().mockResolvedValue({ tools: [] })
+    connect = vi.fn((transport: MockTransport) => {
+      transport.onclose = launchControl.sdkClose
+      return launchControl.connectError ? Promise.reject(new Error(launchControl.connectError)) : Promise.resolve(undefined)
+    })
+    listTools = vi.fn(() => launchControl.listError ? Promise.reject(new Error(launchControl.listError)) : Promise.resolve({ tools: [] }))
     callTool = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'ok' }], isError: false })
   }
 
@@ -139,10 +142,11 @@ vi.mock('../database', () => ({
 }))
 
 /* ── Import & Register ─────────────────────────────────────── */
-import { registerMcpHandlers, disconnectServer, shutdownMcpServers, servers, callMcpTool, getMcpServersForCompanion, buildMcpProcessEnv, getMcpServerConfigsForCli, initMcpServers, COMPANION_RETAIN_SECRET_ARGUMENT, preserveCompanionSecretArguments } from '../mcp'
-import { safeStorage } from 'electron'
+import { registerMcpHandlers, disconnectServer, shutdownMcpServers, servers, callMcpTool, getMcpServersForCompanion, buildMcpProcessEnv, getMcpServerConfigsForCli, initMcpServers, testMcpServer, COMPANION_RETAIN_SECRET_ARGUMENT, preserveCompanionSecretArguments } from '../mcp'
+import { BrowserWindow, safeStorage } from 'electron'
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import type { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { DESKTOP_NAVIGATOR_ID } from '../desktop-navigator-mcp'
 
 /* ── Helpers ─────────────────────────────────────────────── */
 const fakeSender = {
@@ -185,6 +189,8 @@ beforeEach(() => {
   mockOverrideRows.clear()
   delete launchControl.stderr
   delete launchControl.connectError
+  delete launchControl.listError
+  delete launchControl.sdkClose
   servers.clear()
   vi.useRealTimers()
   vi.clearAllMocks()
@@ -237,6 +243,59 @@ describe('MCP — IPC Handlers', () => {
   it('mcp:list-tools returns empty when no servers connected', async () => {
     const r = await invokeHandler('mcp:list-tools')
     expect(r).toEqual([])
+  })
+
+  it('projects an inactive external server as explicitly sandbox-stopped', async () => {
+    const added = await invokeHandler('mcp:add-server', {
+      name: 'Not running', command: 'node', args: [], env: {}, enabled: false,
+    })
+
+    const [listed] = await invokeHandler('mcp:list-servers')
+    const single = await invokeHandler('mcp:get-server-status', added.id)
+
+    expect(listed).toMatchObject({ id: added.id, status: 'disconnected', sandbox: { status: 'stopped' } })
+    expect(single).toMatchObject({ status: 'disconnected', sandbox: { status: 'stopped' } })
+  })
+
+  it('keeps Desktop Navigator managed in the initial status projection', async () => {
+    servers.set(DESKTOP_NAVIGATOR_ID, {
+      config: { id: DESKTOP_NAVIGATOR_ID, name: 'Desktop Navigator', command: '', args: [], env: {}, enabled: true },
+      inProcessHandler: async () => ({ success: true }),
+      status: 'connected',
+      tools: [],
+      // Deliberately use the legacy value: the canonical projection must correct it.
+      sandbox: { status: 'sandboxed', backend: 'internal' },
+    })
+
+    const navigator = (await invokeHandler('mcp:list-servers')).find((server: { id: string }) => server.id === DESKTOP_NAVIGATOR_ID)
+
+    expect(navigator).toMatchObject({
+      managed: true,
+      sandbox: { status: 'not-applicable', backend: 'internal' },
+    })
+  })
+
+  it('broadcasts the same canonical stopped sandbox state after disconnecting', async () => {
+    const added = await invokeHandler('mcp:add-server', {
+      name: 'Disconnect me', command: 'node', args: [], env: {}, enabled: false,
+    })
+    const send = vi.fn()
+    vi.mocked(BrowserWindow.getAllWindows).mockReturnValue([{ webContents: { send } } as unknown as BrowserWindow])
+    servers.set(added.id, {
+      config: added,
+      status: 'connected',
+      tools: [],
+      transport: { close: vi.fn().mockResolvedValue(undefined) } as unknown as StdioClientTransport,
+      sandbox: { status: 'sandboxed', backend: 'win32' },
+    })
+
+    await disconnectServer(added.id)
+
+    expect(send).toHaveBeenCalledWith('mcp:server-status-changed', expect.objectContaining({
+      id: added.id,
+      status: 'disconnected',
+      sandbox: { status: 'stopped' },
+    }))
   })
 })
 
@@ -779,6 +838,32 @@ describe('MCP — Crash recovery', () => {
     await vi.advanceTimersByTimeAsync(5000)
 
     expect(servers.get(added.id)?.status).toBe('connected')
+  })
+
+  it('preserves the SDK close callback and retries a failed reconnect', async () => {
+    vi.useFakeTimers()
+    const sdkClose = vi.fn()
+    launchControl.sdkClose = sdkClose
+    const added = await invokeHandler('mcp:add-server', {
+      name: 'Retry Server', command: 'node', args: [], env: {}, enabled: true,
+    })
+    const instance = servers.get(added.id)
+    ;(instance?.transport as { onclose?: () => void }).onclose?.()
+    expect(sdkClose).toHaveBeenCalledOnce()
+    launchControl.connectError = 'handshake failed'
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(servers.get(added.id)?.status).toBe('error')
+    delete launchControl.connectError
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(servers.get(added.id)?.status).toBe('connected')
+  })
+
+  it('reports tool discovery failure in both live and test connections', async () => {
+    launchControl.listError = 'listing failed'
+    const config = { name: 'Broken discovery', command: 'node', args: [], env: {}, enabled: true }
+    const added = await invokeHandler('mcp:add-server', config)
+    expect(servers.get(added.id)?.status).toBe('error')
+    expect((await testMcpServer(config))).toMatchObject({ ok: false, error: 'Tool discovery failed: listing failed' })
   })
 
   it('does not auto-reconnect after intentional disconnect', async () => {

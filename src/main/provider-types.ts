@@ -29,6 +29,7 @@ import type { Citation } from '../shared/citations'
 export interface ProviderNonStreamResult {
   content: string | null
   toolCalls: ToolCallResult[]
+  finishReason?: string
   model?: string
   usage?: ProviderUsage
   citations?: Citation[]

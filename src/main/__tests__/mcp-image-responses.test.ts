@@ -138,7 +138,7 @@ describe('MCP imageResponses transport args', () => {
     await shutdownMcpServers()
   })
 
-  it('includes --imageResponses omit when configured', async () => {
+  it('includes the supported --image-responses omit option when configured', async () => {
     await invokeHandler('mcp:add-server', {
       name: 'Playwright',
       command: 'npx',
@@ -150,7 +150,7 @@ describe('MCP imageResponses transport args', () => {
 
     expect(transportOptions[0]?.args).toContain('--session')
     const launch = await readSandboxLaunch(transportOptions[0])
-    expect(launch.args).toEqual(['@playwright/mcp', '--imageResponses', 'omit'])
+    expect(launch.args).toEqual(['@playwright/mcp', '--image-responses', 'omit'])
   })
 
   it('does not include imageResponses args when undefined or allow', async () => {

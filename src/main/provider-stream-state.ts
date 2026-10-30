@@ -10,15 +10,26 @@ export function incrementFallbackCounter(): number {
 
 export function abortActiveStream(conversationId?: string): void {
   if (conversationId) {
-    const req = activeStreamingRequests.get(conversationId)
-    if (req) {
-      req.destroy()
-      activeStreamingRequests.delete(conversationId)
-    }
-    const ctrl = activeCliAbortControllers.get(conversationId)
-    if (ctrl) {
-      ctrl.abort()
-      activeCliAbortControllers.delete(conversationId)
+    // Delegated provider turns intentionally use `${conversationId}:${stepId}` so
+    // siblings can stream in parallel. A conversation stop must fan out to those
+    // child keys as well as the leader key.
+    const keys = [
+      ...new Set([
+        ...[...activeStreamingRequests.keys()].filter((key) => key === conversationId || key.startsWith(`${conversationId}:`)),
+        ...[...activeCliAbortControllers.keys()].filter((key) => key === conversationId || key.startsWith(`${conversationId}:`)),
+      ]),
+    ]
+    for (const key of keys) {
+      const req = activeStreamingRequests.get(key)
+      if (req) {
+        req.destroy()
+        activeStreamingRequests.delete(key)
+      }
+      const ctrl = activeCliAbortControllers.get(key)
+      if (ctrl) {
+        ctrl.abort()
+        activeCliAbortControllers.delete(key)
+      }
     }
     return
   }
