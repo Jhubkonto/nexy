@@ -1,4 +1,4 @@
-import { isApiError, type ConversationPageScope } from '../../shared/types'
+import { isApiError, type ConversationCompletionFilter, type ConversationPageScope } from '../../shared/types'
 import type { Conversation } from '../store/types'
 import { useCursorPagination } from './useCursorPagination'
 import { useEffect } from 'react'
@@ -9,13 +9,19 @@ import { useEffect } from 'react'
  * that scope. This is important for newly-created chats: their first page request
  * can complete before the send handler has inserted the conversation row.
  */
-export function useConversationPagination(scope: ConversationPageScope, query = '', freshnessKey = '') {
+export function useConversationPagination(
+  scope: ConversationPageScope,
+  query = '',
+  freshnessKey = '',
+  completion: ConversationCompletionFilter = 'all',
+) {
   const pagination = useCursorPagination<Conversation>({
-    resetKey: JSON.stringify([scope, query.trim(), freshnessKey]),
+    resetKey: JSON.stringify([scope, query.trim(), freshnessKey, completion]),
     loadPage: async (cursor, requestId) => {
       const result = await window.api.listConversationPage({
         requestId,
         scope,
+        completion,
         query: query.trim() || undefined,
         cursor,
         limit: 30,
@@ -24,9 +30,22 @@ export function useConversationPagination(scope: ConversationPageScope, query = 
       return result
     },
   })
-  const { updateItem } = pagination
+  const { updateItem, refresh } = pagination
   useEffect(() => window.api.onConversationRenamed((data) => {
     updateItem(data.id, (item) => ({ ...item, title: data.title, updated_at: data.updatedAt }))
   }), [updateItem])
+  // Completion can arrive from another desktop/mobile client. Refresh rather than filtering the
+  // locally loaded rows so counts and subsequent cursor pages stay authoritative.
+  useEffect(() => {
+    const completed = window.api.onConversationCompleted((data) => {
+      updateItem(data.conversationId, (item) => ({ ...item, completed_at: data.completedAt }))
+      refresh()
+    })
+    const incompleted = window.api.onConversationIncompleted((data) => {
+      updateItem(data.conversationId, (item) => ({ ...item, completed_at: null }))
+      refresh()
+    })
+    return () => { completed(); incompleted() }
+  }, [refresh, updateItem])
   return pagination
 }
