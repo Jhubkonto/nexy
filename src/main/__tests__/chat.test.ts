@@ -138,6 +138,7 @@ vi.mock('../project-handlers', () => ({
 vi.mock('../fcm-sender', () => ({ sendChatCompleteNotification: vi.fn(async () => undefined) }))
 vi.mock('../file-handlers', () => ({ listDirectoryEntries: vi.fn(() => []), getWorkingDirectory: vi.fn(() => '/mock-cwd') }))
 vi.mock('../mcp', () => ({
+  servers: new Map(),
   ensureMcpServersReady: vi.fn(async () => undefined),
   getAvailableMcpTools: vi.fn(() => []),
   getMcpServerConfigsForCli: vi.fn(() => []),
@@ -768,6 +769,8 @@ describe('chat handlers', () => {
   })
 
   it('injects assigned MCP servers when falling back to Claude CLI for MCP agents', async () => {
+    state.getOverrides.set('agent_mcp_tool_overrides', { enabled: 1, approval: 'always-ask' })
+    vi.mocked(requestApproval).mockResolvedValue(true)
     const capturedReqs: Array<{ mcpServers?: unknown[]; allowedTools?: string[] }> = []
     const mockAdapter = {
       isAvailable: () => true,
@@ -810,6 +813,10 @@ describe('chat handlers', () => {
       args: ['-y', '@playwright/mcp'],
     }])
     expect(capturedReqs[0].allowedTools).toEqual(['mcp__playwright_chromium__browser_navigate'])
+    expect(getMcpServerConfigsForCli).toHaveBeenNthCalledWith(1, ['server-1'], false)
+    expect(getMcpServerConfigsForCli).toHaveBeenNthCalledWith(2, ['server-1'])
+    expect(vi.mocked(getMcpServerConfigsForCli).mock.invocationCallOrder[1])
+      .toBeGreaterThan(vi.mocked(requestApproval).mock.invocationCallOrder[0])
   })
 
   it('asks for the exact PowerShell command when Claude CLI attempts it', async () => {

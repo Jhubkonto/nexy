@@ -124,6 +124,32 @@ describe('conversation:list — rating column', () => {
     expect(page.items).toHaveLength(1)
   })
 
+  it('filters completed state before calculating scoped totals and cursors', async () => {
+    const db = state.db!
+    const insert = db.prepare(
+      'INSERT INTO conversations (id, project_id, title, completed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+    )
+    insert.run('ongoing-new', 'project-a', 'Ongoing', null, 1, 300)
+    insert.run('completed-new', 'project-a', 'Completed', 200, 2, 200)
+    insert.run('completed-old', 'project-a', 'Completed older', 100, 3, 100)
+
+    const ongoing = await invoke<{ items: Array<{ id: string }>; totalCount: number }>(
+      'conversation:list-page', { scope: { type: 'project', id: 'project-a' }, completion: 'ongoing' },
+    )
+    expect(ongoing.items.map((item) => item.id)).toEqual(['ongoing-new'])
+    expect(ongoing.totalCount).toBe(1)
+
+    const completed = await invoke<{ items: Array<{ id: string }>; totalCount: number }>(
+      'conversation:list-page', { scope: { type: 'project', id: 'project-a' }, completion: 'completed', limit: 1 },
+    )
+    expect(completed.items.map((item) => item.id)).toEqual(['completed-new'])
+    expect(completed.totalCount).toBe(2)
+
+    await expect(invoke('conversation:list-page', { completion: 'invalid' })).rejects.toThrow(
+      'Invalid conversation completion filter',
+    )
+  })
+
   it('releases an in-flight approval when the conversation switches to Claude bypass', async () => {
     state.db!.prepare("INSERT INTO conversations (id, title) VALUES ('conv-1', 'Claude chat')").run()
 

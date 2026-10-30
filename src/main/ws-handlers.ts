@@ -1,3 +1,4 @@
+import { handleWorkHistoryCommand } from './work-history-ws'
 import { BrowserWindow, ipcMain } from 'electron'
 import { listConversationPage } from './conversation-pagination'
 import { broadcastConversationRenamed } from './conversation-events'
@@ -2477,6 +2478,11 @@ export function registerWsHandlers(): void {
 
     if (command === 'skill:get-agent-usage') {
       reply({ event: 'skill:agent-usage', data: { usage: getSkillAgentUsage() } })
+      return
+    }
+
+    if (command.startsWith('work-history:')) {
+      reply(handleWorkHistoryCommand(db, command, data))
       return
     }
 

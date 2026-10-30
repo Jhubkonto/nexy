@@ -41,6 +41,11 @@ export function listConversationPage(
   const filters = ["c.archived = 0", "c.kind != 'project-conversation-mode'"]
   const filterParams: Array<string | number> = []
   const scope = request.scope ?? { type: 'all' as const }
+  const completion = request.completion ?? 'all'
+
+  if (completion === 'ongoing') filters.push('c.completed_at IS NULL')
+  else if (completion === 'completed') filters.push('c.completed_at IS NOT NULL')
+  else if (completion !== 'all') throw new Error('Invalid conversation completion filter')
 
   if (scope.type === 'project') {
     if (scope.id == null) filters.push('c.project_id IS NULL')

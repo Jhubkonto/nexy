@@ -12,7 +12,7 @@ import { registerSkillHandlers } from './skills'
 import { registerKnowledgeHandlers } from './knowledge'
 import { registerToolHandlers } from './tools'
 import { registerUserInputHandlers } from './user-input'
-import { registerMcpHandlers, initDesktopNavigatorMcp } from './mcp'
+import { registerMcpHandlers, initDesktopNavigatorMcp, initWorkHistoryMcp } from './mcp'
 import { registerProviderHandlers } from './providers'
 import { registerCredentialVaultHandlers } from './credential-vault'
 import { registerScreenCaptureHandlers } from './screen-capture-handlers'
@@ -41,6 +41,7 @@ import { registerManagedAutomatedWorkflowHandlers } from './automated-workflow-m
 import { registerVoiceHandlers } from './voice-handlers'
 import { registerSchedulerHandlers } from './scheduler-handlers'
 import { registerDebriefHandlers } from './debrief-handlers'
+import { registerWorkHistoryHandlers } from './work-history'
 import { registerQuizHandlers } from './quiz-handlers'
 import { registerTeachbackHandlers } from './teachback-handlers'
 import { registerRatingHandlers } from './rating-handlers'
@@ -67,6 +68,7 @@ export function registerIpcHandlers(mainWindow?: BrowserWindow): void {
   registerToolHandlers()
   registerUserInputHandlers()
   registerMcpHandlers()
+  initWorkHistoryMcp()
   if (mainWindow) {
     initDesktopNavigatorMcp(mainWindow)
   }
@@ -95,6 +97,7 @@ export function registerIpcHandlers(mainWindow?: BrowserWindow): void {
   registerArtifactGeneratorHandlers(mainWindow)
   registerSchedulerHandlers()
   registerDebriefHandlers()
+  registerWorkHistoryHandlers()
   registerQuizHandlers()
   registerTeachbackHandlers()
   registerRatingHandlers()

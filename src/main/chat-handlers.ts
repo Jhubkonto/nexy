@@ -28,6 +28,7 @@ import { getSkillConfig, getSkillConfigsForAgent } from './skills'
 import { bridgeSkillsForCliRun, releaseBridgedSkills, type BridgedSkill } from './cli-skill-bridge'
 import { requestsSkillCapture } from './skill-service'
 import { startSkillSaveMcpBridge, type SkillSaveMcpBridge } from './skill-save-mcp-bridge'
+import { redactWorkHistoryToolResult } from './work-history-mcp'
 import { broadcastToMobile, isMobileInForeground } from './ws-server'
 import { sendChatCompleteNotification } from './fcm-sender'
 import { ClaudeAdapter } from './cli-adapters/claude'
@@ -53,6 +54,7 @@ import type { ResolvedUserInput } from '../shared/chat-turn-types'
 import type { SkillConfig } from '../shared/types'
 import { endActivity } from './activity-tracker'
 import { clearActiveChatTurn } from './active-chat-turns'
+import { cancelDelegationForConversation, cancelDelegationNode, getDelegationRuns } from './delegation-registry'
 import { assertConversationStartsAllowed } from './emergency-stop'
 import { formatWikiSection, getRelevantWikiEntries } from './wiki-context'
 import { estimateInputTokens, formatEstimatedTokens } from '../shared/token-estimate'
@@ -1162,7 +1164,7 @@ export async function dispatchChatSend(
               step.agentId,
               step.task,
               step.result ?? null,
-              step.status === 'error' ? 'error' : 'done',
+              step.status === 'error' ? 'error' : step.status === 'cancelled' ? 'cancelled' : 'done',
               step.durationMs ?? null,
               Date.now(),
             )
@@ -1301,7 +1303,7 @@ export async function dispatchChatSend(
       const cliMcpServers =
         (effectiveBackend === 'claude-cli' || effectiveBackend === 'codex-cli' || effectiveBackend === 'hermes-cli') &&
         agentHasAssignedMcpServers
-          ? await getMcpServerConfigsForCli(effectiveMcpServerIds)
+          ? await getMcpServerConfigsForCli(effectiveMcpServerIds, false)
           : undefined
 
       type PendingTool = { name: string; input: Record<string, unknown>; startTime: number }
@@ -1329,7 +1331,7 @@ export async function dispatchChatSend(
               toolName: tc.name,
               serverName: effectiveBackend,
               toolArgs: tc.input,
-              toolResult: tc.content,
+              toolResult: redactWorkHistoryToolResult(tc.name, tc.content),
               toolSuccess: !tc.isError,
             }),
             null,
@@ -1467,7 +1469,15 @@ export async function dispatchChatSend(
             return [qualifiedName]
           })
 
-          const filteredServers = cliMcpServers.filter((s) => approvedServerIds.has(s.id))
+          // Approval can take longer than the broker's unclaimed-session expiry.
+          // Create the descriptors passed to the CLI only after approval completes.
+          const approvedIds = cliMcpServers.filter((s) => approvedServerIds.has(s.id)).map((s) => s.id)
+          const filteredServers = approvedIds.length > 0 ? await getMcpServerConfigsForCli(approvedIds) : []
+          for (const server of cliMcpServers) {
+            if (!approvedServerIds.has(server.id)) {
+              debugLog('chat', `cli-adapter: MCP server ${server.key} omitted (no available approved tools)`)
+            }
+          }
 
           return {
             cliAllowedMcpTools: allowedTools.length > 0 ? allowedTools : undefined,
@@ -2295,7 +2305,7 @@ export async function dispatchChatSend(
             toolName: event.toolName,
             serverName: event.serverName,
             toolArgs: event.args,
-            toolResult: event.result,
+            toolResult: redactWorkHistoryToolResult(event.toolName, event.result),
             toolSuccess: event.success,
           }),
           null,
@@ -2370,6 +2380,7 @@ export function registerChatHandlers(): void {
   )
 
   safeHandle('chat:stop-generation', async (_event, conversationId?: string) => {
+    if (conversationId) cancelDelegationForConversation(conversationId)
     abortActiveStream(conversationId)
     if (conversationId) {
       clearActiveChatTurn(conversationId)
@@ -2378,4 +2389,7 @@ export function registerChatHandlers(): void {
     }
     return true
   })
+
+  safeHandle('chat:get-delegation-runs', async (_event, conversationId?: string) => getDelegationRuns(conversationId))
+  safeHandle('chat:cancel-delegation-node', async (_event, nodeId: string) => cancelDelegationNode(nodeId))
 }
