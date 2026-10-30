@@ -1,10 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { spawn } from 'node:child_process'
+import type { spawn, spawnSync } from 'node:child_process'
+
+const { mockSpawnSync } = vi.hoisted(() => ({
+  mockSpawnSync: vi.fn(() => ({ status: 0, stdout: '', stderr: '' })),
+}))
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:child_process')>(),
+  spawnSync: mockSpawnSync,
+}))
 
 let userData = mkdtempSync(join(tmpdir(), 'nexy-managed-playwright-'))
 const require = createRequire(import.meta.url)
@@ -23,10 +31,12 @@ import {
   executableAt,
   getManagedBrowserStatus,
   installManagedBrowser,
+  prepareManagedBrowserSandbox,
   summarizeInstallProgress,
 } from '../managed-playwright'
 
 afterEach(() => {
+  vi.clearAllMocks()
   rmSync(userData, { recursive: true, force: true })
   userData = mkdtempSync(join(tmpdir(), 'nexy-managed-playwright-'))
 })
@@ -78,9 +88,14 @@ describe('managed Playwright catalog', () => {
     // root, which the Windows AppContainer may not inspect.
     expect(managed.request.args.slice(0, 2)).toEqual(['--preserve-symlinks', '--preserve-symlinks-main'])
     expect(managed.request.args[2]).toMatch(/@playwright.mcp.cli.js$/)
-    // --isolated excludes --user-data-dir; there is no --headed flag; without
-    // --browser chromium the server looks for a system Chrome install.
-    expect(managed.request.args.slice(3)).toEqual(['--isolated', '--browser', 'chromium', '--output-dir', expect.stringMatching(/output$/)])
+    // --isolated in this release can keep a crashed browser cached forever.
+    // A unique session profile avoids that path and is removed on teardown.
+    expect(managed.request.args.slice(3)).toEqual([
+      '--browser', 'chromium', '--sandbox', '--user-data-dir', join(managed.request.cwd!, 'profile'),
+      '--output-dir', join(managed.request.cwd!, 'output'),
+    ])
+    expect(managed.request.args).not.toContain('--isolated')
+    expect(managed.request.args).not.toContain('--no-sandbox')
     managed.cleanup()
   })
 
@@ -97,10 +112,19 @@ describe('managed Playwright catalog', () => {
       const systemRoot = Object.entries(managed.request.env).find(([key]) => key.toLowerCase() === 'systemroot')
       expect(systemRoot?.[1]).toBe(process.env.SystemRoot)
       expect(managed.request.env).toMatchObject({ ELECTRON_RUN_AS_NODE: '1', PLAYWRIGHT_BROWSERS_PATH: managedBrowserRoot() })
+      expect(managed.request.env).toMatchObject({
+        PLAYWRIGHT_SERVER_REGISTRY: join(managed.request.cwd!, 'registry'),
+        TEMP: join(managed.request.cwd!, 'tmp'),
+        TMP: join(managed.request.cwd!, 'tmp'),
+        TMPDIR: join(managed.request.cwd!, 'tmp'),
+      })
+      expect(existsSync(managed.request.env.PLAYWRIGHT_SERVER_REGISTRY)).toBe(true)
+      expect(existsSync(managed.request.env.TEMP)).toBe(true)
       const grants = managed.request.profile?.filesystem ?? []
       expect(grants).toContainEqual({ path: expect.stringMatching(/node_modules$/), access: 'read-only' })
       expect(grants.filter((grant) => grant.access === 'read-write')).toHaveLength(1)
       managed.cleanup()
+      expect(existsSync(managed.request.cwd!)).toBe(false)
     } finally {
       if (previous === undefined) delete process.env.SystemRoot
     }
@@ -119,6 +143,26 @@ describe('managed Playwright catalog', () => {
     } finally {
       delete process.env.ANTHROPIC_API_KEY
     }
+  })
+})
+
+describe('managed Chromium sandbox permissions', () => {
+  it('grants package tokens read/execute only on the managed payload without resetting existing ACLs', () => {
+    prepareManagedBrowserSandbox('C:\\Nexy\\browser', mockSpawnSync as unknown as typeof spawnSync, 'win32')
+    expect(mockSpawnSync).toHaveBeenCalledWith('icacls.exe', [
+      'C:\\Nexy\\browser', '/grant', '*S-1-15-2-1:(OI)(CI)(RX)', '*S-1-15-2-2:(OI)(CI)(RX)', '/T', '/Q',
+    ], expect.objectContaining({ windowsHide: true, timeout: 30_000 }))
+  })
+
+  it('reports a failed permission repair before attempting a browser launch', () => {
+    const run = vi.fn(() => ({ status: 1, stderr: 'Access denied', stdout: '' }))
+    expect(() => prepareManagedBrowserSandbox('C:\\Nexy\\browser', run as unknown as typeof spawnSync, 'win32'))
+      .toThrow(/sandbox file permissions: Access denied/)
+  })
+
+  it('does not change permissions on other platforms', () => {
+    prepareManagedBrowserSandbox('/browser', mockSpawnSync as unknown as typeof spawnSync, 'linux')
+    expect(mockSpawnSync).not.toHaveBeenCalled()
   })
 })
 

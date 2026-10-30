@@ -59,4 +59,58 @@ The exception is not available to configured third-party MCP servers. The main p
 
 The managed descriptor retains the read-only runtime paths and isolated writable session directory for consistent launch metadata and for non-Windows backends, although Windows does not apply temporary AppContainer ACL grants to this application-owned runtime.
 
+Before launching its own browser on Windows, Nexy grants `ALL APPLICATION
+PACKAGES` and `ALL RESTRICTED APPLICATION PACKAGES` read/execute access to the
+managed Chromium payload. Existing ACLs are preserved, and no project or profile
+directory receives these grants. Chromium's GPU and renderer sandboxes need to
+read their executable and data files; per-user downloads do not inherit the
+package permissions normally supplied by a browser installer. This preparation
+also repairs existing downloads and fails explicitly if the permissions cannot
+be applied. CDP attachment does not modify the downloaded browser's ACLs. See
+[Chromium's LPAC filesystem requirements](https://chromium.googlesource.com/chromium/src/+/main/docs/design/sandbox.md#lpac-file-system-permissions).
+
+Browser launch uses a unique profile under the private session directory, with
+`--sandbox` explicit. The bundled MCP version caches a shared browser with
+`--isolated`; if that browser dies during context initialization, subsequent
+calls can keep reusing it even after `browser_close`. A private session profile
+avoids this cache and allows a later call to launch a fresh browser. Profile data
+lasts only for that helper session and is deleted on teardown. Playwright's
+server registry and Chromium's temporary directories also live under that
+session, rather than the user's global Playwright registry or temporary root.
+
+The opt-in Windows browser regression test copies an installed managed Chromium
+into a temporary test workspace, then exercises navigation, browser close/reopen,
+unexpected browser closure, and cleanup through Electron-as-Node and the real
+helper, with Chromium sandboxing enabled:
+
+```powershell
+$env:NEXY_TEST_MANAGED_PLAYWRIGHT_RUNTIME = "$env:APPDATA\nexy\managed-playwright\chromium-<bundled version>"
+node node_modules/vitest/vitest.mjs run src/main/__tests__/managed-playwright-windows.integration.test.ts
+```
+
+Validation on 2026-10-26: launch/configuration tests pass. The native browser
+regression remains awaiting validation in a normal desktop session: the
+restricted execution environment reports GPU subprocess `STATUS_ACCESS_DENIED`
+(`0xC0000022`) with and without Nexy's helper. Disabling Chromium's sandbox was
+used only as a diagnostic control; production launch retains the sandbox.
+
 Application-owned bridges such as Desktop Navigator, the development bridge, and user-input remain internal Nexy components and are not third-party MCP processes.
+
+## Runtime status and operator workflow
+
+Every MCP server is projected through one runtime-status record for the initial
+server list, live desktop updates, and companion metadata. The card badge and
+Technical details deliberately use that same record, so a status is never
+silently upgraded to a green sandbox check.
+
+- **Nexy-managed** means an in-process Nexy bridge (for example Desktop Navigator). A third-party MCP sandbox is not applicable, and sandbox repair or diagnosis is not offered for it.
+- **Sandboxed** means an external server completed its isolated helper launch. This is the only state with the green sandbox check.
+- **Sandbox starting** and **Sandbox stopped** are neutral lifecycle states. A stopped server has no running external process; enable it or retry the connection as appropriate.
+- **Sandbox unavailable** and **Sandbox failed** require attention. Use **Diagnose sandbox** to run the redacted launch checklist, apply any offered remediation, and open **View logs** for the recorded report.
+- **Sandbox status unknown** is a defensive compatibility state for absent or malformed legacy data. It never claims that the process is protected; diagnose it before relying on the connection.
+
+For an external failure, operators should first wait for a starting launch to
+settle, enable or retry stopped/offline servers, then run the diagnosis. The
+diagnosis identifies the failing runtime, sandbox, server, tools, or browser
+stage and can offer repair, setup, or managed-browser actions. Environment
+secrets remain redacted throughout this flow.

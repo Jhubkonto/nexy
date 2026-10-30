@@ -8,6 +8,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { McpSandboxProfile, McpSandboxRuntimeStatus } from '../shared/types'
 import { normalizeMcpSandboxProfile } from '../shared/mcp-sandbox'
 import { buildMcpProcessEnv } from './mcp-process-env'
+import { debugLog } from './debug-mode'
 
 export interface McpSandboxLaunchRequest {
   command: string
@@ -221,6 +222,7 @@ function createProxySession(request: McpSandboxLaunchRequest): ProxySession {
           // this keeps temporary managed-runtime paths present through the
           // Windows AppContainer ACL setup.
           session.claimed = true
+          debugLog('mcp', `sandbox descriptor claimed: ${session.request.diagnosticLabel ?? 'unnamed server'} (MCP initialization not yet verified)`)
           if (session.expiryTimer) {
             clearTimeout(session.expiryTimer)
             session.expiryTimer = undefined
@@ -260,7 +262,10 @@ function createProxySession(request: McpSandboxLaunchRequest): ProxySession {
   // server may run indefinitely, so its private runtime paths must not be
   // removed on a fixed timer after it has claimed the session.
   session.expiryTimer = setTimeout(() => {
-    if (!session.claimed) void closeSession(session)
+    if (!session.claimed) {
+      debugLog('mcp', `sandbox descriptor expired unclaimed: ${session.request.diagnosticLabel ?? 'unnamed server'}`)
+      void closeSession(session)
+    }
   }, 30_000)
   return session
 }

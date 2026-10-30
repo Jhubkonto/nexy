@@ -2,7 +2,7 @@ import { app } from 'electron'
 import { createRequire } from 'node:module'
 import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs'
 import { join, dirname, isAbsolute, relative, basename } from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import type { ManagedBrowserRuntimeStatus, McpManagedLaunch } from '../shared/types'
 import type { McpSandboxLaunchRequest } from './mcp-sandbox'
 import { recordErrorLogEntry } from './error-log-handlers'
@@ -268,6 +268,28 @@ export function enclosingNodeModulesDirectories(packageDirectories: string[]): s
  */
 export const MANAGED_NODE_FLAGS = ['--preserve-symlinks', '--preserve-symlinks-main'] as const
 
+/**
+ * Chromium's restricted GPU/renderer tokens must be able to read their own
+ * binaries. A per-user download does not inherit Program Files' package ACLs;
+ * a leftover per-AppContainer ACE can also deny restricted tokens access.
+ * Grant only read/execute on this application-owned browser payload, preserving
+ * existing ACLs. Repair existing downloads as well as newly installed ones.
+ */
+export function prepareManagedBrowserSandbox(
+  root: string,
+  run: typeof spawnSync = spawnSync,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  if (platform !== 'win32') return
+  const result = run('icacls.exe', [
+    root, '/grant', '*S-1-15-2-1:(OI)(CI)(RX)', '*S-1-15-2-2:(OI)(CI)(RX)', '/T', '/Q',
+  ], { encoding: 'utf8', windowsHide: true, timeout: 30_000 })
+  if (result.error || result.status !== 0) {
+    const detail = result.error?.message || result.stderr?.trim() || result.stdout?.trim() || `exit code ${result.status}`
+    throw new Error(`Could not prepare managed Chromium sandbox file permissions: ${detail}`)
+  }
+}
+
 /** Builds the fixed sandbox descriptor used by Nexy's two managed browser cards. */
 export function createManagedPlaywrightLaunch(launch: McpManagedLaunch): ManagedPlaywrightLaunch {
   const status = getManagedBrowserStatus()
@@ -278,27 +300,42 @@ export function createManagedPlaywrightLaunch(launch: McpManagedLaunch): Managed
         ? `Managed Chromium is unavailable: ${status.detail || 'the browser installation failed'}. Open the MCP server settings, review the download details, and retry “Download Chromium”.`
         : `Managed Chromium is not installed. Open the MCP server settings and select “Download Chromium” to install version ${BROWSER_VERSION}.`)
   }
+  if (launch.mode === 'launch') prepareManagedBrowserSandbox(browserRoot())
   const sessionDirectory = mkdtempSync(join(userDataPath(), `${RUNTIME_DIRECTORY}-session-`))
   const outputDirectory = join(sessionDirectory, 'output')
+  const temporaryDirectory = join(sessionDirectory, 'tmp')
+  const registryDirectory = join(sessionDirectory, 'registry')
   mkdirSync(outputDirectory, { recursive: true })
+  mkdirSync(temporaryDirectory, { recursive: true })
+  mkdirSync(registryDirectory, { recursive: true })
   const mcpDirectory = dirname(mcpCliPath())
   const playwrightCoreDirectory = unpackedRuntimePath(dirname(require.resolve('playwright-core/package.json')))
   const playwrightDirectory = unpackedRuntimePath(dirname(require.resolve('playwright/package.json')))
   const packageDirectories = [mcpDirectory, playwrightCoreDirectory, playwrightDirectory]
-  // `--isolated` keeps the browser profile in memory (it is mutually exclusive
-  // with --user-data-dir in this @playwright/mcp release), the server is headed
-  // by default (there is no --headed flag), and without `--browser chromium` it
-  // looks for a system Google Chrome install instead of Nexy's managed Chromium.
+  // In this bundled MCP release, --isolated caches a shared browser even when
+  // context creation fails after a browser crash. Subsequent calls reuse that
+  // dead browser forever. A private per-session profile launches a fresh browser
+  // on the next call; cleanup still removes all profile data at session end.
+  // Headed is the default; explicitly retain Chromium's own process sandbox.
   const args = launch.mode === 'cdp'
     ? ['--cdp-endpoint', 'http://127.0.0.1:9222', '--output-dir', outputDirectory]
-    : ['--isolated', '--browser', 'chromium', '--output-dir', outputDirectory]
+    : ['--browser', 'chromium', '--sandbox', '--user-data-dir', join(sessionDirectory, 'profile'), '--output-dir', outputDirectory]
   return {
     request: {
       command: process.execPath,
       args: [...MANAGED_NODE_FLAGS, mcpCliPath(), ...args],
       // Start from the same secret-free allowlist as every other MCP server:
       // Windows cannot create the AppContainer process without e.g. SystemRoot.
-      env: buildMcpProcessEnv({ ELECTRON_RUN_AS_NODE: '1', PLAYWRIGHT_BROWSERS_PATH: browserRoot() }),
+      env: buildMcpProcessEnv({
+        ELECTRON_RUN_AS_NODE: '1',
+        PLAYWRIGHT_BROWSERS_PATH: browserRoot(),
+        // Playwright's browser registry is separate from its download cache.
+        // Keep it and Chromium's temporary profiles inside the writable session.
+        PLAYWRIGHT_SERVER_REGISTRY: registryDirectory,
+        TEMP: temporaryDirectory,
+        TMP: temporaryDirectory,
+        TMPDIR: temporaryDirectory,
+      }),
       cwd: sessionDirectory,
       profile: {
         version: 1,
