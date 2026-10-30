@@ -90,7 +90,7 @@ export type MarkdownViewMode = 'rendered' | 'raw'
 /** Presentation preference for the draft composer. This intentionally does not share the
  * sent-message preference above: drafts remain raw Markdown regardless of this setting. */
 export type ComposerMarkdownViewMode = 'rendered' | 'raw'
-export type ActiveSectionPane = 'projects' | 'agents' | 'chats' | 'pinned' | 'skills' | 'scheduled' | 'workflows' | 'artifacts' | 'ratings' | null
+export type ActiveSectionPane = 'projects' | 'agents' | 'chats' | 'pinned' | 'skills' | 'scheduled' | 'workflows' | 'artifacts' | 'ratings' | 'work-history' | null
 export type ProjectSettingsTab = 'general' | 'scope' | 'milestones' | 'team' | 'workflow' | 'wiki' | 'artifacts' | 'capabilities'
 
 /** Sidebar sections that surface a "new item ready" badge when background generation completes. */

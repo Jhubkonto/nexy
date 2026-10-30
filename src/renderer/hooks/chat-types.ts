@@ -135,7 +135,7 @@ export interface TeamActivityStep {
   agentName: string
   agentIcon: string
   task: string
-  status: 'delegating' | 'done' | 'error'
+  status: 'delegating' | 'done' | 'error' | 'cancelled'
   result?: string
   liveContent?: string
   durationMs?: number

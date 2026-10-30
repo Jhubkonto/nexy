@@ -11,6 +11,7 @@ import type {
 } from './chat-types'
 import { useChatLiveTurn } from './useChatLiveTurn'
 import { useStreamingQueue } from './useStreamingQueue'
+import type { DelegationRunSnapshot } from '../../shared/delegation'
 
 interface UseChatParams {
   conversationId: string | null
@@ -413,6 +414,41 @@ export function useChat({
       })
     }
   }, [])
+
+  // A newly opened or reconnected renderer may have missed the individual team events. Hydrate
+  // from the main-process registry, then keep it current through snapshots rather than guessing
+  // delegated work from model prose or tool text.
+  useEffect(() => {
+    if (!conversationId) return
+    const api = window.api
+    const applyRun = (run: DelegationRunSnapshot) => {
+      if (run.conversationId !== conversationId) return
+      const steps: TeamActivityStep[] = run.nodes
+        .filter((node) => node.parentId !== null)
+        .map((node) => ({
+          stepId: node.id,
+          agentId: node.id,
+          agentName: node.label,
+          agentIcon: '🤖',
+          task: node.task ?? '',
+          status: node.status === 'done' ? 'done' : node.status === 'failed' ? 'error' : node.status === 'cancelled' ? 'cancelled' : 'delegating',
+          result: node.detail,
+          liveContent: node.tail,
+          durationMs: node.finishedAt ? node.finishedAt - node.startedAt : undefined,
+        }))
+      if (steps.length === 0) return
+      setLiveTeamActivity((previous) => {
+        const byId = new Map(previous.map((step) => [step.stepId, step]))
+        for (const step of steps) {
+          const existing = byId.get(step.stepId)
+          byId.set(step.stepId, { ...existing, ...step, liveContent: step.liveContent ?? existing?.liveContent })
+        }
+        return [...byId.values()]
+      })
+    }
+    void api.getDelegationRuns?.(conversationId).then((runs) => runs.forEach(applyRun)).catch(() => undefined)
+    return api.onDelegationUpdated?.(applyRun)
+  }, [conversationId])
 
   // Defer isGenerating=false until the drain queue empties so the streaming cursor
   // stays visible until the last buffered character has actually been rendered.

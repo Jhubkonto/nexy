@@ -20,7 +20,7 @@ export interface ConversationSlice {
   markConversationComplete: (id: string) => Promise<void>
   markConversationIncomplete: (id: string) => Promise<void>
   setConversationPinned: (id: string, pinned: boolean) => Promise<void>
-  handleConversationCompleted: (conversationId: string) => void
+  handleConversationCompleted: (conversationId: string, completedAt?: number) => void
   handleConversationIncompleted: (conversationId: string) => void
   submitConversationRating: (id: string, rating: number, note?: string | null) => Promise<void>
   clearConversationRating: (id: string) => Promise<void>
@@ -108,25 +108,46 @@ export const createConversationSlice: StateCreator<
   },
 
   markConversationComplete: async (id) => {
+    const previous = get().conversations.find((conversation) => conversation.id === id)?.completed_at ?? null
+    const completedAt = Date.now()
+    set((s) => {
+      const conversation = s.conversations.find((item) => item.id === id)
+      if (conversation) conversation.completed_at = completedAt
+      if (!s.completedConversationIds.includes(id)) s.completedConversationIds.push(id)
+    })
     try {
-      await window.api.markConversationComplete(id)
-      set((s) => {
-        if (!s.completedConversationIds.includes(id)) {
-          s.completedConversationIds.push(id)
-        }
+      if (!await window.api.markConversationComplete(id)) throw new Error('Conversation was not found')
+      get().addToast('Chat marked complete', 'success', {
+        label: 'Undo',
+        onClick: () => { void get().markConversationIncomplete(id) },
       })
     } catch {
+      set((s) => {
+        const conversation = s.conversations.find((item) => item.id === id)
+        if (conversation) conversation.completed_at = previous
+        s.completedConversationIds = previous == null
+          ? s.completedConversationIds.filter((cid) => cid !== id)
+          : s.completedConversationIds
+      })
       get().addToast('Failed to mark conversation complete', 'error')
     }
   },
 
   markConversationIncomplete: async (id) => {
+    const previous = get().conversations.find((conversation) => conversation.id === id)?.completed_at ?? null
+    set((s) => {
+      const conversation = s.conversations.find((item) => item.id === id)
+      if (conversation) conversation.completed_at = null
+      s.completedConversationIds = s.completedConversationIds.filter((cid) => cid !== id)
+    })
     try {
-      await window.api.markConversationIncomplete(id)
-      set((s) => {
-        s.completedConversationIds = s.completedConversationIds.filter((cid) => cid !== id)
-      })
+      if (!await window.api.markConversationIncomplete(id)) throw new Error('Conversation was not found')
     } catch {
+      set((s) => {
+        const conversation = s.conversations.find((item) => item.id === id)
+        if (conversation) conversation.completed_at = previous
+        if (previous != null && !s.completedConversationIds.includes(id)) s.completedConversationIds.push(id)
+      })
       get().addToast('Failed to mark conversation incomplete', 'error')
     }
   },
@@ -187,17 +208,21 @@ export const createConversationSlice: StateCreator<
     })
   },
 
-  handleConversationCompleted: (conversationId) => {
+  handleConversationCompleted: (conversationId, completedAt) => {
     set((s) => {
       if (!s.completedConversationIds.includes(conversationId)) {
         s.completedConversationIds.push(conversationId)
       }
+      const conversation = s.conversations.find((item) => item.id === conversationId)
+      if (conversation) conversation.completed_at = completedAt ?? Date.now()
     })
   },
 
   handleConversationIncompleted: (conversationId) => {
     set((s) => {
       s.completedConversationIds = s.completedConversationIds.filter((id) => id !== conversationId)
+      const conversation = s.conversations.find((item) => item.id === conversationId)
+      if (conversation) conversation.completed_at = null
     })
   },
 
