@@ -16,6 +16,8 @@ import {
 import { broadcastToMobile } from './ws-server'
 import { startActivity, endActivity } from './activity-tracker'
 import { runAgentTurn } from './agent-turn-runner'
+import { addDelegationNode, createDelegationRun, isDelegationNodeCancelRequested, updateDelegationNode } from './delegation-registry'
+import { abortActiveStream } from './provider-stream-state'
 
 export const MAX_DELEGATION_DEPTH = 5
 
@@ -33,7 +35,7 @@ export interface TeamActivityStep {
   agentName: string
   agentIcon: string
   task: string
-  status: 'delegating' | 'done' | 'error'
+  status: 'delegating' | 'done' | 'error' | 'cancelled'
   result?: string
   durationMs?: number
 }
@@ -138,7 +140,8 @@ async function callSpecialist(
   stepId: string,
   window: BrowserWindow | undefined,
   conversationId: string,
-  generationOptions: { temperature: number; maxTokens: number }
+  generationOptions: { temperature: number; maxTokens: number },
+  runId: string,
 ): Promise<string> {
   return runAgentTurn({
     agentId,
@@ -149,7 +152,10 @@ async function callSpecialist(
     // Per-step request ID to avoid collision when multiple specialists run in parallel
     requestId: `${conversationId}:${stepId}`,
     generationOptions,
-    onChunk: (chunk) => window?.webContents.send('chat:team-step-stream', { stepId, chunk }),
+    onChunk: (chunk) => {
+      updateDelegationNode(runId, stepId, { tail: chunk })
+      window?.webContents.send('chat:team-step-stream', { stepId, chunk })
+    },
   })
 }
 
@@ -189,6 +195,13 @@ export async function runOrchestration(
   const teamManifest = buildTeamManifest(teamAgents, projectName)
 
   const teamActivitySteps: TeamActivityStep[] = []
+  const { runId, rootId } = createDelegationRun({
+    conversationId: opts.conversationId,
+    backend: 'nexy',
+    label: 'Coordinator',
+    detailsVisible: opts.showActivity !== false,
+    onCancel: () => abortActiveStream(opts.conversationId),
+  })
 
   const loopMessages: ProviderMessage[] = [
     {
@@ -228,6 +241,7 @@ export async function runOrchestration(
         window?.webContents.send('chat:stream-response', char)
       }
       window?.webContents.send('chat:stream-response', null)
+      updateDelegationNode(runId, rootId, { status: 'done' })
       return { finalContent, teamActivity: teamActivitySteps }
     }
 
@@ -273,29 +287,53 @@ export async function runOrchestration(
         status: 'delegating'
       }
       teamActivitySteps.push(step)
-      window?.webContents.send('chat:team-activity', { ...step })
-      broadcastToMobile({ event: 'chat:team-activity', data: { conversationId: opts.conversationId, ...step } })
+      addDelegationNode(runId, {
+        id: stepId,
+        parentId: rootId,
+        label: targetAgent.agentName,
+        task: step.task,
+        backend: 'nexy',
+        capabilities: { canCancel: true, canSteer: false, canViewTail: true },
+        status: 'running',
+        onCancel: () => abortActiveStream(`${opts.conversationId}:${stepId}`),
+      })
+      if (opts.showActivity !== false) {
+        window?.webContents.send('chat:team-activity', { ...step })
+        broadcastToMobile({ event: 'chat:team-activity', data: { conversationId: opts.conversationId, ...step } })
+      }
       const activityId = `orchestration:${stepId}`
-      startActivity({ id: activityId, kind: 'orchestration', label: `Delegating to ${targetAgent.agentName}…`, conversationId: opts.conversationId })
+      startActivity({
+        id: activityId,
+        kind: 'orchestration',
+        label: opts.showActivity !== false ? `Delegating to ${targetAgent.agentName}…` : 'Delegated work in progress…',
+        conversationId: opts.conversationId,
+      })
 
       const taskContent = context ? `${task}\n\nContext:\n${context}` : task
       const delegateStart = Date.now()
       let specialistResult: string
       try {
         specialistResult = await callSpecialist(
-          targetAgentId, opts.projectId, resolvedLeaderModel, taskContent, stepId, window, opts.conversationId, generationOptions
+          targetAgentId, opts.projectId, resolvedLeaderModel, taskContent, stepId, window, opts.conversationId, generationOptions, runId
         )
-        step.status = 'done'
+        step.status = isDelegationNodeCancelRequested(runId, stepId) ? 'cancelled' : 'done'
         step.result = specialistResult
       } catch (err) {
-        specialistResult = `Specialist agent error: ${(err as Error).message}`
-        step.status = 'error'
+        const cancelled = isDelegationNodeCancelRequested(runId, stepId)
+        specialistResult = cancelled ? 'Cancelled by operator; continue using the remaining specialist results.' : `Specialist agent error: ${(err as Error).message}`
+        step.status = cancelled ? 'cancelled' : 'error'
         step.result = specialistResult
       }
       endActivity(activityId)
       step.durationMs = Date.now() - delegateStart
-      window?.webContents.send('chat:team-activity', { ...step })
-      broadcastToMobile({ event: 'chat:team-activity', data: { conversationId: opts.conversationId, ...step } })
+      updateDelegationNode(runId, stepId, {
+        status: step.status === 'done' ? 'done' : step.status === 'cancelled' ? 'cancelled' : 'failed',
+        detail: step.result,
+      })
+      if (opts.showActivity !== false) {
+        window?.webContents.send('chat:team-activity', { ...step })
+        broadcastToMobile({ event: 'chat:team-activity', data: { conversationId: opts.conversationId, ...step } })
+      }
       return { call, result: specialistResult }
     }))
 
@@ -338,5 +376,6 @@ export async function runOrchestration(
     generationOptions
   )
   window?.webContents.send('chat:stream-response', null)
+  updateDelegationNode(runId, rootId, { status: 'done' })
   return { finalContent: finalResult, teamActivity: teamActivitySteps }
 }
