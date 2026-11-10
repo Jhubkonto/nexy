@@ -55,3 +55,15 @@ describe('backgroundActivitySlice.applyActivitySnapshot', () => {
     expect(store.getState().backgroundActivities).toEqual([])
   })
 })
+
+describe('backgroundActivitySlice.openBackgroundActivity', () => {
+  it('opens the Work history pane on the report behind a work-history activity', () => {
+    const store = createTestStore()
+    store.getState().openBackgroundActivity({ id: 'work-history:run-1', kind: 'work-history', label: 'Generating work history report…', startedAt: 1 })
+    const state = store.getState() as BackgroundActivitySlice & { activeSectionPane?: string }
+    expect(state.activeSectionPane).toBe('work-history')
+    expect(state.workHistoryOpenRunId).toBe('run-1')
+    state.setWorkHistoryOpenRunId(null)
+    expect(store.getState().workHistoryOpenRunId).toBeNull()
+  })
+})

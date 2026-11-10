@@ -42,6 +42,16 @@ beforeEach(() => {
 })
 
 describe('SettingsPanel', () => {
+  it('loads and saves the global prompt', async () => {
+    mockApi.getSetting = vi.fn().mockResolvedValue('Existing instruction')
+    render(<SettingsPanel />)
+    const input = await screen.findByLabelText('Global prompt')
+    await waitFor(() => expect(input).toHaveValue('Existing instruction'))
+    await user.clear(input)
+    await user.type(input, 'New instruction')
+    await user.click(screen.getByRole('button', { name: 'Save global prompt' }))
+    expect(mockApi.setSetting).toHaveBeenCalledWith('global_prompt', 'New instruction')
+  })
   it('shows active model details in general tab', async () => {
     render(<SettingsPanel />)
 
