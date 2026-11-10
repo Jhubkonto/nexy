@@ -159,6 +159,15 @@
   --nexy-on-accent: 17 24 39;
 }
 
+[data-ui-style='classic'] .nexy-toast {
+  background-color: #000;
+  border-color: #374151;
+}
+
+.dark[data-ui-style='classic'] .nexy-toast {
+  border-color: #9ca3af;
+}
+
 html {
   height: 100%;
 }
