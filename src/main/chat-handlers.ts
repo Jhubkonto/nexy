@@ -882,9 +882,10 @@ export async function dispatchChatSend(
     }
   }
   const settingsRows = db
-    .prepare("SELECT key, value FROM settings WHERE key IN ('default_model', 'temperature', 'max_tokens')")
+    .prepare("SELECT key, value FROM settings WHERE key IN ('default_model', 'temperature', 'max_tokens', 'global_prompt')")
     .all() as Array<{ key: string; value: string }>
   const settingsMap = new Map(settingsRows.map((r) => [r.key, r.value]))
+  const globalPrompt = settingsMap.get('global_prompt')?.trim() || ''
   const defaultModel = settingsMap.get('default_model') || 'default'
   let globalDefaultHermesProfile: string | null = null
   try {
@@ -1116,6 +1117,7 @@ export async function dispatchChatSend(
               generationOptions,
               maxDelegationDepth: maxDepth,
               showActivity,
+              globalPrompt,
             },
             userContent,
             [],
@@ -1227,7 +1229,7 @@ export async function dispatchChatSend(
       const claudeCliProjectTeam = effectiveBackend === 'claude-cli' && orchProjId
         ? buildClaudeCliProjectTeam(db, orchProjId, effectiveAgentId)
         : null
-      const cliSystemPrompt = [baseCliSystemPrompt, claudeCliProjectTeam?.directive]
+      const cliSystemPrompt = [globalPrompt, baseCliSystemPrompt, claudeCliProjectTeam?.directive]
         .filter((part): part is string => typeof part === 'string' && part.length > 0)
         .join('\n\n') || undefined
 
@@ -1982,7 +1984,7 @@ export async function dispatchChatSend(
   const rootDirNote = injectedRootDirectory
     ? `\n\nThe project's enabled source directories (${projectDirectories.length > 0 ? projectDirectories.join(', ') : injectedRootDirectory}) have been scanned and their file trees are provided in the user message within [Project File Structure] tags. Treat them as real file system data — do NOT say you cannot access the file system.`
     : ''
-  const systemPrompt = (agentSystemPrompt
+  const systemPrompt = (globalPrompt ? `${globalPrompt}\n\n` : '') + (agentSystemPrompt
     ? `${agentSystemPrompt}${contextBoundaryNote}${rootDirNote}\n\n${modelIdentityInstruction}`
     : `You are an AI programming assistant.${contextBoundaryNote}${rootDirNote}\n\n${modelIdentityInstruction}`)
     + toolHistoryDigest

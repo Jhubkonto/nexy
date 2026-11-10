@@ -161,6 +161,51 @@ function getYmlName(): string {
   return 'latest.yml'
 }
 
+/** Prepare a desktop package using the version currently published to its feed. */
+export async function prepareDesktopPackageVersion(workspacePath: string, feedPath: string | null): Promise<string> {
+  if (!feedPath) throw new Error('Configure a local update feed before packaging so the published version can be checked.')
+  let publishedContent: string
+  try {
+    publishedContent = await readFile(path.join(feedPath, getYmlName()), 'utf8')
+  } catch {
+    throw new Error('Could not read the published version from the configured update feed.')
+  }
+  const published = parseYmlMeta(publishedContent)?.version
+  const pkgPath = path.join(workspacePath, 'package.json')
+  const pkg = JSON.parse(await readFile(pkgPath, 'utf8')) as { name?: string; version?: string }
+  if (pkg.name !== 'nexy') throw new Error('The selected workspace is not a Nexy workspace.')
+  const parseVersion = (version: string | undefined): number[] | null => {
+    if (!version || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) return null
+    const parts = version.split('.').map(Number)
+    return parts.every(Number.isSafeInteger) ? parts : null
+  }
+  const currentParts = parseVersion(pkg.version)
+  const publishedParts = parseVersion(published)
+  if (!currentParts || !publishedParts) throw new Error('Workspace and published versions must be valid major.minor.patch versions.')
+  const comparison = currentParts.findIndex((part, i) => part !== publishedParts[i])
+  if (comparison !== -1) {
+    if (currentParts[comparison] < publishedParts[comparison]) {
+      throw new Error(`Workspace version ${pkg.version} is older than published version ${published}. Update it before packaging.`)
+    }
+    return pkg.version!
+  }
+  if (currentParts[2] === Number.MAX_SAFE_INTEGER) throw new Error('Cannot increment the workspace patch version.')
+  currentParts[2]++
+  const next = currentParts.join('.')
+  const lockPath = path.join(workspacePath, 'package-lock.json')
+  let lock: { version?: string; packages?: Record<string, { version?: string }> } | undefined
+  if (existsSync(lockPath)) {
+    lock = JSON.parse(await readFile(lockPath, 'utf8'))
+    if (!lock?.packages?.['']) throw new Error('Could not update the root package in package-lock.json.')
+    lock.version = next
+    lock.packages[''].version = next
+  }
+  pkg.version = next
+  if (lock) await writeFile(lockPath, JSON.stringify(lock, null, 2) + '\n', 'utf8')
+  await writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8')
+  return next
+}
+
 function getInstallerExt(): string {
   if (process.platform === 'win32') return '.exe'
   if (process.platform === 'darwin') return '.dmg'
@@ -381,6 +426,9 @@ export function registerBuildHandlers(mainWindow?: BrowserWindow): void {
     const buildId = randomUUID()
     const workspacePath = getWorkspacePath(db)
     const wsInfo = await getWorkspaceInfo(db)
+    if (command === 'package') {
+      wsInfo.version = await prepareDesktopPackageVersion(workspacePath, getLocalFeedPath(db))
+    }
     const now = Date.now()
 
     db.prepare(
