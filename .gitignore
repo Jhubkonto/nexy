@@ -82,8 +82,14 @@ src/planning/
 .claude/
 .agents/
 
-# Android local Gradle cache
+# Android local Gradle cache and build artifacts
 android/.gradle-user/
+android/.gradle-codex/
+android/.gradle-codex-archive-verify/
+android/.gradle-local/
+android/.gradle-temp-verification/
+android/.gradle-verification/
+android/.gradle/
 
 # Temporary visual test data
 tmp-nexy-visual/
