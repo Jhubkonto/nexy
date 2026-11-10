@@ -1,15 +1,23 @@
 import Database from 'better-sqlite3'
 import { describe, expect, it, vi } from 'vitest'
 
-const state = vi.hoisted(() => ({ db: null as Database.Database | null, handlers: new Map<string, (...args: any[]) => any>(), send: vi.fn(), abort: vi.fn(), claude: vi.fn() }))
+const state = vi.hoisted(() => ({ db: null as Database.Database | null, handlers: new Map<string, (...args: any[]) => any>(), send: vi.fn(), abort: vi.fn(), claude: vi.fn(),
+  defaultModel: 'test' as string | undefined, configured: (_provider: string): boolean => true, inferred: (_model: string): string | undefined => undefined,
+  forAgent: (model: string) => ({ provider: model.startsWith('claude') ? 'anthropic' : 'openai', model }),
+  activity: { start: vi.fn(), update: vi.fn(), end: vi.fn() } }))
+vi.mock('../activity-tracker', () => ({ startActivity: state.activity.start, updateActivity: state.activity.update, endActivity: state.activity.end }))
 vi.mock('../database', () => ({ getDatabase: () => state.db }))
 vi.mock('../safe-handle', () => ({ safeHandle: (channel: string, handler: (...args: any[]) => any) => state.handlers.set(channel, handler) }))
-vi.mock('../providers', () => ({ getProviderCredential: () => 'credential', getProviderForAgent: () => ({ provider: 'openai', model: 'test' }), sendProviderNonStreaming: state.send, abortActiveStream: state.abort }))
+vi.mock('../providers', () => ({ getProviderCredential: (provider: string) => (state.configured(provider) ? 'credential' : null), getProviderForAgent: (model: string) => state.forAgent(model), sendProviderNonStreaming: state.send, abortActiveStream: state.abort }))
 vi.mock('../artifacts', () => ({ writeManagedArtifactVersion: () => ({ artifactId: 'artifact', versionId: 'version' }) }))
 vi.mock('../work-history-claude', () => ({ runHistoryClaude: state.claude }))
+vi.mock('../backend-routing', () => ({
+  resolveEffectiveModelForRouting: (model: string) => (model && model !== 'default' ? model : state.defaultModel),
+  inferCliBackendFromModel: (model: string) => state.inferred(model),
+}))
 
 import { initializeBaseSchema, runMigrations } from '../database-migrations'
-import { previewWorkHistory, registerWorkHistoryHandlers, startWorkHistoryRun, getWorkHistoryRun, cancelWorkHistoryRun, splitHistoryText, packHistorySummaries, validateHistoryReferences } from '../work-history'
+import { previewWorkHistory, resolveHistoryModel, registerWorkHistoryHandlers, startWorkHistoryRun, getWorkHistoryRun, cancelWorkHistoryRun, splitHistoryText, packHistorySummaries, validateHistoryReferences } from '../work-history'
 import type { WorkHistoryRequest } from '../../shared/work-history'
 import { handleWorkHistoryCommand } from '../work-history-ws'
 
@@ -58,6 +66,23 @@ describe('work history selection', () => {
     expect(send({ ...request, end: 201 }).error).toContain('different request')
     expect((db.prepare('SELECT COUNT(*) AS n FROM work_history_runs').get() as { n: number }).n).toBe(1)
     await vi.waitFor(() => expect(getWorkHistoryRun(db, runId)?.status).toBe('failed'))
+    db.close()
+  })
+
+  it('shows a running report in the activity panel and clears it when the report completes', async () => {
+    const db = new Database(':memory:')
+    initializeBaseSchema(db)
+    runMigrations(db)
+    db.prepare("INSERT INTO conversations (id, title) VALUES ('a', 'Chat')").run()
+    db.prepare("INSERT INTO messages (id, conversation_id, role, content, timestamp) VALUES ('1', 'a', 'user', 'work', 100)").run()
+    state.activity.start.mockClear(); state.activity.update.mockClear(); state.activity.end.mockClear()
+    state.send.mockResolvedValue({ content: 'Did work [source:a]', finishReason: 'stop' })
+    const id = startWorkHistoryRun(db, { start: 0, end: 200, model: 'test', grouping: 'project', instructions: '' })
+    expect(state.activity.start).toHaveBeenCalledWith(expect.objectContaining({ id: `work-history:${id}`, kind: 'work-history' }))
+    await vi.waitFor(() => expect(getWorkHistoryRun(db, id)?.status).toBe('completed'))
+    expect(state.activity.update).toHaveBeenCalledWith(`work-history:${id}`, expect.objectContaining({ detail: expect.stringContaining('Summarizing 1 of 1') }))
+    expect(state.activity.end).toHaveBeenCalledWith(`work-history:${id}`, { completed: true })
+    state.send.mockReset()
     db.close()
   })
 
@@ -208,6 +233,60 @@ describe('work history selection', () => {
     expect(cancelWorkHistoryRun(id)).toBe(true)
     await vi.waitFor(() => expect(getWorkHistoryRun(db, id)?.status).toBe('cancelled'))
     state.claude.mockReset()
+    db.close()
+  })
+
+  describe('resolveHistoryModel', () => {
+    const reset = () => { state.defaultModel = 'test'; state.configured = () => true; state.inferred = () => undefined }
+
+    it('resolves "default" through the desktop default model setting', () => {
+      reset()
+      state.defaultModel = 'gpt-4.1'
+      expect(resolveHistoryModel('default')).toEqual({ kind: 'api', provider: 'openai', model: 'gpt-4.1', credential: 'credential' })
+      state.defaultModel = undefined
+      expect(() => resolveHistoryModel('default')).toThrow(/No default model/)
+      reset()
+    })
+
+    it('routes Claude CLI picker values and bare Claude CLI models without an API key', () => {
+      reset()
+      expect(resolveHistoryModel('claude-cli')).toEqual({ kind: 'claude', model: 'default' })
+      expect(resolveHistoryModel('claude-cli:opus')).toEqual({ kind: 'claude', model: 'opus' })
+      state.configured = () => false
+      state.inferred = model => (model === 'sonnet' ? 'claude-cli' : undefined)
+      expect(resolveHistoryModel('sonnet')).toEqual({ kind: 'claude', model: 'sonnet' })
+      reset()
+    })
+
+    it('explains how to use Codex and Hermes instead of failing generically', () => {
+      reset()
+      expect(() => resolveHistoryModel('codex-cli:gpt-5')).toThrow(/Codex CLI can't generate reports from this screen/)
+      expect(() => resolveHistoryModel('hermes-cli:x')).toThrow(/Hermes Agent/)
+      state.configured = () => false
+      state.inferred = () => 'codex-cli'
+      expect(() => resolveHistoryModel('gpt-5-codex')).toThrow(/Codex CLI/)
+      reset()
+    })
+
+    it('names the provider and model when no API key is configured', () => {
+      reset()
+      state.configured = () => false
+      expect(() => resolveHistoryModel('gpt-5-mini')).toThrow('No OpenAI API key is configured for "gpt-5-mini". Choose another model or add the key in Settings.')
+      reset()
+    })
+  })
+
+  it('previews without a model and rejects an unroutable model before creating a run', () => {
+    const db = new Database(':memory:')
+    initializeBaseSchema(db)
+    runMigrations(db)
+    db.prepare("INSERT INTO conversations (id, title) VALUES ('a', 'Chat')").run()
+    db.prepare("INSERT INTO messages (id, conversation_id, role, content, timestamp) VALUES ('1', 'a', 'user', 'work', 100)").run()
+    expect(previewWorkHistory(db, { start: 0, end: 200 } as WorkHistoryRequest).map(source => source.id)).toEqual(['a'])
+    state.configured = () => false
+    expect(() => startWorkHistoryRun(db, { start: 0, end: 200, model: 'gpt-5-mini', grouping: 'project', instructions: '' }, '00000000-0000-4000-8000-000000000001')).toThrow(/No OpenAI API key/)
+    expect(db.prepare('SELECT COUNT(*) AS n FROM work_history_runs').get()).toEqual({ n: 0 })
+    state.configured = () => true
     db.close()
   })
 })

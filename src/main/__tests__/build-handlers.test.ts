@@ -1,6 +1,9 @@
 import Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { initializeBaseSchema, runMigrations } from '../database-migrations'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'fs/promises'
+import path from 'path'
+import os from 'os'
 
 // ---------------------------------------------------------------------------
 // Mock electron, database, and safe-handle before importing the module
@@ -64,6 +67,46 @@ afterEach(() => {
     openDatabases.pop()?.close()
   }
   vi.restoreAllMocks()
+})
+
+describe('desktop package version preparation', () => {
+  let root: string
+  let workspace: string
+  let feed: string
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), 'nexy-package-version-'))
+    workspace = path.join(root, 'workspace')
+    feed = path.join(root, 'feed')
+    await Promise.all([mkdir(workspace), mkdir(feed)])
+    await writeFile(path.join(workspace, 'package.json'), JSON.stringify({ name: 'nexy', version: '1.6.2' }))
+    await writeFile(path.join(workspace, 'package-lock.json'), JSON.stringify({ version: '1.6.2', packages: { '': { version: '1.6.2' } } }))
+  })
+
+  afterEach(async () => { await rm(root, { recursive: true, force: true }) })
+
+  async function publish(version: string) {
+    const name = process.platform === 'darwin' ? 'latest-mac.yml' : process.platform === 'linux' ? 'latest-linux.yml' : 'latest.yml'
+    await writeFile(path.join(feed, name), `version: ${version}\npath: installer.exe\n`)
+  }
+
+  it('increments matching versions and updates both lockfile versions', async () => {
+    const { prepareDesktopPackageVersion } = await import('../build-handlers')
+    await publish('1.6.2')
+    expect(await prepareDesktopPackageVersion(workspace, feed)).toBe('1.6.3')
+    expect(JSON.parse(await readFile(path.join(workspace, 'package.json'), 'utf8')).version).toBe('1.6.3')
+    const lock = JSON.parse(await readFile(path.join(workspace, 'package-lock.json'), 'utf8'))
+    expect([lock.version, lock.packages[''].version]).toEqual(['1.6.3', '1.6.3'])
+    expect(await prepareDesktopPackageVersion(workspace, feed)).toBe('1.6.3')
+  })
+
+  it('rejects an older workspace and an unavailable feed without modifying the version', async () => {
+    const { prepareDesktopPackageVersion } = await import('../build-handlers')
+    await publish('1.7.0')
+    await expect(prepareDesktopPackageVersion(workspace, feed)).rejects.toThrow('older than published')
+    await expect(prepareDesktopPackageVersion(workspace, null)).rejects.toThrow('Configure a local update feed')
+    expect(JSON.parse(await readFile(path.join(workspace, 'package.json'), 'utf8')).version).toBe('1.6.2')
+  })
 })
 
 // ---------------------------------------------------------------------------
