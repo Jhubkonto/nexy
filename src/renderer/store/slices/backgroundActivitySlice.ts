@@ -15,6 +15,9 @@ export interface BackgroundActivitySlice {
   upsertBackgroundActivity: (activity: BackgroundActivityInput) => void
   removeBackgroundActivity: (id: string) => void
   openBackgroundActivity: (activity: BackgroundActivity) => void
+  /** Report the Work history pane should open next; the pane clears it once shown. */
+  workHistoryOpenRunId: string | null
+  setWorkHistoryOpenRunId: (runId: string | null) => void
   applyActivitySnapshot: (snapshot: BackgroundActivity[]) => void
 }
 
@@ -26,6 +29,13 @@ export const createBackgroundActivitySlice: StateCreator<
 > = (set, get) => ({
   backgroundActivities: [],
   confirmedActivityIds: {},
+  workHistoryOpenRunId: null,
+
+  setWorkHistoryOpenRunId: (runId) => {
+    set((s) => {
+      s.workHistoryOpenRunId = runId
+    })
+  },
 
   upsertBackgroundActivity: (activity) => {
     set((s) => {
@@ -113,6 +123,13 @@ export const createBackgroundActivitySlice: StateCreator<
       if (activity.conversationId) {
         get().selectConversation(activity.conversationId)
       }
+      return
+    }
+    if (activity.kind === 'work-history') {
+      set((s) => {
+        s.activeSectionPane = 'work-history'
+        s.workHistoryOpenRunId = activity.id.slice('work-history:'.length)
+      })
       return
     }
     if (activity.kind === 'build') {
