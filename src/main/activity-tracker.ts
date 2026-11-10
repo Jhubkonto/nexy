@@ -165,6 +165,7 @@ const ACTIVITY_DONE_TITLES: Record<BackgroundActivityKind, string> = {
   chat: 'Response ready',
   build: 'Build finished',
   orchestration: 'Orchestration finished',
+  'work-history': 'Work history report ready',
 }
 
 function notifyActivityFinished(activity: BackgroundActivity): void {

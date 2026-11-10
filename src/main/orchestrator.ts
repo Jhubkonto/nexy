@@ -51,6 +51,7 @@ export interface OrchestratorOptions {
   generationOptions: { temperature: number; maxTokens: number }
   maxDelegationDepth?: number
   showActivity?: boolean
+  globalPrompt?: string
 }
 
 const DELEGATE_TOOL: ToolDefinition = {
@@ -142,6 +143,7 @@ async function callSpecialist(
   conversationId: string,
   generationOptions: { temperature: number; maxTokens: number },
   runId: string,
+  globalPrompt?: string,
 ): Promise<string> {
   return runAgentTurn({
     agentId,
@@ -152,6 +154,7 @@ async function callSpecialist(
     // Per-step request ID to avoid collision when multiple specialists run in parallel
     requestId: `${conversationId}:${stepId}`,
     generationOptions,
+    globalPrompt,
     onChunk: (chunk) => {
       updateDelegationNode(runId, stepId, { tail: chunk })
       window?.webContents.send('chat:team-step-stream', { stepId, chunk })
@@ -206,9 +209,9 @@ export async function runOrchestration(
   const loopMessages: ProviderMessage[] = [
     {
       role: 'system' as const,
-      content: leaderSystemPrompt
+      content: (opts.globalPrompt ? `${opts.globalPrompt}\n\n` : '') + (leaderSystemPrompt
         ? `${leaderSystemPrompt}${teamManifest}`
-        : `You are an AI programming assistant.${teamManifest}`
+        : `You are an AI programming assistant.${teamManifest}`)
     },
     ...historyMessages,
     { role: 'user' as const, content: userContent }
@@ -314,7 +317,7 @@ export async function runOrchestration(
       let specialistResult: string
       try {
         specialistResult = await callSpecialist(
-          targetAgentId, opts.projectId, resolvedLeaderModel, taskContent, stepId, window, opts.conversationId, generationOptions, runId
+          targetAgentId, opts.projectId, resolvedLeaderModel, taskContent, stepId, window, opts.conversationId, generationOptions, runId, opts.globalPrompt
         )
         step.status = isDelegationNodeCancelRequested(runId, stepId) ? 'cancelled' : 'done'
         step.result = specialistResult

@@ -22,6 +22,7 @@ export interface AgentTurnOptions {
   onChunk: (chunk: string) => void
   /** Overrides the agent's configured system prompt entirely, if set. */
   systemPromptOverride?: string
+  globalPrompt?: string
 }
 
 /**
@@ -51,7 +52,7 @@ export async function runAgentTurn(opts: AgentTurnOptions): Promise<string> {
     : 'You are a specialist AI assistant. Answer concisely and factually.')
 
   const messages: ProviderMessage[] = [
-    { role: 'system', content: systemContent },
+    { role: 'system', content: (opts.globalPrompt ? `${opts.globalPrompt}\n\n` : '') + systemContent },
     { role: 'user', content: taskContent },
   ]
 
