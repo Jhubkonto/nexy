@@ -58,10 +58,21 @@ export function GeneralTab({
   defaultModelMenuRef, defaultModelButtonRef,
 }: Props) {
   const [desktopVersion, setDesktopVersion] = useState<string | null>(null)
+  const [globalPrompt, setGlobalPrompt] = useState('')
+  const [promptSaved, setPromptSaved] = useState(false)
   useEffect(() => { void window.api.getVersion().then(setDesktopVersion).catch(() => setDesktopVersion(null)) }, [])
+  useEffect(() => { void window.api.getSetting('global_prompt').then((value) => setGlobalPrompt(value ?? '')) }, [])
   return (
     <>
       <TabHeader title="General" description="Appearance, default model, and app behaviour." />
+
+      <div>
+        <label htmlFor="global-prompt" className="block text-sm font-medium text-gray-800 dark:text-gray-100">Global prompt</label>
+        <p className="text-xs text-gray-500 mb-2">Instructions added to every chat request across projects.</p>
+        <textarea id="global-prompt" value={globalPrompt} onChange={(event) => { setGlobalPrompt(event.target.value); setPromptSaved(false) }} rows={5} className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100" />
+        <Button variant="secondary" onClick={() => { void window.api.setSetting('global_prompt', globalPrompt).then(() => setPromptSaved(true)) }}>Save global prompt</Button>
+        {promptSaved && <span role="status" className="ml-2 text-xs text-gray-500">Saved</span>}
+      </div>
 
       <div className="flex items-center justify-between">
         <div><p className="text-sm font-medium text-gray-800 dark:text-gray-100">Nexy desktop version</p><p className="text-xs text-gray-500">Version currently running on this computer</p></div>

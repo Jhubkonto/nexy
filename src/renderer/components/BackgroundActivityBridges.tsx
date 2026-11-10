@@ -28,6 +28,7 @@ const activityLabels: Record<BackgroundActivityKind, string> = {
   chat: 'Assistant is responding…',
   build: 'Building…',
   orchestration: 'Delegating to agent…',
+  'work-history': 'Generating work history report…',
 }
 
 function startActivity(kind: BackgroundActivityKind, projectId?: string) {

@@ -35,14 +35,14 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
     info: Info
   }[toast.type]
   const toneClass = {
-    success: 'border-green-900 bg-nexy-success text-white',
-    error: 'border-red-900 bg-nexy-error text-white',
-    info: 'border-cyan-950 bg-nexy-info text-white',
+    success: 'border-green-900 bg-nexy-success',
+    error: 'border-red-900 bg-nexy-error',
+    info: 'border-cyan-950 bg-nexy-info',
   }[toast.type]
 
   return (
     <div
-      className={`pointer-events-auto flex items-center gap-2 rounded-nexy-sm border-2 px-4 py-2.5 text-sm font-medium shadow-nexy ${toneClass}`}
+      className={`nexy-toast pointer-events-auto flex items-center gap-2 rounded-nexy-sm border-2 px-4 py-2.5 text-sm font-medium text-white shadow-nexy ${toneClass}`}
       role="alert"
     >
       <IconComponent className="w-4 h-4 shrink-0" />

@@ -289,12 +289,6 @@ export function Sidebar() {
           ariaLabel={`Open chat history${unreadConversationIds.length > 0 ? ` (${unreadConversationIds.length} unread)` : ''}`}
         />
         <NavButton
-          icon={<NexyIcon name="chat" size={14} />}
-          label="Work history"
-          onClick={() => openSectionPane('work-history')}
-          active={activeSectionPane === 'work-history'}
-        />
-        <NavButton
           icon={<NexyIcon name="project" size={14} />}
           label="Projects"
           badgeCount={sectionNewCounts.projects}
@@ -349,6 +343,12 @@ export function Sidebar() {
           onClick={() => openSectionPane('ratings')}
           active={activeSectionPane === 'ratings'}
           ariaLabel="Open ratings"
+        />
+        <NavButton
+          icon={<NexyIcon name="chat" size={14} />}
+          label="Work history"
+          onClick={() => openSectionPane('work-history')}
+          active={activeSectionPane === 'work-history'}
         />
       </div>
 

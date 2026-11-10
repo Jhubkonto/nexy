@@ -4,14 +4,14 @@ import {
   Copy, Download, ExternalLink, File, Folder, Info, KeyRound, Maximize2, Menu,
   MessageSquare, Mic, Milestone, Minimize2, Paperclip, Pause, Pencil,
   Pin, PinOff, Play, Plus, RefreshCw, Search, Send, Settings, Smartphone,
-  Sparkles, Square, Star, Trash2, Upload, Wrench, X, ZoomIn, CalendarClock, Workflow,
+  Sparkles, Square, Star, Trash2, Upload, Wrench, X, ZoomIn, CalendarClock, Workflow, History,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
 export type NexyIconName =
   | 'add' | 'agent' | 'artifact' | 'attach' | 'busy' | 'camera' | 'chat' | 'check' | 'checked-box'
   | 'back' | 'chevron-right' | 'clipboard' | 'close' | 'delete' | 'download' | 'duplicate' | 'edit' | 'error' | 'expand' | 'external'
-  | 'folder'
+  | 'folder' | 'history'
   | 'info' | 'inspect' | 'key' | 'maximize' | 'menu' | 'microphone'
   | 'milestone' | 'minimize' | 'mobile' | 'project' | 'prompt' | 'rating' | 'restore'
   | 'pause' | 'pin' | 'unpin' | 'play' | 'refresh' | 'scheduled' | 'search' | 'send' | 'settings' | 'skill' | 'spark' | 'stop'
@@ -52,6 +52,8 @@ const paths: Record<NexyIconName, string> = {
   play: 'M3 1l11 7-11 7zm2 4v6l5-3z',
   project: 'M2 3h5l2 2h5v9H2zm2 4v5h8V7z',
   prompt: 'M2 2h12v12H2zm2 2v8h8V4zm1 2h2v2H5zm3 0h3v2H8zm-3 4h6v1H5z',
+  // Clock ring with a counter-clockwise arrow head at the upper left.
+  history: 'M5 1h6v2H5z M11 3h2v2h-2z M13 5h2v6h-2z M11 11h2v2h-2z M5 13h6v2H5z M3 11h2v2H3z M1 9h2v2H1z M1 2h2v3h3v2H1z M7 4h2v5h3v2H7z',
   rating: 'M7 1h2v4h4v2h2v2h-3v2h-2v3H6v-3H4V9H1V7h2V5h4z',
   refresh: 'M4 2h7V0l4 4-4 4V6H5v2H2V5h2zm8 6h2v3h-2v3H5v2l-4-4 4-4v2h6V8z',
   restore: 'M4 1h10v10h-2V3H6v2H4zM2 5h10v10H2zm2 2v6h6V7z',
@@ -75,7 +77,7 @@ const classicIcons: Record<NexyIconName, LucideIcon> = {
   busy: RefreshCw, camera: Camera, chat: MessageSquare, check: Check, 'checked-box': CheckSquare,
   'chevron-right': ChevronRight, clipboard: Clipboard, close: X, delete: Trash2,
   download: Download, duplicate: Copy, edit: Pencil, error: AlertTriangle,
-  expand: ZoomIn, external: ExternalLink, folder: Folder, info: Info,
+  expand: ZoomIn, external: ExternalLink, folder: Folder, history: History, info: Info,
   inspect: Search, key: KeyRound, maximize: Maximize2, menu: Menu,
   microphone: Mic, milestone: Milestone, minimize: Minimize2, mobile: Smartphone,
   pause: Pause, pin: Pin, unpin: PinOff, play: Play, project: Folder, prompt: File,

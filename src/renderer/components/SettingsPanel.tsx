@@ -604,8 +604,19 @@ export function SettingsPanel() {
     }
     setBuildLogLines([])
     setActiveBuildCommand(cmd)
-    const { buildId } = await window.api.buildStartCommand(cmd)
-    setActiveBuildId(buildId)
+    try {
+      const result = await window.api.buildStartCommand(cmd)
+      if (isApiError(result)) {
+        addToast(result.error, 'error')
+        setActiveBuildCommand(null)
+        return
+      }
+      setActiveBuildId(result.buildId)
+      if (cmd === 'package') window.api.buildGetWorkspaceInfo().then(setWorkspaceInfo).catch(() => {})
+    } catch (error) {
+      setActiveBuildCommand(null)
+      addToast(error instanceof Error ? error.message : 'Failed to start build', 'error')
+    }
   }
 
   const handleCancelBuild = async () => {

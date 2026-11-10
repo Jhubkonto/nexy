@@ -1,10 +1,50 @@
-import { useEffect, useState } from 'react'
-import { isApiError } from '../../../shared/types'
-import type { WorkHistoryCapability, WorkHistoryExternalAccess, WorkHistoryRequest, WorkHistoryRun, WorkHistorySource } from '../../../shared/work-history'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { isApiError, type AvailableModelGroup } from '../../../shared/types'
+import {
+  WORK_HISTORY_PRESETS, cleanWorkHistoryTitle, workHistoryLocalDate, workHistoryPresetDates, workHistoryRange, workHistoryReportWithTitles,
+  type WorkHistoryExternalAccess, type WorkHistoryPreset, type WorkHistoryRequest, type WorkHistoryRun, type WorkHistorySource,
+} from '../../../shared/work-history'
 import { useAppStore } from '../../store/app-store'
+import { ModelPicker } from '../chat/ModelPicker'
+import { MarkdownRenderer } from '../MarkdownRenderer'
+import { Button, SegmentedTabs, SelectField, TextareaField } from '../ui/primitives'
+import { NexyIcon } from '../ui/icons/NexyIcon'
+import { PaneEmptyState } from './pane-primitives'
 
-function localDate(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+const GROUPINGS: Array<{ id: WorkHistoryRequest['grouping']; label: string }> = [
+  { id: 'project', label: 'Project' }, { id: 'chat', label: 'Chat' }, { id: 'agent', label: 'Agent' }, { id: 'custom', label: 'Custom' },
+]
+/** Codex and Hermes summarise through the in-chat Work history capability instead. */
+const UNSUPPORTED_SOURCES = new Set(['codex-cli', 'hermes-cli'])
+const sectionLabel = 'block text-[11px] font-bold uppercase tracking-wide text-nexy-muted mb-1.5'
+
+function chip(active: boolean): string {
+  return `rounded-nexy-sm border-2 px-2 py-1 text-xs font-bold focus-visible:outline focus-visible:outline-2 focus-visible:outline-nexy-accent ${
+    active ? 'border-nexy-border bg-nexy-accent text-nexy-on-accent' : 'border-nexy-border-soft text-nexy-muted hover:border-nexy-border hover:text-nexy-text'}`
+}
+
+function rangeLabel(start: number, end: number): string {
+  const format = (ms: number) => new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+  const first = format(start), last = format(end - 1)
+  return first === last ? first : `${first} – ${last}`
+}
+
+function StatusBadge({ status }: { status: WorkHistoryRun['status'] }) {
+  const style = {
+    completed: 'border-green-700 text-green-700 dark:border-green-400 dark:text-green-400',
+    running: 'border-nexy-activity text-nexy-activity',
+    cancelled: 'border-nexy-border-soft text-nexy-muted',
+    failed: 'border-nexy-error text-nexy-error',
+  }[status]
+  return <span className={`shrink-0 rounded-nexy-sm border px-1.5 py-0.5 text-[10px] font-bold uppercase ${style}`}>{status}</span>
+}
+
+function Notice({ tone, children }: { tone: 'error' | 'info'; children: React.ReactNode }) {
+  return <div role={tone === 'error' ? 'alert' : 'status'} className={`flex gap-2 rounded-nexy-sm border-2 p-2 text-xs ${
+    tone === 'error' ? 'border-nexy-error text-nexy-error bg-red-50 dark:bg-red-950/30' : 'border-nexy-border-soft text-nexy-text bg-nexy-recessed'}`}>
+    <NexyIcon name={tone === 'error' ? 'error' : 'info'} size={14} className="mt-0.5 shrink-0" />
+    <div className="min-w-0">{children}</div>
+  </div>
 }
 
 /** Explains in-chat CLI use and controls opt-in access for terminal sessions outside Nexy. */
@@ -18,97 +58,247 @@ function WorkHistoryCliAccess() {
     if (isApiError(result)) setError(result.error)
     else setAccess(result)
   }
-  const snippet = (label: string, text: string) => <div key={label}>
-    <p className="font-medium">{label} <button className="underline" onClick={() => void navigator.clipboard.writeText(text)}>Copy</button></p>
-    <pre className="whitespace-pre-wrap break-all text-xs rounded border border-gray-300 dark:border-gray-600 p-1">{text}</pre>
+  const snippet = (label: string, text: string) => <div key={label} className="space-y-1">
+    <div className="flex items-center justify-between"><span className="font-bold">{label}</span><Button variant="ghost" className="!px-1.5 !py-0.5" onClick={() => void navigator.clipboard.writeText(text)}><NexyIcon name="duplicate" size={12} />Copy</Button></div>
+    <pre className="whitespace-pre-wrap break-all rounded-nexy-sm border-2 border-nexy-border-soft bg-nexy-recessed p-1.5 text-[11px]">{text}</pre>
   </div>
-  return <details className="space-y-2">
-    <summary className="font-semibold cursor-pointer">Summarise with Claude, Codex or Hermes</summary>
-    <p>In a CLI-backed chat, enable the <strong>Work history</strong> capability, then ask, for example, “Summarise what I worked on last week by project”. The CLI reads the selected chats through Nexy and writes the summary with its own model. Ask it to save the report if you want it listed below.</p>
-    <p className="text-xs">The selected CLI and its model provider receive the requested chat content and may retain it under their own settings. Nexy checks batch coverage and source IDs, but cannot verify every claim in a CLI-written summary.</p>
-    <p className="font-medium">Terminal sessions outside Nexy</p>
+  return <details className="rounded-nexy-sm border-2 border-nexy-border-soft p-2 text-xs space-y-2">
+    <summary className="cursor-pointer font-bold">Use Claude, Codex or Hermes from a chat</summary>
+    <p>In a CLI-backed chat, enable the <strong>Work history</strong> capability and ask, for example, “Summarise what I worked on last week by project”. The CLI reads the chats through Nexy and writes the summary with its own model. Ask it to save the report to list it here.</p>
+    <p className="text-nexy-muted">The CLI and its model provider receive the requested chat content and may retain it under their own settings.</p>
+    <p className="font-bold pt-1">Terminal sessions outside Nexy</p>
     {access?.enabled
       ? <>
-          <p>External access is on. The setup below contains a secret token; anyone with it can read your chat history while Nexy is running. <button className="underline" onClick={() => void apply(false)}>Stop access</button></p>
+          <p>Access is on. The setup below contains a secret token; anyone with it can read your chat history while Nexy is running.</p>
           {access.setup && [snippet('Claude Code', access.setup.claude), snippet('Codex (~/.codex/config.toml)', access.setup.codex), snippet('Hermes (config.yaml)', access.setup.hermes)]}
-          <p className="text-xs">Stopping access or closing Nexy revokes this setup; enabling again issues a new one.</p>
+          <Button variant="danger" onClick={() => void apply(false)}>Stop access</Button>
+          <p className="text-nexy-muted">Stopping access or closing Nexy revokes this setup; enabling again issues a new one.</p>
         </>
-      : <button className="underline" onClick={() => void apply(true)}>Allow terminal CLI access</button>}
-    {error && <p role="alert" className="text-red-500">{error}</p>}
+      : <Button onClick={() => void apply(true)}>Allow terminal CLI access</Button>}
+    {error && <p role="alert" className="text-nexy-error">{error}</p>}
   </details>
 }
 
+function ReportDetail({ run, onBack }: { run: WorkHistoryRun; onBack: () => void }) {
+  const selectConversation = useAppStore(s => s.selectConversation)
+  const [error, setError] = useState('')
+  const titles = useMemo(() => new Map(run.sources.map(source => [source.id, source.title])), [run.sources])
+  const report = run.report ? workHistoryReportWithTitles(run.report, titles) : null
+  return <div className="flex h-full flex-col">
+    <div className="flex items-center gap-2 border-b-2 border-nexy-border px-2 py-1.5">
+      <Button variant="ghost" className="!px-1.5" onClick={onBack} aria-label="Back to reports"><NexyIcon name="back" size={14} /></Button>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-xs font-bold">{rangeLabel(run.request.start, run.request.end)}</p>
+        <p className="truncate text-[11px] text-nexy-muted">{run.sources.length} chats · by {run.request.grouping ?? 'project'} · {run.request.model}</p>
+      </div>
+      <StatusBadge status={run.status} />
+    </div>
+    <div className="flex-1 overflow-auto p-3 space-y-3 text-sm">
+      {run.status === 'running' && <div className="space-y-2">
+        <div className="h-1.5 w-full overflow-hidden rounded-nexy-sm border border-nexy-border-soft"><div className="h-full w-1/3 animate-pulse bg-nexy-activity" /></div>
+        <p className="text-xs">{run.progress}</p>
+        <Button onClick={() => void window.api.workHistoryCancel(run.id).then(result => { if (isApiError(result)) setError(result.error) })}><NexyIcon name="stop" size={12} />Cancel</Button>
+      </div>}
+      {(run.status === 'failed' || run.status === 'cancelled') && <Notice tone={run.status === 'failed' ? 'error' : 'info'}>{run.error ?? (run.status === 'cancelled' ? 'The report was cancelled.' : 'The report failed.')}</Notice>}
+      {error && <Notice tone="error">{error}</Notice>}
+      {report && <>
+        <MarkdownRenderer content={report} />
+        <div className="flex gap-2">
+          <Button onClick={() => void navigator.clipboard.writeText(report)}><NexyIcon name="duplicate" size={12} />Copy</Button>
+          <Button onClick={() => void window.api.saveTextFile(`work-history-${workHistoryLocalDate(new Date(run.request.start))}.md`, report)}><NexyIcon name="download" size={12} />Export</Button>
+        </div>
+      </>}
+      {run.sources.length > 0 && <div>
+        <span className={sectionLabel}>Sources</span>
+        <ul className="space-y-0.5">
+          {run.sources.map(source => <li key={source.id}>
+            <button className="flex w-full items-center gap-1.5 rounded-nexy-sm px-1 py-1 text-left text-xs hover:bg-nexy-recessed disabled:opacity-50 disabled:hover:bg-transparent" disabled={!source.available} onClick={() => selectConversation(source.id)}>
+              <NexyIcon name="chat" size={12} className="shrink-0" />
+              <span className="truncate">{cleanWorkHistoryTitle(source.title)}{source.available ? '' : ' (deleted)'}</span>
+            </button>
+          </li>)}
+        </ul>
+      </div>}
+    </div>
+  </div>
+}
+
 export function WorkHistoryPane() {
-  const [start, setStart] = useState(localDate(new Date()))
-  const [end, setEnd] = useState(start)
-  const [model, setModel] = useState('gpt-5-mini')
-  const [capabilities, setCapabilities] = useState<WorkHistoryCapability[]>([])
-  const [grouping, setGrouping] = useState<WorkHistoryRequest['grouping']>('project')
-  const [instructions, setInstructions] = useState('')
+  const [tab, setTab] = useState<'new' | 'saved'>('new')
+  const [preset, setPreset] = useState<WorkHistoryPreset>('today')
+  const today = workHistoryLocalDate(new Date())
+  const [custom, setCustom] = useState({ first: today, last: today })
   const [projectId, setProjectId] = useState('all')
   const [agentId, setAgentId] = useState('all')
+  const [model, setModel] = useState('default')
+  const [grouping, setGrouping] = useState<WorkHistoryRequest['grouping']>('project')
+  const [instructions, setInstructions] = useState('')
+  const [groups, setGroups] = useState<AvailableModelGroup[]>([])
   const [sources, setSources] = useState<WorkHistorySource[] | null>(null)
+  const [previewing, setPreviewing] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
   const [runs, setRuns] = useState<WorkHistoryRun[]>([])
   const [active, setActive] = useState<string | null>(null)
+  const [starting, setStarting] = useState(false)
   const [error, setError] = useState('')
   const projects = useAppStore(s => s.projects)
   const agents = useAppStore(s => s.agents)
-  const selectConversation = useAppStore(s => s.selectConversation)
-  const field = 'w-full rounded border border-gray-300 dark:border-gray-600 bg-transparent p-1'
+  const catalogModels = useAppStore(s => s.catalogModels)
+  const globalDefaultModel = useAppStore(s => s.globalDefaultModel)
+  const modelButtonRef = useRef<HTMLButtonElement>(null)
+  const { first, last } = workHistoryPresetDates(preset, new Date()) ?? custom
+  const reportGroups = useMemo(() => groups.filter(group => !UNSUPPORTED_SOURCES.has(group.sourceKey)), [groups])
+  const anyRunning = runs.some(run => run.status === 'running')
+
   const refresh = async () => {
     const result = await window.api.workHistoryList()
-    if (isApiError(result)) setError(result.error)
-    else setRuns(result)
+    if (!isApiError(result)) setRuns(result)
   }
-  useEffect(() => { void refresh(); const timer = setInterval(() => void refresh(), 2000); return () => clearInterval(timer) }, [])
-  useEffect(() => { void window.api.workHistoryCapabilities().then(result => { if (!isApiError(result)) setCapabilities(result) }) }, [])
-  useEffect(() => { setSources(null) }, [start, end, projectId, agentId])
-  const request = (): WorkHistoryRequest => {
-    const from = new Date(`${start}T00:00:00`)
-    const until = new Date(`${end}T00:00:00`)
-    until.setDate(until.getDate() + 1)
-    return { start: from.getTime(), end: until.getTime(), model, grouping, instructions,
-      ...(projectId === 'all' ? {} : { projectId: projectId === 'none' ? null : projectId }),
-      ...(agentId === 'all' ? {} : { agentId: agentId === 'none' ? null : agentId }) }
-  }
-  const preview = async () => {
-    setError('')
-    const result = await window.api.workHistoryPreview(request())
-    if (isApiError(result)) setError(result.error)
-    else { setSources(result); setSelected(result.map(source => source.id)) }
-  }
+  useEffect(() => { void refresh() }, [])
+  // Opened from the activity panel: show that report once the pane is mounted.
+  const openRunId = useAppStore(s => s.workHistoryOpenRunId)
+  const setOpenRunId = useAppStore(s => s.setWorkHistoryOpenRunId)
+  useEffect(() => {
+    if (!openRunId) return
+    setActive(openRunId); setTab('saved'); setOpenRunId(null)
+    void refresh()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openRunId])
+  useEffect(() => {
+    const timer = setInterval(() => void refresh(), anyRunning ? 2000 : 10000)
+    return () => clearInterval(timer)
+  }, [anyRunning])
+  useEffect(() => { window.api.listAvailableModels().then(setGroups).catch(() => {}) }, [])
+
+  const range = (() => { try { return workHistoryRange(first, last) } catch { return null } })()
+  const filters = (): Pick<WorkHistoryRequest, 'projectId' | 'agentId'> => ({
+    ...(projectId === 'all' ? {} : { projectId: projectId === 'none' ? null : projectId }),
+    ...(agentId === 'all' ? {} : { agentId: agentId === 'none' ? null : agentId }),
+  })
+
+  // Preview automatically when the period or filters change.
+  useEffect(() => {
+    setSources(null); setSelected([])
+    if (!range) return
+    let cancelled = false
+    setPreviewing(true)
+    const timer = setTimeout(() => {
+      void window.api.workHistoryPreview({ ...range, model, grouping, instructions: '', ...filters() }).then(result => {
+        if (cancelled) return
+        setPreviewing(false)
+        if (isApiError(result)) { setError(result.error); return }
+        setError(''); setSources(result); setSelected(result.map(source => source.id))
+      })
+    }, 200)
+    return () => { cancelled = true; clearTimeout(timer) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range?.start, range?.end, projectId, agentId])
+
   const generate = async () => {
-    setError('')
-    const result = await window.api.workHistoryStart({ ...request(), conversationIds: selected })
-    if (isApiError(result)) setError(result.error)
-    else { setActive(result); await refresh() }
+    if (!range || !selected.length) return
+    setError(''); setStarting(true)
+    const result = await window.api.workHistoryStart({ ...range, model, grouping, instructions: instructions.trim(), ...filters(), conversationIds: selected })
+    setStarting(false)
+    if (isApiError(result)) { setError(result.error); return }
+    await refresh()
+    setActive(result); setTab('saved')
   }
-  const run = runs.find(item => item.id === active)
-  return <div className="h-full overflow-auto p-3 text-sm space-y-3">
-    <p>Summarize activity within local calendar dates, including archived chats.</p>
-    <WorkHistoryCliAccess />
-    <label className="block">From<input className={field} type="date" value={start} onChange={e => setStart(e.target.value)} /></label>
-    <label className="block">Through<input className={field} type="date" value={end} onChange={e => setEnd(e.target.value)} /></label>
-    <button className="underline" onClick={() => { const d = new Date(`${start}T00:00:00`); d.setDate(d.getDate() - (d.getDay() + 6) % 7); setStart(localDate(d)); d.setDate(d.getDate() + 6); setEnd(localDate(d)) }}>Select week (Monday–Sunday)</button>
-    <label className="block">Project<select className={field} value={projectId} onChange={e => setProjectId(e.target.value)}><option value="all">All</option><option value="none">Unassigned</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
-    <label className="block">Agent<select className={field} value={agentId} onChange={e => setAgentId(e.target.value)}><option value="all">All</option><option value="none">Unassigned</option>{agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
-    <label className="block">API model or Claude CLI<input className={field} value={model} onChange={e => setModel(e.target.value)} /><span className="text-xs">Use claude-cli or claude-cli:sonnet for Claude Code.</span></label>
-    <label className="block">Backend<select className={field} value={/^claude-cli(?::|$)/i.test(model) ? 'claude' : /^(codex|hermes)(?:-cli)?(?::|$)/i.exec(model)?.[1]?.toLowerCase() ?? 'api'} onChange={e => setModel(e.target.value === 'claude' ? 'claude-cli' : 'gpt-5-mini')}>
-      {capabilities.map(item => <option key={item.id} value={item.id} disabled={!item.available}>{item.id}{item.available ? '' : ` — ${item.reason}`}</option>)}
-    </select></label>
-    {capabilities.filter(item => !item.available).map(item => <p className="text-xs" key={item.id}>{item.id}: {item.reason}</p>)}
-    <label className="block">Group by<select className={field} value={grouping} onChange={e => setGrouping(e.target.value as WorkHistoryRequest['grouping'])}><option value="project">Project</option><option value="chat">Chat</option><option value="agent">Agent</option><option value="custom">Custom</option></select></label>
-    <label className="block">Instructions<textarea className={field} value={instructions} onChange={e => setInstructions(e.target.value)} /></label>
-    <button className="underline" onClick={() => void preview()}>Preview matching chats</button>
-    {sources && <div className="space-y-1"><p>{sources.length} matching chats · approximately {sources.filter(s => selected.includes(s.id)).reduce((sum, s) => sum + s.estimatedCharacters, 0).toLocaleString()} characters of activity before batching</p>{sources.map(s => <label className="block" key={s.id}><input type="checkbox" checked={selected.includes(s.id)} onChange={e => setSelected(e.target.checked ? [...selected, s.id] : selected.filter(id => id !== s.id))} /> {s.title} · {s.projectName ?? 'No project'} · {s.agentName ?? 'No agent'} · {s.messageCount} {s.archived ? '· archived' : ''}</label>)}<button className="underline" disabled={!selected.length} onClick={() => void generate()}>Generate report</button></div>}
-    {error && <p role="alert" className="text-red-500">{error}</p>}
-    <h3 className="font-semibold">Saved reports</h3>
-    {runs.map(item => <button className="block underline text-left" key={item.id} onClick={() => setActive(item.id)}>{new Date(item.createdAt).toLocaleString()} · {item.status}</button>)}
-    {run && <div className="space-y-2"><p>{run.progress}{run.error ? `: ${run.error}` : ''}</p>{run.status === 'running' && <button className="underline" onClick={() => void window.api.workHistoryCancel(run.id)}>Cancel</button>}{run.report && <><div className="whitespace-pre-wrap">{run.report.split(/(\[source:[^\]\r\n]+\])/gi).map((part, index) => {
-      const id = /^\[source:([^\]]+)\]$/i.exec(part)?.[1]
-      const source = id && run.sources.find(item => item.id === id)
-      return source ? <button key={index} className="underline" disabled={!source.available} onClick={() => selectConversation(source.id)}>{source.title}{source.available ? '' : ' (unavailable)'}</button> : part
-    })}</div><button className="underline" onClick={() => void navigator.clipboard.writeText(run.report!)}>Copy</button> <button className="underline" onClick={() => void window.api.saveTextFile('work-history.md', run.report!)}>Export</button></>}<h4 className="font-semibold">Sources</h4>{run.sources.map(s => <button className="block underline text-left" disabled={!s.available} key={s.id} onClick={() => selectConversation(s.id)}>{s.title}{s.available ? '' : ' (unavailable)'}</button>)}</div>}
+
+  const activeRun = runs.find(item => item.id === active)
+  if (activeRun) return <ReportDetail run={activeRun} onBack={() => setActive(null)} />
+
+  const all = sources ?? []
+  const chosen = all.filter(source => selected.includes(source.id))
+  return <div className="flex h-full flex-col">
+    <SegmentedTabs value={tab} onChange={setTab} items={[{ id: 'new', label: 'New report' }, { id: 'saved', label: runs.length ? `Saved (${runs.length})` : 'Saved' }]} />
+    {tab === 'saved'
+      ? <div className="flex-1 overflow-auto">
+          {runs.length === 0 && <PaneEmptyState>No reports yet.</PaneEmptyState>}
+          {runs.map(run => <button key={run.id} onClick={() => setActive(run.id)} className="flex w-full items-center gap-2 border-b border-nexy-border-soft px-3 py-2 text-left hover:bg-nexy-recessed">
+            <NexyIcon name="history" size={14} className="shrink-0 text-nexy-muted" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-xs font-bold">{rangeLabel(run.request.start, run.request.end)}</span>
+              <span className="block truncate text-[11px] text-nexy-muted">{run.sources.length} chats · by {run.request.grouping ?? 'project'} · {new Date(run.createdAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}</span>
+            </span>
+            <StatusBadge status={run.status} />
+          </button>)}
+        </div>
+      : <>
+          <div className="flex-1 overflow-auto p-3 space-y-4 text-sm">
+            <section>
+              <span className={sectionLabel}>Period</span>
+              <div className="flex flex-wrap gap-1">
+                {WORK_HISTORY_PRESETS.map(item => <button key={item.id} type="button" className={chip(preset === item.id)} aria-pressed={preset === item.id}
+                  onClick={() => { if (item.id === 'custom') setCustom({ first, last }); setPreset(item.id) }}>{item.label}</button>)}
+              </div>
+              {preset === 'custom'
+                ? <div className="mt-2 grid grid-cols-2 gap-2">
+                    <label className="text-[11px] text-nexy-muted">From<input type="date" className="mt-0.5 w-full rounded-nexy-sm border-2 border-nexy-border bg-nexy-recessed px-1.5 py-1 text-xs text-nexy-text" value={custom.first} max={custom.last} onChange={e => e.target.value && setCustom(c => ({ ...c, first: e.target.value }))} /></label>
+                    <label className="text-[11px] text-nexy-muted">Through<input type="date" className="mt-0.5 w-full rounded-nexy-sm border-2 border-nexy-border bg-nexy-recessed px-1.5 py-1 text-xs text-nexy-text" value={custom.last} min={custom.first} onChange={e => e.target.value && setCustom(c => ({ ...c, last: e.target.value }))} /></label>
+                  </div>
+                : range && <p className="mt-1.5 text-xs font-medium">{rangeLabel(range.start, range.end)}</p>}
+            </section>
+            <section className="space-y-2">
+              <span className={sectionLabel}>Filter</span>
+              <SelectField aria-label="Project" value={projectId} onChange={e => setProjectId(e.target.value)}>
+                <option value="all">All projects</option><option value="none">No project</option>
+                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </SelectField>
+              <SelectField aria-label="Agent" value={agentId} onChange={e => setAgentId(e.target.value)}>
+                <option value="all">All agents</option><option value="none">No agent</option>
+                {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </SelectField>
+            </section>
+            <section className="space-y-2">
+              <span className={sectionLabel}>Report</span>
+              <ModelPicker
+                value={model}
+                availableGroups={reportGroups}
+                catalogModels={catalogModels}
+                globalDefaultModel={globalDefaultModel ?? undefined}
+                includeDefault
+                buttonRef={modelButtonRef}
+                buttonClassName="flex w-full items-center justify-between gap-1 rounded-nexy-sm border-2 border-nexy-border bg-nexy-recessed px-3 py-2 text-sm text-nexy-text hover:bg-nexy-raised"
+                onSelectDefault={() => setModel('default')}
+                onSelectAvailableModel={(group, entry) => setModel(group.sourceType === 'cli' ? `${group.sourceKey}:${entry.id}` : entry.id)}
+              />
+              <div className="flex flex-wrap items-center gap-1">
+                <span className="mr-1 text-[11px] text-nexy-muted">Group by</span>
+                {GROUPINGS.map(item => <button key={item.id} type="button" className={chip(grouping === item.id)} aria-pressed={grouping === item.id} onClick={() => setGrouping(item.id)}>{item.label}</button>)}
+              </div>
+              <TextareaField rows={2} maxLength={4000} placeholder="Instructions (optional), e.g. focus on decisions and open questions" value={instructions} onChange={e => setInstructions(e.target.value)} />
+            </section>
+            {error && <Notice tone="error">{error}</Notice>}
+            <section>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <span className="block text-[11px] font-bold uppercase tracking-wide text-nexy-muted">Chats</span>
+                  <span className="block text-[11px] text-nexy-muted">{previewing ? 'Finding chats with activity…'
+                    : !sources ? 'Choose a valid period.'
+                    : !all.length ? 'No chat activity in this period.'
+                    : `${chosen.length} of ${all.length} selected · about ${Math.round(chosen.reduce((sum, s) => sum + s.estimatedCharacters, 0) / 5).toLocaleString()} words`}</span>
+                </div>
+                {all.length > 0 && <Button variant="ghost" className="!px-1.5 !py-0.5" onClick={() => setSelected(selected.length === all.length ? [] : all.map(s => s.id))}>{selected.length === all.length ? 'Select none' : 'Select all'}</Button>}
+              </div>
+              <ul className="space-y-0.5">
+                {all.map(source => <li key={source.id}>
+                  <label className="flex cursor-pointer items-start gap-2 rounded-nexy-sm px-1 py-1 hover:bg-nexy-recessed">
+                    <input type="checkbox" className="mt-0.5" checked={selected.includes(source.id)} onChange={e => setSelected(e.target.checked ? [...selected, source.id] : selected.filter(id => id !== source.id))} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs">{cleanWorkHistoryTitle(source.title)}</span>
+                      <span className="block truncate text-[11px] text-nexy-muted">{[source.projectName ?? 'No project', source.agentName, `${source.messageCount} messages`, source.archived ? 'archived' : null].filter(Boolean).join(' · ')}</span>
+                    </span>
+                  </label>
+                </li>)}
+              </ul>
+            </section>
+            <WorkHistoryCliAccess />
+          </div>
+          <div className="border-t-2 border-nexy-border p-2">
+            <Button variant="primary" className="w-full" disabled={!selected.length || starting || !range} onClick={() => void generate()}>
+              <NexyIcon name="spark" size={12} />{starting ? 'Starting…' : selected.length ? `Generate report · ${selected.length} chat${selected.length === 1 ? '' : 's'}` : 'Generate report'}
+            </Button>
+          </div>
+        </>}
   </div>
 }
