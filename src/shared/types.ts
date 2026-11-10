@@ -277,6 +277,7 @@ export type BackgroundActivityKind =
   | 'chat'
   | 'build'
   | 'orchestration'
+  | 'work-history'
 
 export interface BackgroundActivity {
   id: string
