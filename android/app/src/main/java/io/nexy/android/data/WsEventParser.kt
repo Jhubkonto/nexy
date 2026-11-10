@@ -3730,10 +3730,12 @@ private fun parseTeachbackAttempt(obj: JSONObject) = TeachbackAttempt(
     feedback = parseTeachbackFeedback(obj.optJSONObject("feedback") ?: JSONObject()), attemptedAt = obj.optLong("attemptedAt", 0L),
 )
 
+private val WORK_HISTORY_RUN_ID = Regex("[0-9A-Fa-f-]{36}")
+
 /** Mirrors desktop's openBackgroundActivity kind-dispatch (backgroundActivitySlice.ts) — maps a
  *  server-tracked activity kind to the Android nav route that shows it. Returns null for kinds
  *  with no reachable Android destination. */
-private fun routeForServerActivity(id: String, kind: String, conversationId: String?, projectId: String?): String? = when (kind) {
+internal fun routeForServerActivity(id: String, kind: String, conversationId: String?, projectId: String?): String? = when (kind) {
     // Code Changes runs entirely inside a normal conversation via slash commands now (no
     // dedicated wizard/screen) — "chat/$conversationId" is the right target, same as any other
     // conversation-scoped activity above. This used to route to "remote-edit/{reportId}", a
@@ -3746,6 +3748,9 @@ private fun routeForServerActivity(id: String, kind: String, conversationId: Str
     "skill-generator" -> "skill-generator"
     "scheduler-generator" -> "scheduled/generator"
     "automated-workflow-generator" -> projectId?.let { "automated-workflow/${android.net.Uri.encode(it)}" }
+    // Run IDs are UUIDs; anything else falls back to the report list rather than a malformed route.
+    "work-history" -> id.removePrefix("work-history:").takeIf { WORK_HISTORY_RUN_ID.matches(it) }
+        ?.let { "work-history?runId=$it" } ?: "work-history"
     "build" -> if (id.startsWith("android-build:")) "settings/build-dashboard?tab=android" else "settings/build-dashboard?tab=desktop"
     else -> null
 }

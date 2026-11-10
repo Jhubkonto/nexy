@@ -60,6 +60,9 @@ fun GlobalSettingsScreen(onBack: () -> Unit, onOpenProviders: () -> Unit = {}) {
     val hermesInfo by WsRepository.hermesInfo.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
+    val promptPreferences = remember { context.getSharedPreferences("global_prompt", android.content.Context.MODE_PRIVATE) }
+    var globalPrompt by remember { mutableStateOf("") }
+    var promptSaved by remember { mutableStateOf(false) }
     val standaloneProviderStore = remember { StandaloneProviderStore.get(context) }
     val standaloneProviders by standaloneProviderStore.providers.collectAsStateWithLifecycle()
     val configuredProviderIds = standaloneProviders.filter { it.configured }.map { it.id }.toSet()
@@ -98,10 +101,20 @@ fun GlobalSettingsScreen(onBack: () -> Unit, onOpenProviders: () -> Unit = {}) {
         WsRepository.getSetting("autoClipboard")
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(effectiveMode) {
+        promptSaved = false
+        if (effectiveMode == EffectiveConnectionMode.CONNECTED) {
+            WsRepository.getSetting("global_prompt")
+        } else {
+            globalPrompt = promptPreferences.getString("value", "").orEmpty()
+        }
+    }
+
+    LaunchedEffect(effectiveMode) {
         WsRepository.events.collect { event ->
             when (event) {
                 is WsEvent.SettingValue -> when (event.key) {
+                    "global_prompt" -> if (effectiveMode == EffectiveConnectionMode.CONNECTED) globalPrompt = event.value.orEmpty()
                     "defaultDesktopModel" -> defaultDesktopModel = event.value.orEmpty()
                     "global_default_hermes_profile" -> defaultDesktopHermesProfile = event.value.orEmpty()
                     "defaultStandaloneModel" -> defaultStandaloneModel = event.value.orEmpty()
@@ -113,6 +126,7 @@ fun GlobalSettingsScreen(onBack: () -> Unit, onOpenProviders: () -> Unit = {}) {
                     else -> {}
                 }
                 is WsEvent.SettingSet -> when (event.key) {
+                    "global_prompt" -> if (effectiveMode == EffectiveConnectionMode.CONNECTED) promptSaved = true
                     "autoStart" -> autoStart = event.value == "true"
                     "runInBackground" -> runInBackground = event.value == "true"
                     "autoClipboard" -> autoClipboard = event.value == "true"
@@ -140,6 +154,25 @@ fun GlobalSettingsScreen(onBack: () -> Unit, onOpenProviders: () -> Unit = {}) {
                 .padding(horizontal = 16.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
+            GlobalSettingsSectionHeader("Global prompt")
+            OutlinedTextField(
+                value = globalPrompt,
+                onValueChange = { globalPrompt = it; promptSaved = false },
+                label = { Text("Global prompt") },
+                supportingText = { Text(if (effectiveMode == EffectiveConnectionMode.CONNECTED) "Added to every desktop chat request across projects." else if (effectiveMode == EffectiveConnectionMode.STANDALONE_BY_CHOICE) "Added to every standalone chat request on this device. Stored separately from desktop." else "Connect to desktop or switch to standalone mode to edit this setting.") },
+                enabled = effectiveMode == EffectiveConnectionMode.CONNECTED || effectiveMode == EffectiveConnectionMode.STANDALONE_BY_CHOICE,
+                minLines = 4,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            TextButton(enabled = effectiveMode == EffectiveConnectionMode.CONNECTED || effectiveMode == EffectiveConnectionMode.STANDALONE_BY_CHOICE, onClick = {
+                if (effectiveMode == EffectiveConnectionMode.CONNECTED) {
+                    WsRepository.setSetting("global_prompt", globalPrompt)
+                } else {
+                    promptPreferences.edit().putString("value", globalPrompt).apply()
+                    promptSaved = true
+                }
+            }) { Text(if (promptSaved) "Saved" else "Save global prompt") }
+
             // — Model —
             GlobalSettingsSectionHeader("Model")
 

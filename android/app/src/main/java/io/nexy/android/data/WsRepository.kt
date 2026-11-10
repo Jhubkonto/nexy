@@ -1335,6 +1335,7 @@ object WsRepository : WsClient {
             localData = checkNotNull(localData),
             providerStore = checkNotNull(standaloneProviders),
             emit = { event -> _events.emit(event) },
+            globalPrompt = { application.getSharedPreferences("global_prompt", android.content.Context.MODE_PRIVATE).getString("value", "").orEmpty() },
         )
         pairedServerStore = runCatching { PairedServerStore(application) }
             .onFailure { _lastError.value = it.message ?: "Unable to open secure pairing storage" }

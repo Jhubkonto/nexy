@@ -53,6 +53,7 @@ enum class NexyIconName {
     Folder,
     Fork,
     Expand,
+    History,
     Image,
     Home,
     Inbox,
@@ -234,6 +235,11 @@ private val patterns: Map<NexyIconName, List<String>> = mapOf(
         " ### ###", " #     #", " #     #", "        ",
         "        ", " #     #", " #     #", "### ### ",
     ),
+    // Clock face with a counter-clockwise arrow head at the upper left: "look back in time".
+    NexyIconName.History to listOf(
+        "  ####  ", "##    # ", "## #   #", "   #   #",
+        "#  ### #", " #    # ", "  ####  ", "        ",
+    ),
     NexyIconName.Scheduled to listOf(
         " ##  ## ", "########", "#      #", "# ###  #",
         "#   #  #", "#   ### ", "########", "        ",
@@ -399,6 +405,7 @@ private fun classicIcon(name: NexyIconName): ImageVector = when (name) {
     NexyIconName.Rating -> Icons.Filled.Star
     NexyIconName.Refresh -> Icons.Filled.Refresh
     NexyIconName.Scan -> Icons.Filled.QrCodeScanner
+    NexyIconName.History -> Icons.Filled.History
     NexyIconName.Scheduled -> Icons.Filled.Schedule
     NexyIconName.Search -> Icons.Filled.Search
     NexyIconName.Send -> Icons.AutoMirrored.Filled.Send

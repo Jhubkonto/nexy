@@ -8,6 +8,12 @@ import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import java.util.UUID
 
+/**
+ * The desktop received the request and rejected it (for example, an unconfigured model). Unlike a
+ * timeout, the outcome is known: a retry with the same input would fail the same way.
+ */
+class WorkHistoryRemoteException(message: String) : IllegalStateException(message)
+
 /** A single response belongs to a single request, even when operations overlap. */
 class WorkHistoryClient(private val ws: WsClient) {
     suspend fun request(operation: String, payload: Map<String, Any> = emptyMap()): Any? = coroutineScope {
@@ -22,7 +28,7 @@ class WorkHistoryClient(private val ws: WsClient) {
         }
         ws.send(command, payload + ("requestId" to requestId))
         val result = response.await()
-        if (result.error != null) throw IllegalStateException(result.error)
+        if (result.error != null) throw WorkHistoryRemoteException(result.error)
         result.result
     }
 }

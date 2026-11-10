@@ -353,6 +353,7 @@ fun HomeScreen(
                             )
                             DropdownMenuItem(
                                 text = { Text(if (connectionState == ConnectionState.CONNECTED) "Work history" else "Work history · desktop required") },
+                                leadingIcon = { NexyIcon(NexyIconName.History, contentDescription = null) },
                                 onClick = { showOverflowMenu = false; onOpenWorkHistory() },
                                 enabled = connectionState == ConnectionState.CONNECTED,
                             )

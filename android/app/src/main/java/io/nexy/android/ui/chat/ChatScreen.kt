@@ -98,7 +98,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -120,18 +119,6 @@ import io.nexy.android.data.model.WsEvent
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.snapshotFlow
-import io.noties.markwon.AbstractMarkwonPlugin
-import io.noties.markwon.Markwon
-import io.noties.markwon.core.MarkwonTheme
-import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
-import io.noties.markwon.ext.tables.TablePlugin
-import io.noties.markwon.ext.tables.TableTheme
-import io.noties.markwon.ext.tasklist.TaskListPlugin
-import io.noties.markwon.linkify.LinkifyPlugin
-import io.noties.markwon.syntax.Prism4jTheme
-import io.noties.markwon.syntax.SyntaxHighlightPlugin
-import io.noties.prism4j.Prism4j
-import android.text.SpannableStringBuilder
 import org.json.JSONArray
 import org.json.JSONObject
 import io.nexy.android.ui.components.NexyConfirmDialog
@@ -1494,47 +1481,7 @@ fun ChatScreen(
         )
     }
 
-    val colorScheme = MaterialTheme.colorScheme
-    val markwon = remember(context, colorScheme) {
-        val prism4j = Prism4j(io.nexy.android.GrammarLocatorDef())
-        // Custom theme: subtle tinted background with readable dark text instead of Darkula black
-        val codeTheme = object : Prism4jTheme {
-            override fun background(): Int = 0xFF1E1F2E.toInt() // deep navy, visible in both themes
-            override fun textColor(): Int = 0xFFE8EAF6.toInt() // soft lavender-white
-            override fun apply(language: String, syntax: io.noties.prism4j.Prism4j.Syntax, builder: SpannableStringBuilder, start: Int, end: Int) = Unit
-        }
-        val dip = io.noties.markwon.utils.Dip.create(context)
-        val tableTheme = TableTheme.emptyBuilder()
-            .tableBorderColor(colorScheme.outlineVariant.toArgb())
-            .tableBorderWidth(dip.toPx(1))
-            .tableCellPadding(dip.toPx(8))
-            .tableHeaderRowBackgroundColor(colorScheme.surfaceVariant.toArgb())
-            .tableEvenRowBackgroundColor(colorScheme.surface.toArgb())
-            .tableOddRowBackgroundColor(colorScheme.surfaceVariant.copy(alpha = 0.3f).toArgb())
-            .build()
-        Markwon.builder(context)
-            .usePlugin(TablePlugin.create(tableTheme))
-            .usePlugin(LinkifyPlugin.create())
-            .usePlugin(SyntaxHighlightPlugin.create(prism4j, codeTheme))
-            .usePlugin(StrikethroughPlugin.create())
-            .usePlugin(
-                TaskListPlugin.create(
-                    colorScheme.primary.toArgb(),
-                    colorScheme.onPrimary.toArgb(),
-                    colorScheme.outline.toArgb(),
-                ),
-            )
-            .usePlugin(object : AbstractMarkwonPlugin() {
-                override fun configureTheme(builder: MarkwonTheme.Builder) {
-                    builder
-                        .linkColor(colorScheme.primary.toArgb())
-                        .codeTextColor(colorScheme.onSurfaceVariant.toArgb())
-                        .codeBackgroundColor(colorScheme.surfaceVariant.toArgb())
-                        .blockQuoteColor(colorScheme.outline.toArgb())
-                }
-            })
-            .build()
-    }
+    val markwon = rememberChatMarkwon()
     CompositionLocalProvider(LocalMarkwon provides markwon) {
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },

@@ -25,6 +25,7 @@ class StandaloneChatService(
     private val localData: LocalDataRepository,
     private val providerStore: StandaloneProviderStore,
     private val emit: suspend (WsEvent) -> Unit,
+    private val globalPrompt: () -> String = { "" },
 ) {
     @Volatile private var emergencyStopped = false
     private val client = OkHttpClient.Builder()
@@ -338,7 +339,7 @@ class StandaloneChatService(
             .put("model", config.defaultModel)
             .put("stream", true)
             .put("messages", messages)
-        combineSystemPrompt(agentConfig?.systemPrompt, conversationSummary)?.let { payload.put("system", it) }
+        combineSystemPrompt(globalPrompt(), agentConfig?.systemPrompt, conversationSummary)?.let { payload.put("system", it) }
         val thinkingBudget = when (agentConfig?.thinkingEffort) {
             "low" -> 1_024
             "medium" -> 4_096
@@ -424,7 +425,7 @@ class StandaloneChatService(
         val apiKey = providerStore.resolveCredential(config)
             ?: throw IOException("Standalone provider credential is unavailable")
         val messages = JSONArray()
-        combineSystemPrompt(agentConfig?.systemPrompt, conversationSummary)?.let {
+        combineSystemPrompt(globalPrompt(), agentConfig?.systemPrompt, conversationSummary)?.let {
             messages.put(JSONObject().put("role", "system").put("content", it))
         }
         history.filter { it.role == "user" || it.role == "assistant" }.forEachIndexed { index, message ->
@@ -673,8 +674,9 @@ class StandaloneChatService(
                 "created, read, or modified any file, and do NOT invent a result as if such an action had " +
                 "been performed."
 
-        private fun combineSystemPrompt(agentPrompt: String?, summary: String?): String? {
+        private fun combineSystemPrompt(globalPrompt: String?, agentPrompt: String?, summary: String?): String? {
             val sections = buildList {
+                globalPrompt?.trim()?.takeIf(String::isNotBlank)?.let(::add)
                 agentPrompt?.takeIf(String::isNotBlank)?.let(::add)
                 summary?.takeIf(String::isNotBlank)?.let {
                     add("Earlier conversation summary:\n$it")

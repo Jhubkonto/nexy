@@ -733,8 +733,12 @@ fun NavGraph(
             )
         }
 
-        composable(route = "work-history") {
+        composable(
+            route = "work-history?runId={runId}",
+            arguments = listOf(navArgument("runId") { type = NavType.StringType; nullable = true; defaultValue = null }),
+        ) { backStackEntry ->
             WorkHistoryScreen(
+                initialRunId = backStackEntry.arguments?.getString("runId"),
                 onBack = { navController.popBackStack() },
                 onOpenChat = { id -> navController.navigate("chat/${Uri.encode(id)}") },
             )
