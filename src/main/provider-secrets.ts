@@ -172,6 +172,10 @@ export async function fetchAndCacheOpenAIModels(apiKey: string): Promise<void> {
   })
 }
 
+export async function fetchAndCacheDeepSeekModels(apiKey: string): Promise<void> {
+  await fetchAndCacheModelsList('deepseek_models_cache', 'https://api.deepseek.com/models', { Authorization: `Bearer ${apiKey}` })
+}
+
 export async function fetchAndCacheGeminiModels(apiKey: string): Promise<void> {
   await fetchAndCacheModelsList(
     'gemini_models_cache',

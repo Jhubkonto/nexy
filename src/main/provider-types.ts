@@ -22,12 +22,14 @@ export interface ToolCallResult {
 export interface ProviderUsage {
   inputTokens: number
   outputTokens: number
+  cachedInputTokens?: number
 }
 
 import type { Citation } from '../shared/citations'
 
 export interface ProviderNonStreamResult {
   content: string | null
+  reasoningContent?: string
   toolCalls: ToolCallResult[]
   finishReason?: string
   model?: string

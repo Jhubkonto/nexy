@@ -3,7 +3,7 @@ import type { ProviderName } from './provider-core-types'
 import type { ProviderMessage } from './provider-core-types'
 import type { ProviderCredentialInput } from './credential-vault'
 import { getAzureEndpoint } from './provider-secrets'
-import { PROVIDERS } from './provider-registry'
+import { PROVIDERS, OPENAI_COMPATIBLE_PROVIDERS } from './provider-registry'
 import { sendAnthropicWithTools } from './providers/anthropic-provider'
 import {
   sendOpenAIWithTools,
@@ -11,8 +11,6 @@ import {
   sendAzureNonStreaming,
   sendAzureWithTools,
 } from './providers/openai-provider'
-
-const OPENAI_COMPATIBLE_PROVIDERS: ProviderName[] = ['openrouter', 'groq', 'mistral', 'gemini', 'xai']
 
 export const NO_PROVIDER_CONFIGURED_MESSAGE = 'No provider configured. Add an API key in Settings.'
 
