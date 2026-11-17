@@ -2152,7 +2152,8 @@ object WsRepository : WsClient {
         _activeProfileId.value = pairedServerStore?.activeProfile()?.id
     }
 
-    override fun send(command: String, data: Map<String, Any>) {
+    override fun send(command: String, payload: Map<String, Any>) {
+        val data = if (command == "model:list") payload + ("includeGroups" to true) else payload
         // History requests have a caller deadline; never deliver one from the reconnect queue.
         if (command.startsWith("work-history:")) {
             val socket = ws

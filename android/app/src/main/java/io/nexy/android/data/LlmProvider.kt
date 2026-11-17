@@ -12,6 +12,7 @@ data class LlmRequestContext(
     val images: List<Map<*, *>>,
     val agentConfig: AgentFullConfig?,
     val conversationSummary: String?,
+    val thinkingEffort: String? = null,
 )
 
 interface LlmEventSink {

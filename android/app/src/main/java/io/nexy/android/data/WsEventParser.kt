@@ -525,7 +525,7 @@ fun parseWsEvent(
             "model:list" -> {
                 val modelsArray = data?.optJSONArray("models") ?: JSONArray()
                 val sourceObject = data?.optJSONObject("source")
-                val list = (0 until modelsArray.length()).map { i ->
+                val flatList = (0 until modelsArray.length()).map { i ->
                     val model = modelsArray.getJSONObject(i)
                     ModelOption(
                         id = model.optString("id"),
@@ -534,6 +534,28 @@ fun parseWsEvent(
                         isCliSourced = model.optBoolean("isCliSourced", false),
                         backend = model.nullableString("backend"),
                     )
+                }
+                val groups = data?.optJSONArray("groups")
+                val list = if (groups == null) flatList else buildList {
+                    for (i in 0 until groups.length()) {
+                        val group = groups.optJSONObject(i) ?: continue
+                        val key = group.optString("sourceKey")
+                        val label = group.optString("sourceLabel")
+                        val cli = group.optString("sourceType") == "cli"
+                        val entries = group.optJSONArray("models") ?: continue
+                        for (j in 0 until entries.length()) {
+                            val entry = entries.optJSONObject(j) ?: continue
+                            val id = entry.optString("id")
+                            if (key.isBlank() || id.isBlank()) continue
+                            add(ModelOption(
+                                id = if (cli || id.startsWith("$key:")) id else "$key:$id",
+                                label = entry.optString("label").ifBlank { id },
+                                vendor = label,
+                                isCliSourced = cli,
+                                backend = if (cli) key else null,
+                            ))
+                        }
+                    }
                 }
                 models.value = list
                 val source = sourceObject?.let {

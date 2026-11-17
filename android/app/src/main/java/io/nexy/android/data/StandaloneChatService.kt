@@ -46,7 +46,7 @@ class StandaloneChatService(
             "openai-compatible" to LambdaLlmProvider(
                 providerId = "openai-compatible",
                 requestFactory = {
-                    openAiRequest(it.config, it.history, it.images, it.agentConfig, it.conversationSummary)
+                    openAiRequest(it.config, it.history, it.images, it.agentConfig, it.conversationSummary, it.thinkingEffort)
                 },
                 eventHandler = ::parseOpenAiStreamEvent,
             ),
@@ -71,7 +71,7 @@ class StandaloneChatService(
         val turn = TurnEmitter(conversationId, emit)
         var assistantMessageId: String? = null
         try {
-            localData.ensureConversation(
+            val conversation = localData.ensureConversation(
                 id = conversationId,
                 title = content.lineSequence().firstOrNull()?.take(80).orEmpty().ifBlank { "New Chat" },
                 agentId = agentId,
@@ -104,7 +104,7 @@ class StandaloneChatService(
                 failTurn(
                     conversationId,
                     turn,
-                    "No standalone API key is configured. Add an Anthropic, OpenAI, or OpenRouter key in Settings.",
+                    "No standalone API key is configured. Add an Anthropic, OpenAI, OpenRouter, or DeepSeek key in Settings.",
                 )
                 emitHistory(conversationId)
                 return
@@ -132,7 +132,7 @@ class StandaloneChatService(
                 if (provider.provider == "anthropic") "anthropic" else "openai-compatible",
             )
             val request = protocol.createStreamingRequest(
-                LlmRequestContext(provider, history, images, agentConfig, context.summary),
+                LlmRequestContext(provider, history, images, agentConfig, context.summary, conversation.thinking_effort_override),
             )
             val call = client.newCall(request)
             activeCalls[conversationId] = call
@@ -223,6 +223,7 @@ class StandaloneChatService(
             val baseUrl = endpoint?.trimEnd('/') ?: when (provider) {
                 "anthropic" -> "https://api.anthropic.com/v1"
                 "openrouter" -> "https://openrouter.ai/api/v1"
+                "deepseek" -> "https://api.deepseek.com"
                 else -> "https://api.openai.com/v1"
             }
             val request = if (provider == "anthropic") {
@@ -271,9 +272,9 @@ class StandaloneChatService(
                         val id = item.optString("id")
                         if (id.isBlank()) return@mapNotNull null
                         ModelOption(
-                            id = id,
+                            id = if (id.startsWith("${config.provider}:")) id else "${config.provider}:$id",
                             label = item.optString("display_name").takeIf(String::isNotBlank) ?: id,
-                            vendor = config.provider.replaceFirstChar { it.uppercase() },
+                            vendor = config.provider.displayName(),
                         )
                     }
                 }
@@ -421,9 +422,13 @@ class StandaloneChatService(
         images: List<Map<*, *>>,
         agentConfig: AgentFullConfig?,
         conversationSummary: String?,
+        thinkingEffort: String?,
     ): Request {
         val apiKey = providerStore.resolveCredential(config)
             ?: throw IOException("Standalone provider credential is unavailable")
+        if (config.provider == "deepseek" && images.isNotEmpty() && !deepSeekSupportsImages(config.defaultModel)) {
+            throw IOException("${config.defaultModel} cannot receive images in standalone mode. Switch to deepseek-flash to send images.")
+        }
         val messages = JSONArray()
         combineSystemPrompt(globalPrompt(), agentConfig?.systemPrompt, conversationSummary)?.let {
             messages.put(JSONObject().put("role", "system").put("content", it))
@@ -457,6 +462,7 @@ class StandaloneChatService(
             .put("stream", true)
             .put("stream_options", JSONObject().put("include_usage", true))
             .put("messages", messages)
+        if (config.provider == "deepseek") applyDeepSeekThinking(payload, thinkingEffort ?: agentConfig?.thinkingEffort)
         return Request.Builder()
             .url("${config.baseUrl}/chat/completions")
             .header("Authorization", "Bearer $apiKey")
@@ -640,6 +646,7 @@ class StandaloneChatService(
         private fun String.displayName() = when (this) {
             "anthropic" -> "Anthropic"
             "openrouter" -> "OpenRouter"
+            "deepseek" -> "DeepSeek"
             else -> "OpenAI"
         }
 

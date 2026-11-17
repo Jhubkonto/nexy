@@ -64,19 +64,24 @@ class StandaloneProviderStore private constructor(context: Context) {
 
     fun resolve(modelOverride: String?, projectId: String? = null, agentId: String? = null, conversationId: String? = null): StandaloneProviderConfig? {
         val explicitModel = modelOverride?.takeIf { it.isNotBlank() && it != "default" }
+        val explicitProvider = explicitModel?.takeIf { ':' in it }?.substringBefore(':')?.takeIf { it in SUPPORTED_PROVIDERS }
+        if (explicitProvider != null && !hasKey(explicitProvider, projectId, agentId, conversationId)) return null
         val preferred = when {
+            explicitProvider != null -> explicitProvider
             explicitModel?.startsWith("claude-") == true -> "anthropic"
+            explicitModel?.startsWith("deepseek-") == true -> "deepseek"
             explicitModel?.contains("/") == true && hasKey("openrouter", projectId, agentId, conversationId) -> "openrouter"
             explicitModel?.startsWith("gpt-") == true || explicitModel?.startsWith("o") == true -> "openai"
             else -> preferences.getString(KEY_DEFAULT_PROVIDER, null)
         }
-        val provider = sequenceOf(preferred, "anthropic", "openai", "openrouter")
+        if (preferred == "deepseek" && !hasKey("deepseek", projectId, agentId, conversationId)) return null
+        val provider = sequenceOf(preferred, "anthropic", "openai", "openrouter", "deepseek")
             .filterNotNull()
             .distinct()
             .firstOrNull { hasKey(it, projectId, agentId, conversationId) }
             ?: return null
         val credentialId = vault.apiKeyCredentialId(provider, projectId, agentId, conversationId) ?: return null
-        val model = explicitModel
+        val model = explicitModel?.let { if (explicitProvider != null) it.substringAfter(':') else it }
             ?: preferences.getString(KEY_DEFAULT_MODEL, null)?.takeIf(String::isNotBlank)
             ?: DEFAULT_MODELS.getValue(provider)
         val baseUrl = preferences.getString(baseUrlName(provider), null)?.takeIf(String::isNotBlank)
@@ -105,21 +110,24 @@ class StandaloneProviderStore private constructor(context: Context) {
         ProviderInfo("anthropic", "Anthropic", hasKey("anthropic")),
         ProviderInfo("openai", "OpenAI", hasKey("openai")),
         ProviderInfo("openrouter", "OpenRouter", hasKey("openrouter")),
+        ProviderInfo("deepseek", "DeepSeek", hasKey("deepseek")),
     )
 
     private fun baseUrlName(provider: String) = "base_url_$provider"
 
     companion object {
-        private val SUPPORTED_PROVIDERS = setOf("anthropic", "openai", "openrouter")
+        private val SUPPORTED_PROVIDERS = setOf("anthropic", "openai", "openrouter", "deepseek")
         private val DEFAULT_MODELS = mapOf(
             "anthropic" to "claude-sonnet-4-6",
             "openai" to "gpt-5.4",
             "openrouter" to "openai/gpt-5.4",
+            "deepseek" to "deepseek-flash",
         )
         private val DEFAULT_BASE_URLS = mapOf(
             "anthropic" to "https://api.anthropic.com/v1",
             "openai" to "https://api.openai.com/v1",
             "openrouter" to "https://openrouter.ai/api/v1",
+            "deepseek" to "https://api.deepseek.com",
         )
         private const val KEY_DEFAULT_PROVIDER = "default_provider"
         private const val KEY_DEFAULT_MODEL = "default_model"
