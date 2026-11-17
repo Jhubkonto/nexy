@@ -145,7 +145,7 @@ fun CredentialManagerScreen(
                             color = MaterialTheme.colorScheme.onSecondaryContainer,
                         )
                         Text(
-                            "Generic API keys and access tokens can be granted to Android direct chat with provider:anthropic, provider:openai, or provider:openrouter. MCP and workspace capabilities still run on the paired desktop.",
+                            "Generic API keys and access tokens can be granted to Android direct chat with provider:anthropic, provider:openai, provider:openrouter, or provider:deepseek. MCP and workspace capabilities still run on the paired desktop.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSecondaryContainer,
                         )
@@ -364,7 +364,7 @@ private fun CredentialBindingDialog(
                     TextButton(onClick = { approvalMode = "auto" }) { Text(if (approvalMode == "auto") "✓ Automatic" else "Automatic") }
                     TextButton(onClick = { approvalMode = "always-ask" }) { Text(if (approvalMode == "always-ask") "✓ Always ask" else "Always ask") }
                 }
-                Text("For Android direct provider chat, use provider:anthropic, provider:openai, or provider:openrouter. Automatic grants are usable immediately; Always ask grants are not resolved automatically. Leave project and agent blank to apply across all projects and agents.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("For Android direct provider chat, use provider:anthropic, provider:openai, provider:openrouter, or provider:deepseek. Automatic grants are usable immediately; Always ask grants are not resolved automatically. Leave project and agent blank to apply across all projects and agents.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
         confirmButton = {

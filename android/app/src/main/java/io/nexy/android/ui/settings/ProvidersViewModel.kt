@@ -104,7 +104,7 @@ class ProvidersViewModel(app: Application) : AndroidViewModel(app) {
     fun dismissError() { _error.value = null }
 
     fun setKey(provider: String, key: String) {
-        if (provider in setOf("anthropic", "openai", "openrouter")) {
+        if (provider in setOf("anthropic", "openai", "openrouter", "deepseek")) {
             localStore.setKey(provider, key)
         }
         if (WsRepository.connectionState.value == ConnectionState.CONNECTED) {
@@ -113,7 +113,7 @@ class ProvidersViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun removeKey(provider: String) {
-        if (provider in setOf("anthropic", "openai", "openrouter")) {
+        if (provider in setOf("anthropic", "openai", "openrouter", "deepseek")) {
             localStore.removeKey(provider)
         }
         if (WsRepository.connectionState.value == ConnectionState.CONNECTED) {

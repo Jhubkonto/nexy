@@ -244,6 +244,7 @@ fun ChatScreen(
     ),
 ) {
     val messages by vm.messages.collectAsStateWithLifecycle()
+    val backgroundActivities by io.nexy.android.data.BackgroundActivityTracker.activities.collectAsStateWithLifecycle()
     LaunchedEffect(messages.isNotEmpty()) {
         if (messages.isNotEmpty()) {
             withFrameNanos { }
@@ -1127,6 +1128,7 @@ fun ChatScreen(
         ) {
             ModelPickerSheet(
                 title = "Chat model",
+                qualifyCli = true,
                 models = chatModels,
                 cliStatus = cliStatus,
                 selectedModelId = activeModelId,
@@ -1140,8 +1142,10 @@ fun ChatScreen(
                 emptyStateText = emptyModelListDetail(modelSource),
                 effectiveMode = effectiveMode,
             ) { modelId ->
-                val selectedBackend = models.find { it.id == modelId }?.backend
-                vm.setModel(modelId, if (selectedBackend == "hermes-cli") targetHermesProfile else null, selectedBackend)
+                val selectedBackend = modelId?.substringBefore(':')?.takeIf { it in setOf("claude-cli", "codex-cli", "hermes-cli") }
+                    ?: models.find { it.id == modelId }?.backend
+                val storedModel = if (selectedBackend != null && modelId?.startsWith("$selectedBackend:") == true) modelId.substringAfter(':') else modelId
+                vm.setModel(storedModel, if (selectedBackend == "hermes-cli") targetHermesProfile else null, selectedBackend)
                 scope.launch { modelSheetState.hide() }.invokeOnCompletion { showModelSheet = false }
             }
         }
@@ -1713,6 +1717,13 @@ fun ChatScreen(
 
             Column(modifier = Modifier.fillMaxSize()) {
                 Column(modifier = Modifier.onGloballyPositioned { topBannersHeightPx = it.size.height }) {
+                    backgroundActivities.filter { it.id.startsWith("deferred:") && it.conversationId == conversationId }.forEach { activity ->
+                        Text(
+                            text = activity.label + (activity.detail?.let { ": $it" } ?: ""),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     if (connectionBanner) {
                         NexyConnectionBanner(connectionState, lastError)
                     }

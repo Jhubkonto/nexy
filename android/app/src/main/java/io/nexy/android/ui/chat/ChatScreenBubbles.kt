@@ -14,6 +14,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeOut
+import io.nexy.android.ui.theme.LocalNexyEightBit
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
@@ -615,6 +616,17 @@ fun ThinkingBubble(activity: ChatTurnActivity, generationStartedAt: Long? = null
 
 @Composable
 fun TypingDots(dotColor: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
+    if (LocalNexyEightBit.current) {
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            repeat(3) { Box(modifier = Modifier.size(8.dp).background(dotColor, CircleShape)) }
+        }
+        return
+    }
+    AnimatedTypingDots(dotColor)
+}
+
+@Composable
+private fun AnimatedTypingDots(dotColor: Color) {
     val transition = rememberInfiniteTransition(label = "typing-dots")
     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
         repeat(3) { index ->

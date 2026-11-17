@@ -1,6 +1,7 @@
 package io.nexy.android.ui.chat
 
 import android.animation.ValueAnimator
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -168,7 +169,7 @@ fun ModelSheetItem(
                     color = MaterialTheme.colorScheme.errorContainer,
                 ) {
                     Text(
-                        "Not installed",
+                        "Unavailable",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
@@ -187,7 +188,7 @@ fun ModelSheetItem(
 }
 
 /**
- * Reusable model-picker bottom sheet content — extracted from ChatScreen's inline model sheet so
+ * Reusable model-picker bottom sheet content â€” extracted from ChatScreen's inline model sheet so
  * non-chat screens (e.g. Revise Plan on a Code Changes request) can offer the same searchable,
  * vendor-grouped model list instead of a plain text field for the model id.
  */
@@ -205,22 +206,38 @@ fun ModelPickerSheet(
     hermesProfiles: List<HermesProfileInfo> = emptyList(),
     selectedHermesProfile: String? = null,
     onSelectHermesProfile: ((String?) -> Unit)? = null,
+    qualifyCli: Boolean = false,
+    unavailableBackends: Set<String> = emptySet(),
     onSelect: (String?) -> Unit,
 ) {
     var modelQuery by remember { mutableStateOf("") }
 
     val query = modelQuery.trim().lowercase()
-    val sheetItems = io.nexy.android.ui.model.buildModelSheetItems(models, cliStatus, effectiveMode, modelQuery)
+    var selectedVendor by remember { mutableStateOf<String?>(null) }
+    BackHandler(enabled = selectedVendor != null) { selectedVendor = null }
+    val allItems = io.nexy.android.ui.model.buildModelSheetItems(models, cliStatus, effectiveMode, "")
+    val modelItems = allItems.filterIsInstance<io.nexy.android.ui.model.ModelSheetEntry.Item>().filterNot { it.model.id == "default" }
+    val groups = modelItems.groupBy { it.model.vendor?.takeIf { vendor -> vendor.isNotBlank() } ?: "Other" }
+    val matchingGroups = groups.mapValues { (vendor, entries) ->
+        if (query.isEmpty() || vendor.lowercase().contains(query)) entries
+        else entries.filter { it.model.label.lowercase().contains(query) || it.model.id.lowercase().contains(query) }
+    }.filterValues { it.isNotEmpty() }
+    val sheetItems = selectedVendor?.let { matchingGroups[it] }.orEmpty()
 
     val showDefault = showDefaultModel && (query.isEmpty() || "default model".contains(query))
 
     LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
         item {
-            Text(
-                title,
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
-            )
+            if (selectedVendor != null) {
+                Text("‹  $selectedVendor", style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.fillMaxWidth().clickable { selectedVendor = null }.padding(horizontal = 20.dp, vertical = 12.dp))
+            } else {
+                Text(title, style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
+            }
+            val activeModel = models.firstOrNull { it.id == selectedModelId || (it.isCliSourced && "${it.backend}:${it.id}" == selectedModelId) }
+            Text("Active: ${activeModel?.let { listOfNotNull(it.label, it.vendor).joinToString(" · ") } ?: if (selectedModelId.isNullOrBlank() || selectedModelId == "default") "Default model" else selectedModelId}",
+                style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
             if (subtitle != null) {
                 Text(
                     subtitle,
@@ -232,7 +249,7 @@ fun ModelPickerSheet(
             OutlinedTextField(
                 value = modelQuery,
                 onValueChange = { modelQuery = it },
-                placeholder = { Text("Search models…", style = MaterialTheme.typography.bodyMedium) },
+                placeholder = { Text("Search modelsâ€¦", style = MaterialTheme.typography.bodyMedium) },
                 leadingIcon = { NexyIcon(NexyIconName.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
                 trailingIcon = {
                     if (modelQuery.isNotEmpty()) {
@@ -287,7 +304,7 @@ fun ModelPickerSheet(
                                     Column {
                                         Text(profile.name)
                                         val detail = listOfNotNull(profile.model, profile.description)
-                                            .joinToString(" · ")
+                                            .joinToString(" Â· ")
                                             .takeIf { it.isNotBlank() }
                                         if (detail != null) {
                                             Text(
@@ -309,7 +326,7 @@ fun ModelPickerSheet(
             }
         }
 
-        if (showDefault) {
+        if (showDefault && selectedVendor == null) {
             item {
                 ModelSheetItem(
                     label = "Default model",
@@ -331,27 +348,22 @@ fun ModelPickerSheet(
                 )
             }
         } else {
-            items(sheetItems) { item ->
-                when (item) {
-                    is io.nexy.android.ui.model.ModelSheetEntry.Header -> Text(
-                        item.vendor,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (item.unavailable) MaterialTheme.colorScheme.error
-                                else MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                    )
-                    is io.nexy.android.ui.model.ModelSheetEntry.Item -> ModelSheetItem(
-                        label = item.model.label,
-                        vendor = null,
-                        selected = item.model.id == selectedModelId,
-                        unavailable = item.unavailable,
-                    ) {
-                        onSelect(item.model.id)
+            if (selectedVendor == null) {
+                items(matchingGroups.keys.toList()) { vendor ->
+                    Text("$vendor  ›", style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.fillMaxWidth().clickable { selectedVendor = vendor }.padding(horizontal = 20.dp, vertical = 14.dp))
+                }
+            } else {
+                items(sheetItems) { item ->
+                    val unavailable = item.unavailable || (item.model.backend?.let { it in unavailableBackends } == true)
+                    ModelSheetItem(label = item.model.label, vendor = null,
+                        selected = item.model.id == selectedModelId || (item.model.isCliSourced && "${item.model.backend}:${item.model.id}" == selectedModelId), unavailable = unavailable) {
+                        if (!unavailable) onSelect(if (qualifyCli && item.model.isCliSourced && item.model.backend != null) "${item.model.backend}:${item.model.id}" else item.model.id)
                     }
                 }
             }
 
-            if (sheetItems.isEmpty() && !showDefault) {
+            if (matchingGroups.isEmpty() && !showDefault) {
                 item {
                     Text(
                         "No models match \"$modelQuery\"",
@@ -366,7 +378,7 @@ fun ModelPickerSheet(
 }
 
 /**
- * Reusable prompt-library bottom sheet content — extracted from ChatScreen's inline "Insert
+ * Reusable prompt-library bottom sheet content â€” extracted from ChatScreen's inline "Insert
  * Prompt" sheet so non-chat screens (e.g. Revise Plan) can offer the same saved-prompt insertion
  * instead of missing the feature entirely.
  */
@@ -423,7 +435,7 @@ fun PromptLibrarySheetContent(
 @Composable
 fun EmptyChatContent(agentLabel: String?, projectLabel: String?) {
     val detail = when {
-        agentLabel != null && projectLabel != null -> "$agentLabel · $projectLabel"
+        agentLabel != null && projectLabel != null -> "$agentLabel Â· $projectLabel"
         agentLabel != null -> agentLabel
         projectLabel != null -> projectLabel
         else -> null
@@ -456,7 +468,7 @@ fun EmptyChatContent(agentLabel: String?, projectLabel: String?) {
     }
 }
 
-// Placeholder rows shown while an existing conversation's history is still loading from disk —
+// Placeholder rows shown while an existing conversation's history is still loading from disk â€”
 // alternating alignment/width to loosely echo the user/assistant bubble shapes so the swap to
 // real content doesn't jump the layout around. Classic retains its original shared pulse;
 // the 8-bit style uses a slower pulse over its dithered loading record.
