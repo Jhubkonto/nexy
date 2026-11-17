@@ -1,3 +1,4 @@
+import { sourceQualifiedModel } from '../../shared/models'
 /* eslint-disable react-hooks/exhaustive-deps -- callbacks intentionally retain the run-start configuration. */
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Loader2 } from 'lucide-react'
@@ -684,7 +685,7 @@ export function ProjectGeneratorModal({ onClose }: { onClose: () => void }) {
                             buttonRef={modelPickerRef}
                             onSelectDefault={() => setGenModel(null)}
                             onSelectAvailableModel={(group: AvailableModelGroup, model: AvailableModelEntry) => {
-                              const id = group.sourceType === 'cli' ? `${group.sourceKey}:${model.id}` : model.id
+                              const id = sourceQualifiedModel(group.sourceKey, model.id)
                               setGenModel(id)
                             }}
                           />

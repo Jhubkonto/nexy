@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ChevronDown, ChevronRight, CheckCircle, XCircle, Loader2, Square } from 'lucide-react'
 import type { TeamActivityStep } from '../hooks/chat-types'
+import { hasUnexecutedToolMarkup, UNEXECUTED_TOOL_MESSAGE } from '@shared/unexecuted-tool-markup'
 
 interface TeamActivityBlockProps {
   steps: TeamActivityStep[]
@@ -21,8 +22,9 @@ export function TeamActivityBlock({ steps, isLive = false }: TeamActivityBlockPr
     })
   }
 
-  const doneCount = steps.filter((s) => s.status === 'done').length
-  const hasError = steps.some((s) => s.status === 'error')
+  const hasInvalidResult = (s: TeamActivityStep) => hasUnexecutedToolMarkup(s.result ?? s.liveContent ?? '')
+  const doneCount = steps.filter((s) => s.status === 'done' && !hasInvalidResult(s)).length
+  const hasError = steps.some((s) => s.status === 'error' || hasInvalidResult(s))
   const allDone = steps.length > 0 && steps.every((s) => s.status !== 'delegating')
 
   const cancelStep = async (stepId: string) => {
@@ -72,6 +74,7 @@ export function TeamActivityBlock({ steps, isLive = false }: TeamActivityBlockPr
         <div className="border-t border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700">
           {steps.map((step) => {
             const isActive = step.status === 'delegating'
+            const invalidResult = hasInvalidResult(step)
             const cancelling = cancellingSteps.has(step.stepId)
             const isCollapsed = collapsedSteps.has(step.stepId)
             const hasBody = !!(step.result ?? step.liveContent)
@@ -87,8 +90,8 @@ export function TeamActivityBlock({ steps, isLive = false }: TeamActivityBlockPr
                   {/* Status icon — fixed width, vertically centred with first line */}
                   <span className="mt-0.5 shrink-0 w-4 flex justify-center">
                     {step.status === 'delegating' && <Loader2 size={13} className="animate-spin text-blue-500" />}
-                    {step.status === 'done'       && <CheckCircle size={13} className="text-green-500" />}
-                    {step.status === 'error'      && <XCircle size={13} className="text-red-500" />}
+                    {step.status === 'done' && !invalidResult && <CheckCircle size={13} className="text-green-500" />}
+                    {(step.status === 'error' || (step.status === 'done' && invalidResult)) && <XCircle size={13} className="text-red-500" />}
                     {step.status === 'cancelled'  && <Square size={12} className="text-gray-400" />}
                   </span>
 
@@ -133,7 +136,7 @@ export function TeamActivityBlock({ steps, isLive = false }: TeamActivityBlockPr
                 {/* Step body — streamed / final result */}
                 {showBody && (
                   <div className="px-4 pb-3 pt-1 ml-6 text-xs text-gray-700 dark:text-gray-300 leading-relaxed whitespace-pre-wrap break-words font-mono bg-white/60 dark:bg-gray-900/30">
-                    {step.result ?? step.liveContent}
+                    {invalidResult ? UNEXECUTED_TOOL_MESSAGE : (step.result ?? step.liveContent)}
                     {isActive && <span className="animate-pulse opacity-60">▍</span>}
                   </div>
                 )}

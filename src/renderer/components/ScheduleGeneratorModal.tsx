@@ -1,3 +1,4 @@
+import { sourceQualifiedModel } from '../../shared/models'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../store/app-store'
 import { useAutoScroll } from '../hooks/useAutoScroll'
@@ -433,7 +434,7 @@ export function ScheduleGeneratorModal({ onClose }: { onClose: () => void }) {
                           <NexyIcon name="prompt" className="w-4 h-4" />
                         </button>
                         <div className="flex items-center gap-1">
-                          <ModelPicker value={genModel ?? 'default'} availableGroups={availableGroups} catalogModels={catalogModels} globalDefaultModel={globalDefaultModel ?? undefined} includeDefault={true} buttonRef={modelPickerRef} onSelectDefault={() => setGenModel(null)} onSelectAvailableModel={(group: AvailableModelGroup, model: AvailableModelEntry) => setGenModel(group.sourceType === 'cli' ? `${group.sourceKey}:${model.id}` : model.id)} />
+                          <ModelPicker value={genModel ?? 'default'} availableGroups={availableGroups} catalogModels={catalogModels} globalDefaultModel={globalDefaultModel ?? undefined} includeDefault={true} buttonRef={modelPickerRef} onSelectDefault={() => setGenModel(null)} onSelectAvailableModel={(group: AvailableModelGroup, model: AvailableModelEntry) => setGenModel(sourceQualifiedModel(group.sourceKey, model.id))} />
                           <VoiceInputButton disabled={isStreaming} onText={(text) => setInputText((current) => current.trim() ? `${current.trimEnd()} ${text}` : text)} />
                           <button type="button" onClick={() => void sendMessage(inputText)} disabled={isStreaming || !inputText.trim()} className={`p-1.5 rounded-md flex items-center justify-center transition-colors ${inputText.trim() && !isStreaming ? 'bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:bg-gray-700 dark:hover:bg-gray-300' : 'bg-transparent text-gray-400 dark:text-gray-500 cursor-not-allowed'}`} aria-label="Send message">
                             <NexyIcon name="send" className="w-4 h-4" />

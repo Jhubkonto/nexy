@@ -1,3 +1,4 @@
+import { sourceQualifiedModel } from '../../shared/models'
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useAppStore } from '../store/app-store'
 import { useAutoScroll } from '../hooks/useAutoScroll'
@@ -802,7 +803,7 @@ export function ArtifactGeneratorModal({ projectId, onClose, onArtifactCreated }
                         buttonRef={modelPickerRef}
                         onSelectDefault={() => setGenModel(null)}
                         onSelectAvailableModel={(group: AvailableModelGroup, model: AvailableModelEntry) => {
-                          const id = group.sourceType === 'cli' ? `${group.sourceKey}:${model.id}` : model.id
+                          const id = sourceQualifiedModel(group.sourceKey, model.id)
                           setGenModel(id)
                         }}
                       />

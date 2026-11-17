@@ -28,6 +28,7 @@ const PROVIDER_STATUS_COLORS: Record<string, string> = {
   gemini: '#4285f4',
   mistral: '#f97316',
   groq: '#f43f5e',
+  deepseek: '#4d6bfe',
   xai: '#111827',
   openrouter: '#6366f1',
 }
@@ -227,7 +228,7 @@ export function Sidebar() {
             <div className="space-y-0.5">
               {visiblePinnedConvs.map((conv) => {
                 const isActive = currentConversationId === conv.id
-                const isGenerating = generatingConversationIds.includes(conv.id)
+                const isGenerating = generatingConversationIds.includes(conv.id) || backgroundActivities.some((activity) => activity.id.startsWith('deferred:') && activity.conversationId === conv.id && activity.label === 'Background task running')
                 const isUnread = unreadConversationIds.includes(conv.id)
                 const project = conv.project_id ? projects.find((p) => p.id === conv.project_id) : null
                 const colors = project ? (PROJECT_COLOR_MAP[project.color] ?? PROJECT_COLOR_MAP.blue) : null
@@ -378,7 +379,7 @@ export function Sidebar() {
               ))}
               {recentConvs.map((conv) => {
                 const isActive = currentConversationId === conv.id
-                const isGenerating = generatingConversationIds.includes(conv.id)
+                const isGenerating = generatingConversationIds.includes(conv.id) || backgroundActivities.some((activity) => activity.id.startsWith('deferred:') && activity.conversationId === conv.id && activity.label === 'Background task running')
                 const isUnread = unreadConversationIds.includes(conv.id)
                 const agent = conv.agent_id ? agents.find((a) => a.id === conv.agent_id) : null
                 const project = conv.project_id ? projects.find((p) => p.id === conv.project_id) : null

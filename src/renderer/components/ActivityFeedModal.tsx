@@ -95,7 +95,7 @@ export function ActivityFeedModal() {
                   }}
                   className="flex-1 min-w-0 flex items-start gap-3 text-left"
                 >
-                  <Loader2 className="w-4 h-4 mt-0.5 text-blue-500 animate-spin shrink-0" />
+                  <Loader2 className={`w-4 h-4 mt-0.5 text-blue-500 shrink-0 ${activity.label !== 'Background task status unknown' ? 'animate-spin' : ''}`} />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-gray-800 dark:text-gray-200 truncate">{activity.label}</p>
                     {context.map((item) => (

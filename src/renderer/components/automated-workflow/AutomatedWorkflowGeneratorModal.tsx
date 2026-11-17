@@ -1,3 +1,4 @@
+import { sourceQualifiedModel } from '../../../shared/models'
 import { useEffect, useRef, useState } from 'react'
 import type {
   AvailableModelEntry,
@@ -401,7 +402,7 @@ export function AutomatedWorkflowGeneratorModal({
                   buttonClassName="flex max-w-[120px] items-center gap-1 rounded-nexy-sm border border-transparent px-1.5 py-1 text-[11px] text-nexy-muted hover:border-nexy-border hover:bg-nexy-recessed hover:text-nexy-text"
                   onSelectDefault={() => setGenModel(null)}
                   onSelectAvailableModel={(group: AvailableModelGroup, model: AvailableModelEntry) => {
-                    const id = group.sourceType === 'cli' ? `${group.sourceKey}:${model.id}` : model.id
+                    const id = sourceQualifiedModel(group.sourceKey, model.id)
                     setGenModel(id)
                   }}
                 />
