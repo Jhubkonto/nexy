@@ -20,6 +20,31 @@ function applyReasoningEffort(bodyObj: Record<string, unknown>, model: string, t
   if (effort) bodyObj.reasoning_effort = effort
 }
 
+function isDeepSeek(baseUrl?: string): boolean {
+  try { return !!baseUrl && new URL(baseUrl).hostname === 'api.deepseek.com' } catch { return false }
+}
+
+function prepareMessages(messages: ProviderMessage[], baseUrl?: string): ProviderMessage[] {
+  const converted = toOpenAICompatibleMessages(messages)
+  if (isDeepSeek(baseUrl)) return converted
+  return converted.map((message) => {
+    if (message.role !== 'assistant') return message
+    const { reasoning_content: _reasoning, ...rest } = message
+    return rest
+  })
+}
+
+function applyProviderOptions(body: Record<string, unknown>, model: string, effort?: string, baseUrl?: string): void {
+  if (!isDeepSeek(baseUrl)) { applyReasoningEffort(body, model, effort); return }
+  const enabled = effort !== 'disabled'
+  body.thinking = { type: enabled ? 'enabled' : 'disabled' }
+  if (enabled) {
+    delete body.temperature
+    body.reasoning_effort = effort === 'max' ? 'max' : effort === 'low' ? 'low' : 'high'
+    if (body.tool_choice === 'required') body.tool_choice = 'auto'
+  }
+}
+
 /** One OpenAI-compatible chat-completions endpoint: OpenAI itself, a baseUrl-compatible provider, or Azure. */
 interface ChatEndpoint {
   label: string
@@ -138,10 +163,10 @@ function extractToolCalls(msg: Record<string, unknown> | undefined): ToolCallRes
 }
 
 /** Extracts token usage from a non-streaming chat-completions response, if present. */
-function extractUsage(parsed: Record<string, unknown>): { inputTokens: number; outputTokens: number } | undefined {
-  const usage = parsed.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined
+function extractUsage(parsed: Record<string, unknown>): { inputTokens: number; outputTokens: number; cachedInputTokens?: number } | undefined {
+  const usage = parsed.usage as { prompt_tokens?: number; completion_tokens?: number; prompt_cache_hit_tokens?: number } | undefined
   if (usage && typeof usage.prompt_tokens === 'number' && typeof usage.completion_tokens === 'number') {
-    return { inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens }
+    return { inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens, ...(typeof usage.prompt_cache_hit_tokens === 'number' ? { cachedInputTokens: usage.prompt_cache_hit_tokens } : {}) }
   }
   return undefined
 }
@@ -193,7 +218,7 @@ function streamChatCompletions(
 ): Promise<string> {
   return runStreamingRequest(conversationId, endpoint.url, endpoint.headers, body, (res, finish) => {
     let fullContent = ''
-    let latestUsage: { inputTokens: number; outputTokens: number } | undefined
+    let latestUsage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number } | undefined
     const contentType = res.headers['content-type'] ?? ''
     debugLog('openai', `stream: HTTP ${res.statusCode} url=${endpoint.url} contentType="${contentType.split(';')[0]}"`)
 
@@ -232,7 +257,7 @@ function streamChatCompletions(
         options.onCitations?.(extractCitations(parsed))
         const usage = parsed.usage
         if (usage && typeof usage.prompt_tokens === 'number' && typeof usage.completion_tokens === 'number') {
-          latestUsage = { inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens }
+          latestUsage = extractUsage(parsed)
         }
         const choice = parsed.choices?.[0]
         const delta = choice?.delta
@@ -282,7 +307,7 @@ interface OpenAIStreamToolDelta {
 
 interface OpenAIStreamPayload {
   model?: string
-  usage?: { prompt_tokens?: number; completion_tokens?: number }
+  usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_cache_hit_tokens?: number }
   choices?: Array<{
     delta?: {
       content?: string
@@ -330,6 +355,7 @@ function streamChatCompletionsWithTools(
           if (usage) options.onUsage?.(usage)
           streamedResult = {
             content,
+            ...(typeof msg?.reasoning_content === 'string' ? { reasoningContent: msg.reasoning_content } : {}),
             toolCalls: extractToolCalls(msg),
             ...(typeof parsed.model === 'string' ? { model: parsed.model } : {}),
             ...(usage ? { usage } : {}),
@@ -345,7 +371,8 @@ function streamChatCompletionsWithTools(
 
     let fullContent = ''
     let model: string | undefined
-    let usage: { inputTokens: number; outputTokens: number } | undefined
+    let usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number } | undefined
+    let reasoningContent = ''
     let sawEmptyStop = false
     let reasoningBlockOpen = false
     const calls = new Map<number, { id: string; name: string; arguments: string }>()
@@ -357,13 +384,14 @@ function streamChatCompletionsWithTools(
         if (typeof parsed.model === 'string') model = parsed.model
         const parsedUsage = parsed.usage
         if (parsedUsage && typeof parsedUsage.prompt_tokens === 'number' && typeof parsedUsage.completion_tokens === 'number') {
-          usage = { inputTokens: parsedUsage.prompt_tokens, outputTokens: parsedUsage.completion_tokens }
+          usage = extractUsage(parsed as Record<string, unknown>)
         }
         const choice = parsed.choices?.[0]
         const delta = choice?.delta ?? {}
         const textContent = delta.content ?? choice?.message?.content
         const reasoning = delta.reasoning ?? delta.reasoning_content
         if (typeof reasoning === 'string' && reasoning) {
+          reasoningContent += reasoning
           reasoningBlockOpen = true
           options.onThinkingChunk?.('reasoning-0', reasoning)
         }
@@ -415,6 +443,7 @@ function streamChatCompletionsWithTools(
         }
         streamedResult = {
           content: fullContent || null,
+          ...(reasoningContent ? { reasoningContent } : {}),
           toolCalls,
           ...(model ? { model } : {}),
           ...(usage ? { usage } : {}),
@@ -446,13 +475,13 @@ export async function sendOpenAIMessage(
   apiKey = resolveProviderCredentialInput(apiKey)
   const bodyObj: Record<string, unknown> = {
     model,
-    messages,
+    messages: prepareMessages(messages, baseUrl),
     stream: true,
     stream_options: { include_usage: true },
     max_tokens: options.maxTokens ?? 4096,
     temperature: options.temperature ?? 0.7,
   }
-  applyReasoningEffort(bodyObj, model, options.thinkingEffort)
+  applyProviderOptions(bodyObj, model, options.thinkingEffort, baseUrl)
   const body = JSON.stringify(bodyObj)
   debugLog('openai', `stream: model=${model} baseUrl=${baseUrl ?? 'openai-default'} reasoningEffort=${bodyObj.reasoning_effort ?? 'none'} msgs=${messages.length} keyLen=${apiKey.length}`)
 
@@ -469,7 +498,7 @@ export async function sendOpenAINonStreaming(
   apiKey = resolveProviderCredentialInput(apiKey)
   const body = JSON.stringify({
     model,
-    messages: toOpenAICompatibleMessages(messages),
+    messages: prepareMessages(messages, baseUrl),
     stream: false,
     max_tokens: options.maxTokens ?? 4096,
     temperature: options.temperature ?? 0.3
@@ -507,7 +536,7 @@ export async function sendOpenAIWithTools(
   apiKey = resolveProviderCredentialInput(apiKey)
   const bodyObj: Record<string, unknown> = {
     model,
-    messages: toOpenAICompatibleMessages(messages),
+    messages: prepareMessages(messages, baseUrl),
     stream: false,
     max_tokens: options.maxTokens ?? 4096,
     temperature: options.temperature ?? 0.7
@@ -516,7 +545,7 @@ export async function sendOpenAIWithTools(
     bodyObj.tools = tools
     bodyObj.tool_choice = toolChoice
   }
-  applyReasoningEffort(bodyObj, model, options.thinkingEffort)
+  applyProviderOptions(bodyObj, model, options.thinkingEffort, baseUrl)
   const body = JSON.stringify(bodyObj)
   debugLog('openai', `withTools: model=${model} baseUrl=${baseUrl ?? 'openai-default'} tools=${tools.length} toolChoice=${toolChoice} keyLen=${apiKey.length}`)
 
@@ -550,6 +579,7 @@ export async function sendOpenAIWithTools(
   return {
     content,
     toolCalls,
+    ...(typeof reasoning === 'string' ? { reasoningContent: reasoning } : {}),
     ...(typeof parsed.model === 'string' ? { model: parsed.model } : {}),
     ...(usage ? { usage } : {}),
     ...(citations.length > 0 ? { citations } : {}),
@@ -605,7 +635,7 @@ export function sendOpenAIWithToolsStream(
   apiKey = resolveProviderCredentialInput(apiKey)
   const bodyObj: Record<string, unknown> = {
     model,
-    messages: toOpenAICompatibleMessages(messages),
+    messages: prepareMessages(messages, baseUrl),
     stream: true,
     stream_options: { include_usage: true },
     max_tokens: options.maxTokens ?? 4096,
@@ -615,7 +645,7 @@ export function sendOpenAIWithToolsStream(
     bodyObj.tools = tools
     bodyObj.tool_choice = toolChoice
   }
-  applyReasoningEffort(bodyObj, model, options.thinkingEffort)
+  applyProviderOptions(bodyObj, model, options.thinkingEffort, baseUrl)
   return streamChatCompletionsWithTools(
     options.conversationId ?? '',
     openAiEndpoint(apiKey, baseUrl),

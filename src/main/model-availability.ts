@@ -8,6 +8,7 @@ import {
   fetchAndCacheOpenRouterModels,
   fetchAndCacheOpenAIModels,
   fetchAndCacheGeminiModels,
+  fetchAndCacheDeepSeekModels,
   fetchAndCacheAzureModels,
   getCachedProviderModels,
   getAzureEndpoint,
@@ -95,6 +96,10 @@ export function registerModelAvailabilityHandlers(): void {
   if (isProviderConfigured('gemini') && getCachedProviderModels('gemini_models_cache').length === 0) {
     const key = retrieveApiKey('gemini')
     if (key) fetchAndCacheGeminiModels(key).catch(() => {})
+  }
+  if (isProviderConfigured('deepseek') && getCachedProviderModels('deepseek_models_cache').length === 0) {
+    const key = retrieveApiKey('deepseek')
+    if (key) fetchAndCacheDeepSeekModels(key).catch(() => {})
   }
   if (isProviderConfigured('azure') && getCachedProviderModels('azure_models_cache').length === 0) {
     const key = retrieveApiKey('azure')
