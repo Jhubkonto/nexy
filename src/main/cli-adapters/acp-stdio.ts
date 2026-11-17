@@ -10,7 +10,7 @@ type JsonRpcMessage = {
   error?: { code?: number; message?: string }
 }
 
-type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
+type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void; timer?: NodeJS.Timeout }
 
 const MAX_FRAME_BYTES = 4 * 1024 * 1024
 
@@ -65,11 +65,11 @@ export class AcpStdioConnection {
     return this.stderr.trim()
   }
 
-  request(method: string, params: Record<string, unknown>, timeoutMs = 30000): Promise<unknown> {
+  request(method: string, params: Record<string, unknown>, timeoutMs: number | null = 30000): Promise<unknown> {
     if (this.closed || this.process.stdin.destroyed) return Promise.reject(new Error('Hermes ACP connection is closed'))
     const id = this.nextId++
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = timeoutMs === null ? undefined : setTimeout(() => {
         this.pending.delete(id)
         const tail = this.stderr.trim().slice(-800)
         reject(new Error(`Hermes ACP request timed out: ${method}${tail ? ` — recent output: ${tail}` : ''}`))

@@ -6,6 +6,7 @@ import { getActiveChatTurnSnapshot } from './active-chat-turns'
 import { isMobileInForeground } from './ws-server'
 import { sendDeferredJobNotification } from './fcm-sender'
 import { log } from './logger'
+import { startActivity, endActivity, getActivitySnapshot } from './activity-tracker'
 
 /**
  * Cross-session wake-ups for long-running work.
@@ -193,7 +194,23 @@ export function createDeferredCallback(input: DeferredCallbackCreateInput): Defe
   )
 
   log.info(`[deferred] Armed ${input.triggerKind}:${input.triggerRef} for conversation ${input.conversationId}`)
-  return getDeferredCallback(id)!
+  const callback = getDeferredCallback(id)!
+  startDeferredActivity(callback)
+  return callback
+}
+
+function startDeferredActivity(callback: DeferredCallback, unknown = false): void {
+  if (callback.triggerKind === 'deadline') return
+  startActivity({
+    id: `deferred:${callback.id}`,
+    kind: 'chat',
+    label: unknown ? 'Background task status unknown' : 'Background task running',
+    detail: callback.label,
+    conversationId: callback.conversationId,
+    projectId: callback.projectId ?? undefined,
+    agentId: callback.agentId ?? undefined,
+    startedAt: callback.createdAt,
+  })
 }
 
 export function getDeferredCallback(id: string): DeferredCallback | null {
@@ -227,6 +244,7 @@ export function cancelDeferredCallback(id: string): boolean {
   const info = getDatabase()
     .prepare("UPDATE deferred_callbacks SET status = 'cancelled' WHERE id = ? AND status IN ('pending', 'ready')")
     .run(id)
+  if (info.changes > 0) endActivity(`deferred:${id}`, { completed: false })
   return info.changes > 0
 }
 
@@ -355,6 +373,8 @@ export async function resolveDeferredCallback(
   const callback = findPendingDeferredCallback(triggerKind, triggerRef)
   if (!callback) return false
 
+  endActivity(`deferred:${callback.id}`, { completed: false })
+
   if (callback.expiresAt <= Date.now()) {
     db.prepare("UPDATE deferred_callbacks SET status = 'expired' WHERE id = ? AND status = 'pending'").run(callback.id)
     log.info(`[deferred] Dropped expired callback for ${triggerKind}:${triggerRef}`)
@@ -414,9 +434,16 @@ export async function rehydrateDeferredCallbacks(): Promise<void> {
   const db = getDatabase()
   const now = Date.now()
 
+  const expired = db.prepare("SELECT id FROM deferred_callbacks WHERE status IN ('pending', 'ready') AND expires_at <= ?").all(now) as { id: string }[]
   db.prepare("UPDATE deferred_callbacks SET status = 'expired' WHERE status IN ('pending', 'ready') AND expires_at <= ?").run(now)
+  for (const row of expired) endActivity(`deferred:${row.id}`, { completed: false })
 
   for (const callback of listPendingDeferredCallbacks()) {
+    // Existing entries are still observed by this process. A restored child cannot be
+    // observed for its exit status after a restart, even if its PID still exists.
+    if (!getActivitySnapshot().some((activity) => activity.id === `deferred:${callback.id}`)) {
+      startDeferredActivity(callback, callback.triggerKind !== 'deadline')
+    }
     if (callback.triggerKind !== 'process' && callback.triggerKind !== 'build') continue
     if (callback.pid === null) continue
     if (processIsAlive(callback.pid)) continue
@@ -425,6 +452,7 @@ export async function rehydrateDeferredCallbacks(): Promise<void> {
       .prepare("UPDATE deferred_callbacks SET status = 'orphaned' WHERE id = ? AND status = 'pending'")
       .run(callback.id)
     if (claimed.changes === 0) continue
+    endActivity(`deferred:${callback.id}`, { completed: false })
 
     const result: DeferredResult = {
       status: 'orphaned',
@@ -463,7 +491,7 @@ export function startDeferredCallbackEngine(): void {
   void rehydrateDeferredCallbacks()
   if (!drainTimer) {
     drainTimer = setInterval(() => {
-      void drainReadyDeferredCallbacks()
+      void rehydrateDeferredCallbacks()
     }, DRAIN_INTERVAL_MS)
   }
   powerMonitor.on('resume', () => {

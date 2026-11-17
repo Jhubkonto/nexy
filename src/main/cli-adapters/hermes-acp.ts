@@ -11,7 +11,7 @@ import { extractCitations } from '../../shared/citations'
 // during session bootstrap, so `session/new` legitimately takes tens of seconds (observed ~28s
 // against a local vLLM). The stdio default of 30s is far too tight for that and produces spurious
 // "Hermes ACP request timed out: session/new" failures. Give bootstrap a generous ceiling; the
-// actual turn (`session/prompt`) keeps its own 10-minute budget below.
+// actual turn (`session/prompt`) has no fixed deadline because tool runs can take arbitrarily long.
 const HERMES_INITIALIZE_TIMEOUT_MS = 60 * 1000
 const HERMES_SESSION_NEW_TIMEOUT_MS = 5 * 60 * 1000
 const HERMES_CANCEL_GRACE_MS = 1_000
@@ -206,7 +206,7 @@ export class HermesAcpAdapter implements CliAgentAdapter {
     if (signal?.aborted) throw new Error('Hermes ACP turn cancelled')
     signal?.addEventListener('abort', abort, { once: true })
     try {
-      await sessionConnection.request('session/prompt', { sessionId: session.id, prompt }, 10 * 60 * 1000)
+      await sessionConnection.request('session/prompt', { sessionId: session.id, prompt }, null)
       if (signal?.aborted) throw new Error('Hermes ACP turn cancelled')
       if (session.lastTextBlockId) session.onEvent?.({ type: 'text_end', blockId: session.lastTextBlockId })
       if (session.lastThinkingBlockId) session.onEvent?.({ type: 'thinking_end', blockId: session.lastThinkingBlockId })

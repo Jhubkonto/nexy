@@ -51,6 +51,8 @@ function getCatalogSnapshot(db: Database.Database): CatalogModel[] {
 
 function fallbackContextWindow(model: string): number | null {
   const lower = model.toLowerCase();
+  if (lower.includes("deepseek-flash") || lower.includes("deepseek-v4")) return 1_000_000;
+  if (lower.includes("deepseek-chat") || lower.includes("deepseek-reasoner")) return 128_000;
   if (lower.includes("gemma")) return 8_192;
   if (lower.includes("open-mistral") || lower.includes("mixtral")) return 32_768;
   if (lower.includes("llama") || lower.includes("qwen") || lower.includes("deepseek") || lower.includes("phi")) return 32_768;
