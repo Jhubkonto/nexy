@@ -40,6 +40,7 @@ vi.mock('../active-chat-turns', () => ({
 vi.mock('../ws-server', () => ({ broadcastToMobile: vi.fn(), isMobileInForeground: () => state.mobileInForeground }))
 vi.mock('../logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 vi.mock('../fcm-sender', () => ({ sendDeferredJobNotification: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('../activity-tracker', () => ({ startActivity: vi.fn(), endActivity: vi.fn(), getActivitySnapshot: vi.fn(() => []) }))
 
 // ─── Imports after mocks ──────────────────────────────────────────────────
 
@@ -60,6 +61,7 @@ import {
 } from '../deferred-callbacks'
 import { dispatchChatSend } from '../chat-handlers'
 import { sendDeferredJobNotification } from '../fcm-sender'
+import { startActivity, endActivity } from '../activity-tracker'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -93,6 +95,8 @@ beforeEach(() => {
   state.mobileInForeground = false
   vi.mocked(dispatchChatSend).mockClear()
   vi.mocked(sendDeferredJobNotification).mockClear()
+  vi.mocked(startActivity).mockClear()
+  vi.mocked(endActivity).mockClear()
   fakeWebContents.send.mockClear()
   seedConversation()
 })
@@ -166,6 +170,26 @@ describe('createDeferredCallback', () => {
 })
 
 // ─── Resolution ───────────────────────────────────────────────────────────
+
+describe('deferred activity', () => {
+  it('tracks a job until its result arrives while the conversation is busy', async () => {
+    const callback = createDeferredCallback(makeInput())
+    expect(startActivity).toHaveBeenCalledWith(expect.objectContaining({
+      id: `deferred:${callback.id}`, conversationId: CONV, label: 'Background task running', detail: 'Gradle compile',
+    }))
+    state.activeConversations.add(CONV)
+    await resolveDeferredCallback('build', 'build-7f3a', { status: 'success' })
+    expect(endActivity).toHaveBeenCalledWith(`deferred:${callback.id}`, { completed: false })
+  })
+
+  it('marks restored jobs as unknown when their completion can no longer be observed', async () => {
+    const callback = createDeferredCallback(makeInput({ pid: process.pid }))
+    await rehydrateDeferredCallbacks()
+    expect(startActivity).toHaveBeenCalledWith(expect.objectContaining({
+      id: `deferred:${callback.id}`, label: 'Background task status unknown',
+    }))
+  })
+})
 
 describe('resolveDeferredCallback', () => {
   it('wakes the bound conversation with the rendered result', async () => {

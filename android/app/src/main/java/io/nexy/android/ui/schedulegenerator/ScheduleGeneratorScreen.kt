@@ -81,6 +81,7 @@ fun ScheduleGeneratorScreen(
     val scope = rememberCoroutineScope()
     var input by remember { mutableStateOf("") }
     var confirmReset by remember { mutableStateOf(false) }
+    var showModelSheet by remember { mutableStateOf(false) }
     val voiceInput = rememberOnDeviceVoiceInput(
         onText = { text -> input = if (input.isBlank()) text else "${input.trimEnd()} $text" },
         onError = { message -> scope.launch { snackbarHostState.showSnackbar(message) } },
@@ -122,6 +123,17 @@ fun ScheduleGeneratorScreen(
         )
     }
 
+    if (showModelSheet) {
+        androidx.compose.material3.ModalBottomSheet(onDismissRequest = { showModelSheet = false }) {
+            io.nexy.android.ui.chat.ModelPickerSheet(
+                qualifyCli = true,
+                title = "Generation model", models = models, cliStatus = emptyMap(),
+                selectedModelId = uiState.selectedModel,
+                onSelect = { model -> viewModel.setModel(model); showModelSheet = false },
+            )
+        }
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
@@ -131,8 +143,7 @@ fun ScheduleGeneratorScreen(
                 actions = {
                     TextButton(onClick = {
                         WsRepository.send("model:list", emptyMap())
-                        val next = models.firstOrNull { it.id != displayModelId }?.id
-                        viewModel.setModel(next)
+                        showModelSheet = true
                     }) {
                         NexyIcon(NexyIconName.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.size(4.dp))

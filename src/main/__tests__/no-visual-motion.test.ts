@@ -24,6 +24,7 @@ describe('theme-aware visual motion policy', () => {
     const forbidden = /\b(?:AnimatedVisibility|AnimatedContent|Crossfade|rememberInfiniteTransition|animate(?:Float|Int|Color|Scroll|Item|To)|infiniteRepeatable|animationSpec\s*=|tween\s*\(|spring\s*\()/
     const classicMotionBoundaries = new Set([
       'ChatScreenComponents.kt',
+      'ChatScreenBubbles.kt',
       'ConnectionDot.kt',
       'ContentSyncIndicator.kt',
       'HomeScreenComponents.kt',

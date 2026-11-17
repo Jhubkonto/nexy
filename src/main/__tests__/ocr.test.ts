@@ -33,7 +33,39 @@ describe('recognizeText', () => {
   })
 
   afterEach(async () => {
+    vi.useRealTimers()
     await terminateOcrWorker()
+  })
+
+  it('times out a stuck initialization and disposes a worker that arrives late', async () => {
+    vi.useFakeTimers()
+    let finish!: (worker: ReturnType<typeof makeMockWorker>) => void
+    mockCreateWorker.mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
+    const result = recognizeText('image')
+    const failure = expect(result).rejects.toThrow('OCR init failed: OCR timed out')
+    await vi.advanceTimersByTimeAsync(15_000)
+    await failure
+    finish(mockWorker)
+    await vi.waitFor(() => expect(mockWorker.terminate).toHaveBeenCalledOnce())
+    const freshWorker = makeMockWorker()
+    freshWorker.recognize.mockResolvedValue({ data: { text: 'recovered' } })
+    mockCreateWorker.mockResolvedValueOnce(freshWorker)
+    await expect(recognizeText('image')).resolves.toBe('recovered')
+  })
+
+  it('times out stuck recognition and releases the queue for the next image', async () => {
+    vi.useFakeTimers()
+    mockWorker.recognize.mockReturnValueOnce(new Promise(() => {}))
+    const freshWorker = makeMockWorker()
+    freshWorker.recognize.mockResolvedValue({ data: { text: 'recovered' } })
+    mockCreateWorker.mockResolvedValueOnce(mockWorker).mockResolvedValueOnce(freshWorker)
+    const first = recognizeText('first')
+    const failure = expect(first).rejects.toThrow('OCR recognition failed: OCR timed out')
+    const second = recognizeText('second')
+    await vi.advanceTimersByTimeAsync(15_000)
+    await failure
+    await expect(second).resolves.toBe('recovered')
+    expect(mockWorker.terminate).toHaveBeenCalledOnce()
   })
 
   it('initializes worker lazily and returns trimmed text', async () => {
