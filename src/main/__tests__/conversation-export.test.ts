@@ -423,13 +423,13 @@ describe('conversation export', () => {
       'INSERT INTO projects (id, name, color, default_model, config_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ).run('project-2', 'Project Two', 'green', null, '{}', 1700000000300, 1700000000300)
 
-    const moved = forkConversation(state.db, 'conv-1', { projectId: 'project-2' })
+    const moved = forkConversation(state.db, 'conv-1', { projectId: 'project-2', agentId: null })
     expect(moved.conversation.project_id).toBe('project-2')
 
-    const standalone = forkConversation(state.db, 'conv-1', { projectId: null })
+    const standalone = forkConversation(state.db, 'conv-1', { projectId: null, agentId: null })
     expect(standalone.conversation.project_id).toBeNull()
 
-    expect(() => forkConversation(state.db!, 'conv-1', { projectId: 'missing-project' }))
+    expect(() => forkConversation(state.db!, 'conv-1', { projectId: 'missing-project', agentId: null }))
       .toThrow(/Target project not found/)
   })
 

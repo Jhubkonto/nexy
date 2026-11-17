@@ -192,6 +192,13 @@ vi.mock('../ws-server', () => ({
   setWsCommandHandler: vi.fn((handler) => { state.commandHandler = handler }),
 }))
 
+vi.mock('../model-availability', () => ({
+  getAvailableModelGroups: vi.fn(async () => [
+    { sourceKey: 'codex-cli', sourceLabel: 'Codex CLI', sourceType: 'cli', models: [{ id: 'shared', label: 'Shared' }] },
+    { sourceKey: 'openai', sourceLabel: 'OpenAI', sourceType: 'provider', models: [{ id: 'shared', label: 'Shared' }] },
+  ]),
+}))
+
 vi.mock('../scheduler-engine', () => ({
   dbListTasks: vi.fn(() => []),
   dbGetTask: vi.fn(() => null),
@@ -544,6 +551,19 @@ describe('ws handlers', () => {
         ],
       },
     })
+  })
+
+  it('returns source-preserving groups when requested by a mobile client', async () => {
+    const reply = vi.fn()
+    await state.commandHandler!('model:list', { includeGroups: true }, reply)
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        groups: expect.arrayContaining([
+          expect.objectContaining({ sourceKey: 'codex-cli', models: [{ id: 'shared', label: 'Shared' }] }),
+          expect.objectContaining({ sourceKey: 'openai', models: [{ id: 'shared', label: 'Shared' }] }),
+        ]),
+      }),
+    }))
   })
 
   it('falls back to installed Claude CLI models when no BYOK backend is active', () => {

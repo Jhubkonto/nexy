@@ -35,6 +35,36 @@ function sendResponse(proc: ReturnType<typeof makeProc>, id: number, result: unk
 describe('Hermes ACP adapter', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
+  it('allows an active agent turn to continue beyond ten minutes', async () => {
+    const proc = makeProc()
+    mockSpawn.mockReturnValue(proc)
+    const adapter = new HermesAcpAdapter()
+    const chunks: string[] = []
+    const request = adapter.send({} as never, {
+      messages: [{ role: 'user', content: 'work' }], cwd: 'C:\\workspace', model: 'default', conversationId: 'long-turn',
+    }, (chunk) => chunks.push(chunk))
+    await vi.waitFor(() => expect(proc.stdin.write).toHaveBeenCalledTimes(1))
+    sendResponse(proc, 1, { protocolVersion: 1 })
+    await vi.waitFor(() => expect(proc.stdin.write).toHaveBeenCalledTimes(2))
+    vi.useFakeTimers()
+    try {
+      sendResponse(proc, 2, { sessionId: 'long-session' })
+      await Promise.resolve()
+      expect(proc.stdin.write).toHaveBeenCalledTimes(3)
+      const result = request.then((value) => ({ value }), (error: Error) => ({ error }))
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000 - 1)
+      proc.stdout.emit('data', JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Working' } } } }) + '\n')
+      await vi.advanceTimersByTimeAsync(2)
+      proc.stdout.emit('data', JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Finished' } } } }) + '\n')
+      sendResponse(proc, 3, { stopReason: 'end_turn' })
+      expect(await result).toEqual({ value: 'Finished' })
+      expect(chunks).toEqual(['Finished'])
+    } finally {
+      vi.useRealTimers()
+      adapter.closeAll()
+    }
+  })
+
   it('initializes, creates a profile-bound session, streams text and reuses it', async () => {
     const proc = makeProc()
     mockSpawn.mockReturnValue(proc)

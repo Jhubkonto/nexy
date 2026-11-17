@@ -72,7 +72,7 @@ describe('SettingsPanel', () => {
 
   it('keeps the general credential vault separate from API providers', async () => {
     render(<SettingsPanel />)
-    await user.click(screen.getByText('Credentials'))
+    await user.click(screen.getByText('Credential Manager'))
 
     expect(await screen.findByText(/separate from LLM API provider keys/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /add credential/i })).toBeInTheDocument()

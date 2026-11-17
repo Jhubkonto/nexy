@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   windowSend: vi.fn(),
   broadcastToMobile: vi.fn(),
   getAgentConfig: vi.fn(() => ({ systemPrompt: 'You are an agent.' })),
+  streamProviderMessage: vi.fn(),
 }))
 
 vi.mock('../providers', () => ({
@@ -15,7 +16,7 @@ vi.mock('../providers', () => ({
   getProviderCredential: vi.fn(() => 'test-key'),
   getAzureEndpoint: vi.fn(() => null),
   sendProviderWithTools: mocks.sendProviderWithTools,
-  streamProviderMessage: vi.fn(),
+  streamProviderMessage: mocks.streamProviderMessage,
 }))
 
 vi.mock('../agents', () => ({ getAgentConfig: mocks.getAgentConfig }))
@@ -61,12 +62,12 @@ describe('orchestrator', () => {
   })
 
   it('broadcasts team activity to mobile when delegating', async () => {
+    mocks.streamProviderMessage.mockResolvedValueOnce('Specialist result')
     mocks.sendProviderWithTools
       .mockResolvedValueOnce({
         content: '',
         toolCalls: [{ id: 'call-1', name: 'delegate_to_agent', arguments: { agent_id: 'builder-id', task: 'Review plan' } }],
       })
-      .mockResolvedValueOnce({ content: 'Specialist result', toolCalls: [] })
       .mockResolvedValueOnce({ content: 'Final answer', toolCalls: [] })
 
     await runOrchestration(
@@ -98,5 +99,27 @@ describe('orchestrator', () => {
         status: 'done',
       }),
     })
+  })
+
+  it('fails a delegated step that emits a textual tool call', async () => {
+    const markup = '<tool><name>bash</name></tool>\n<bash><command>ls</command></bash>'
+    mocks.streamProviderMessage.mockImplementationOnce(async (_p, _c, _m, _messages, _id, onChunk) => {
+      onChunk(markup.slice(0, 15))
+      onChunk(markup.slice(15))
+      return markup
+    })
+    mocks.sendProviderWithTools
+      .mockResolvedValueOnce({ content: '', toolCalls: [{ id: 'call-1', name: 'delegate_to_agent', arguments: { agent_id: 'builder-id', task: 'Inspect files' } }] })
+      .mockResolvedValueOnce({ content: 'Unable to inspect files.', toolCalls: [] })
+
+    const result = await runOrchestration(makeOpts({ teamAgents: [
+      { agentId: 'leader-id', agentName: 'Leader', agentIcon: 'L', isPrimary: true, sortOrder: 0 },
+      { agentId: 'builder-id', agentName: 'Builder', agentIcon: 'B', isPrimary: false, sortOrder: 1 },
+    ] }), 'Inspect files', [])
+
+    expect(result.teamActivity[0].status).toBe('error')
+    expect(result.teamActivity[0].result).toContain('No tool call was executed')
+    expect(mocks.windowSend).not.toHaveBeenCalledWith('chat:team-step-stream', expect.anything())
+    expect(mocks.sendProviderWithTools.mock.calls[1][3].at(-1).content).toContain('No tool call was executed')
   })
 })

@@ -85,6 +85,18 @@ describe('runProviderMcpToolLoop', () => {
     mockCallMcpTool.mockResolvedValue({ success: true, result: 'clicked' })
   })
 
+  it('carries reasoning from an assistant tool call into the next round', async () => {
+    const rounds: ProviderMessage[][] = []
+    const caller: ModelToolCaller = vi.fn(async (messages) => {
+      rounds.push([...messages])
+      return rounds.length === 1
+        ? { content: null, reasoningContent: 'tool reasoning', toolCalls: [{ id: 'call-1', name: 'server-1__click', arguments: {} }] }
+        : { content: 'done', toolCalls: [] }
+    })
+    await runProviderMcpToolLoop(caller, [{ role: 'user', content: 'hello' }], toolDefs, toolMap, 'agent-1', null, makeWebContents(), vi.fn())
+    expect(rounds[1]).toContainEqual(expect.objectContaining({ role: 'assistant', reasoning_content: 'tool reasoning' }))
+  })
+
   it('stops when no tool calls in first response', async () => {
     const caller: ModelToolCaller = vi.fn().mockResolvedValue({ content: 'final answer', toolCalls: [] })
     const onChunk = vi.fn()

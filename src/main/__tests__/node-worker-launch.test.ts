@@ -78,7 +78,7 @@ describe('worker script packaging', () => {
     const sources = readdirSync(mainDir).filter((file) => file.endsWith('.ts'))
     const referenced = new Set<string>()
     for (const file of sources) {
-      for (const match of readFileSync(join(mainDir, file), 'utf8').matchAll(/'([\w-]+\.cjs)'/g)) {
+      for (const match of readFileSync(join(mainDir, file), 'utf8').matchAll(/join\(__dirname,\s*'([\w-]+\.cjs)'\)/g)) {
         referenced.add(match[1])
       }
     }
