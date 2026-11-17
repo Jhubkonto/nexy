@@ -22,7 +22,9 @@ import { callWithResilience } from './provider-resilience'
 import type { ToolDefinition, ToolChoice, ProviderNonStreamResult } from './provider-types'
 import type { InlineHandler, MobileChatActivity } from './chat-context-builder'
 import type { MessageContentPart } from './provider-core-types'
-import { resolveToolsSupported } from '../shared/models'
+import { resolveToolsSupported, resolveVisionSupported } from '../shared/models'
+import { OPENAI_COMPATIBLE_PROVIDERS } from './provider-registry'
+import { describeImagesAsText } from './image-fallback'
 import { getCachedCatalog } from './model-catalog'
 import { debugLog } from './debug-mode'
 import { PROVIDER_THINKING_SUPPORT } from '../shared/types'
@@ -59,7 +61,7 @@ export type ProviderDispatchOptions = {
   sendChunk: (chunk: string) => void
   sendActivity: (a: MobileChatActivity) => void
   onModel?: (model: string) => void
-  onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void
+  onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number }) => void
   onCitations?: (citations: Citation[]) => void
   onPreflightUsage?: (count: TokenCount) => void
   systemPrompt: string
@@ -339,10 +341,23 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
   }
 
   // OpenAI-compatible providers (OpenRouter, Groq, Mistral, Gemini, xAI)
-  const openAiCompatible = ['openrouter', 'groq', 'mistral', 'gemini', 'xai']
-  if (openAiCompatible.includes(providerName)) {
+  if (OPENAI_COMPATIBLE_PROVIDERS.some((provider) => provider === providerName)) {
     const providerCfg = PROVIDERS.find((p) => p.name === providerName)
     const baseUrl = providerCfg?.baseUrl
+    let imageNoticeSent = false
+    const fallbackImages = async (msgs: ProviderMessage[]): Promise<ProviderMessage[]> => {
+      if (providerName !== 'deepseek') return stripImageParts(msgs)
+      const converted = toOpenAICompatibleMessages(msgs)
+      if (!converted.some((m) => m.role !== 'tool' && Array.isArray(m.content) && m.content.some((part) => part.type === 'image_url'))) return converted
+      if (!imageNoticeSent) {
+        sendActivity({ state: 'thinking', label: `${providerModel} cannot read images; sending OCR text. Switch to deepseek-flash for vision.` })
+        imageNoticeSent = true
+      }
+      return describeImagesAsText(converted)
+    }
+    const prepareImages = (msgs: ProviderMessage[]) => providerName === 'deepseek' && !resolveVisionSupported(providerName, providerModel) ? fallbackImages(msgs) : Promise.resolve(msgs)
+    const isImageError = (err: Error) => err.message.includes('No endpoints found that support image input') || (providerName === 'deepseek' && /image/i.test(err.message) && /not support|unsupported/i.test(err.message))
+    chatMessages = await prepareImages(chatMessages)
     debugLog('provider', `${providerName}: path=${hasToolLoop ? 'tool-loop' : 'streaming'} model=${providerModel} baseUrl=${baseUrl ?? 'default'}`)
     if (hasToolLoop) {
       // Some OpenRouter models don't support tool use or image input. If the
@@ -351,7 +366,7 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
       const caller = (msgs: ProviderMessage[], tools: ToolDefinition[] | undefined, choice: ToolChoice): Promise<ProviderNonStreamResult> =>
         callWithResilience(async (c) => {
           try {
-            return await sendOpenAIWithToolsResilient(byokKey, providerModel, msgs, tools ?? [], c, { ...effectiveGenerationOptions, ...thinkingCallbacks, onUsage, conversationId }, baseUrl)
+            return await sendOpenAIWithToolsResilient(byokKey, providerModel, await prepareImages(msgs), tools ?? [], c, { ...effectiveGenerationOptions, ...thinkingCallbacks, onUsage, conversationId }, baseUrl)
           } catch (err) {
             if (!(err instanceof Error)) throw err
             if (err.message.includes('No endpoints found that support tool use')) {
@@ -359,16 +374,16 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
               const text = await sendOpenAIMessage(conversationId, byokKey, providerModel, msgs, sendChunk, { ...effectiveGenerationOptions, ...thinkingCallbacks, onUsage }, baseUrl)
               return { content: text, toolCalls: [] }
             }
-            if (err.message.includes('No endpoints found that support image input')) {
+            if (isImageError(err)) {
               debugLog('provider', `${providerName}: image input not supported by endpoint — retrying with text-only model=${providerModel}`)
-              const text = await sendOpenAIMessage(conversationId, byokKey, providerModel, stripImageParts(msgs), sendChunk, { ...effectiveGenerationOptions, ...thinkingCallbacks, onUsage }, baseUrl)
+              const text = await sendOpenAIMessage(conversationId, byokKey, providerModel, await fallbackImages(msgs), sendChunk, { ...effectiveGenerationOptions, ...thinkingCallbacks, onUsage }, baseUrl)
               return { content: text, toolCalls: [] }
             }
             throw err
           }
         }, choice)
-      const streamingToolCaller = makeStreamingToolRoundCaller((msgs, tools, choice, onChunk) =>
-        sendOpenAIWithToolsStream(byokKey, providerModel, msgs, tools ?? [], choice, onChunk, {
+      const streamingToolCaller = makeStreamingToolRoundCaller(async (msgs, tools, choice, onChunk) =>
+        sendOpenAIWithToolsStream(byokKey, providerModel, await prepareImages(msgs), tools ?? [], choice, onChunk, {
           ...effectiveGenerationOptions,
           ...thinkingCallbacks,
           onUsage,
@@ -380,9 +395,9 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
             const text = await sendOpenAIMessage(conversationId, byokKey, providerModel, msgs, onChunk, { ...effectiveGenerationOptions, ...thinkingCallbacks, onUsage }, baseUrl)
             return { content: text, toolCalls: [] }
           }
-          if (err.message.includes('No endpoints found that support image input')) {
+          if (isImageError(err)) {
             debugLog('provider', `${providerName}: streamed image input not supported — retrying with text-only model=${providerModel}`)
-            const text = await sendOpenAIMessage(conversationId, byokKey, providerModel, stripImageParts(msgs), onChunk, { ...effectiveGenerationOptions, ...thinkingCallbacks, onUsage }, baseUrl)
+            const text = await sendOpenAIMessage(conversationId, byokKey, providerModel, await fallbackImages(msgs), onChunk, { ...effectiveGenerationOptions, ...thinkingCallbacks, onUsage }, baseUrl)
             return { content: text, toolCalls: [] }
           }
           throw err
@@ -409,7 +424,7 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
         forceFirstToolChoice,
         onUsage,
         async (msgs, onChunk) => {
-          await sendOpenAIMessage(conversationId, byokKey, providerModel, toOpenAICompatibleMessages(msgs), onChunk, { ...effectiveGenerationOptions, ...thinkingCallbacks, onUsage }, baseUrl)
+          await sendOpenAIMessage(conversationId, byokKey, providerModel, await prepareImages(msgs), onChunk, { ...effectiveGenerationOptions, ...thinkingCallbacks, onUsage }, baseUrl)
         },
         onToolStarted,
         streamingToolCaller,
@@ -424,8 +439,8 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
         onUsage,
       }, baseUrl)
     } catch (err) {
-      if (err instanceof Error && err.message.includes('No endpoints found that support image input')) {
-        return sendOpenAIMessage(conversationId, byokKey, providerModel, stripImageParts(chatMessages), sendChunk, { ...effectiveGenerationOptions, onUsage, onCitations: opts.onCitations }, baseUrl)
+      if (err instanceof Error && isImageError(err)) {
+        return sendOpenAIMessage(conversationId, byokKey, providerModel, await fallbackImages(chatMessages), sendChunk, { ...effectiveGenerationOptions, ...thinkingCallbacks, onUsage, onCitations: opts.onCitations }, baseUrl)
       }
       throw err
     }

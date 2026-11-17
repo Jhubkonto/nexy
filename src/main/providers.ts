@@ -10,6 +10,7 @@ import {
   fetchAndCacheOpenRouterModels,
   fetchAndCacheOpenAIModels,
   fetchAndCacheGeminiModels,
+  fetchAndCacheDeepSeekModels,
   fetchAndCacheAzureModels,
   getCachedProviderModels,
   getAzureEndpoint,
@@ -47,6 +48,7 @@ export {
   fetchAndCacheOpenRouterModels,
   fetchAndCacheOpenAIModels,
   fetchAndCacheGeminiModels,
+  fetchAndCacheDeepSeekModels,
   fetchAndCacheAzureModels,
   getCachedProviderModels,
 }
@@ -137,6 +139,8 @@ export function registerProviderHandlers(): void {
       await fetchAndCacheOpenAIModels(key)
     } else if (provider === 'gemini') {
       await fetchAndCacheGeminiModels(key)
+    } else if (provider === 'deepseek') {
+      await fetchAndCacheDeepSeekModels(key)
     } else if (provider === 'azure') {
       const endpoint = getAzureEndpoint()
       if (endpoint) await fetchAndCacheAzureModels(key, endpoint)
@@ -250,6 +254,8 @@ export async function testProviderKey(provider: string, key: string, endpoint?: 
           } else if (provider === 'gemini') {
             fetchAndCacheGeminiModels(key).catch((err: Error) =>
               debugLog('provider', `gemini model-catalog refresh failed: ${err.message}`))
+          } else if (provider === 'deepseek') {
+            await fetchAndCacheDeepSeekModels(key)
           }
         }
         return { valid: result.status === 200 }

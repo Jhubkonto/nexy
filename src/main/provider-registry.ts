@@ -3,6 +3,7 @@ import { getOpenRouterModels, getCachedProviderModels, retrieveApiKey } from './
 import { getCachedAnthropicModels } from './anthropic-models'
 
 export const DEFAULT_PROVIDER_MODEL = 'gpt-5-mini'
+export const OPENAI_COMPATIBLE_PROVIDERS: ProviderName[] = ['openrouter', 'groq', 'mistral', 'gemini', 'xai', 'deepseek']
 
 export interface ProviderConfig {
   name: ProviderName
@@ -13,6 +14,10 @@ export interface ProviderConfig {
 }
 
 export const PROVIDERS: ProviderConfig[] = [
+  {
+    name: 'deepseek', label: 'DeepSeek', apiKeySettingKey: 'byok_deepseek_key',
+    baseUrl: 'https://api.deepseek.com', models: ['deepseek-flash', 'deepseek-v4-pro']
+  },
   {
     name: 'openai',
     label: 'OpenAI',
@@ -78,6 +83,7 @@ const PROVIDER_MODEL_CACHE_KEYS: Partial<Record<ProviderName, string>> = {
   openai: 'openai_models_cache',
   gemini: 'gemini_models_cache',
   azure: 'azure_models_cache',
+  deepseek: 'deepseek_models_cache',
 }
 
 /**
@@ -134,7 +140,9 @@ export function getProviderForAgent(agentModel: string): { provider: ProviderNam
   const normalizedModel = !cleanedModel || cleanedModel === 'default' ? DEFAULT_PROVIDER_MODEL : cleanedModel
 
   if (normalizedModel.includes(':')) {
-    const [prefix, model] = normalizedModel.split(':', 2)
+    const separator = normalizedModel.indexOf(':')
+    const prefix = normalizedModel.slice(0, separator)
+    const model = normalizedModel.slice(separator + 1)
     const provider = PROVIDERS.find((p) => p.name === prefix)
     if (provider) return { provider: provider.name, model }
   }
@@ -145,6 +153,7 @@ export function getProviderForAgent(agentModel: string): { provider: ProviderNam
 
   const staticProvider = MODEL_TO_PROVIDER.get(normalizedModel)
   if (staticProvider) return { provider: staticProvider, model: normalizedModel }
+  if (normalizedModel.startsWith('deepseek-')) return { provider: 'deepseek', model: normalizedModel }
 
   const orModels = getOpenRouterModels()
   if (orModels.includes(normalizedModel)) {
