@@ -53,6 +53,19 @@ class ArtifactLifecycleParserTest {
     }
 
     @Test
+    fun preservesDuplicateModelsAcrossSourceGroups() = runTest {
+        val event = parseEvent(
+            """{"event":"model:list","data":{"models":[],"groups":[
+              {"sourceKey":"openai","sourceLabel":"OpenAI","sourceType":"provider","models":[{"id":"gpt-5","label":"GPT-5"}]},
+              {"sourceKey":"openrouter","sourceLabel":"OpenRouter","sourceType":"provider","models":[{"id":"gpt-5","label":"GPT-5"}]},
+              {"sourceKey":"codex-cli","sourceLabel":"Codex CLI","sourceType":"cli","models":[{"id":"gpt-5","label":"GPT-5"}]}
+            ]}}"""
+        ) as WsEvent.ModelList
+        assertEquals(listOf("openai:gpt-5", "openrouter:gpt-5", "gpt-5"), event.models.map { it.id })
+        assertEquals("codex-cli", event.models.last().backend)
+    }
+
+    @Test
     fun parsesArtifactDetailWithStorageRootAndVersionFiles() = runTest {
         val event = parseEvent(
             """

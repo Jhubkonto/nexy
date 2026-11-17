@@ -14,7 +14,6 @@ import io.nexy.android.data.model.ConversationDebrief
 import io.nexy.android.data.model.ConversationRating
 import io.nexy.android.data.model.ConversationRatingListItem
 import io.nexy.android.data.model.ConversationRatingStats
-import io.nexy.android.data.model.ErrorReport
 import io.nexy.android.data.model.McpServerInfo
 import io.nexy.android.data.model.ModelListSource
 import io.nexy.android.data.model.ModelOption
@@ -81,7 +80,6 @@ class TextSegmentPersistenceTest {
             models = MutableStateFlow<List<ModelOption>>(emptyList()),
             modelSource = MutableStateFlow<ModelListSource?>(null),
             androidUpdateManifest = MutableStateFlow<AndroidUpdateManifest?>(null),
-            errorReports = MutableStateFlow<List<ErrorReport>>(emptyList()),
             providers = MutableStateFlow<List<ProviderInfo>>(emptyList()),
             mcpServers = MutableStateFlow<List<McpServerInfo>>(emptyList()),
             skills = MutableStateFlow<List<SkillConfig>>(emptyList()),
