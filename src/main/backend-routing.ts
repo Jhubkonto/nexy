@@ -10,7 +10,7 @@
  */
 
 import type { ProviderName } from './provider-core-types'
-import { getProviderCredential, getOpenRouterModels } from './providers'
+import { getProviderCredential, getOpenRouterModels, PROVIDERS } from './providers'
 import { ClaudeAdapter } from './cli-adapters/claude'
 import { CodexAdapter } from './cli-adapters/codex'
 import { HermesAdapter } from './cli-adapters/hermes'
@@ -74,6 +74,9 @@ export function resolveEffectiveBackend(opts: {
   if (opts.agentBackend === 'codex-cli' && CodexAdapter.isAvailable()) return 'codex-cli'
   if (opts.agentBackend === 'claude-cli' && ClaudeAdapter.isAvailable()) return 'claude-cli'
   if (opts.agentBackend === 'hermes-cli' && HermesAdapter.isAvailable() && isHermesAcpReady()) return 'hermes-cli'
+  // A qualified provider selection is explicit; stale CLI settings and auto-detection
+  // must not redirect it to a different source.
+  if (PROVIDERS.some((provider) => opts.selectedModel.startsWith(`${provider.name}:`))) return undefined
   if (!selectedModelIsOpenRouter && opts.convCliBackend === 'codex-cli' && CodexAdapter.isAvailable()) {
     return 'codex-cli'
   }

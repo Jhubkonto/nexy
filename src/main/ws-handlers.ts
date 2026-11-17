@@ -26,6 +26,7 @@ import { debugLog } from './debug-mode'
 import { getCliModels } from './cli-detection'
 import { getClaudeCliModelChoices, isClaudeCliModelOrCandidate } from './cli-adapters/claude-model-probe'
 import { getCachedCatalog } from './model-catalog'
+import { getAvailableModelGroups } from './model-availability'
 import { getAndroidUpdateManifest, getAndroidWorkspaceInfo, getSigningConfig, publishAndroidUpdate, restoreAndroidVersion, startAndroidBuildFromMobile, cancelAndroidBuildFromMobile } from './android-handlers'
 import { getWorkspaceInfo, startBuildFromMobile, cancelMobileBuild, publishArtifactToFeed, runPublishedUpdateInstall } from './build-handlers'
 import { dbListTasks, dbGetTask, dbCreateTask, dbUpdateTask, dbDeleteTask, dbSetTaskEnabled, dbListRuns, schedulerEngine } from './scheduler-engine'
@@ -846,6 +847,11 @@ export function registerWsHandlers(): void {
 
       const catalogById = new Map(getCachedCatalog().map((model) => [model.id, model]))
       const configuredProviders = PROVIDERS.filter((provider) => isProviderConfigured(provider.name))
+      // Older mobile clients consume the flat list. New clients can request the
+      // same source-preserving inventory used by the desktop picker.
+      const groups = data.includeGroups === true
+        ? (await getAvailableModelGroups(hermesProfile)).filter((group) => !backend || group.sourceKey === backend || (group.sourceType === 'provider' && !backend.endsWith('-cli')))
+        : undefined
 
       const cliBackendLabels: Record<string, string> = {
         'codex-cli': 'Codex CLI',
@@ -886,7 +892,7 @@ export function registerWsHandlers(): void {
         for (const model of models) {
           if (!byId.has(model.id)) byId.set(model.id, model)
         }
-        reply({ event: 'model:list', data: { models: [...byId.values()], source } })
+        reply({ event: 'model:list', data: { models: [...byId.values()], source, ...(groups ? { groups } : {}) } })
         return
       }
 
@@ -948,7 +954,7 @@ export function registerWsHandlers(): void {
         ? { type: 'provider', label: sourceLabel }
         : { type: 'none', label: 'No configured model backend' }
 
-      reply({ event: 'model:list', data: { models: [...byId.values()], source } })
+      reply({ event: 'model:list', data: { models: [...byId.values()], source, ...(groups ? { groups } : {}) } })
       return
     }
 
@@ -1059,7 +1065,11 @@ export function registerWsHandlers(): void {
       routeLog(`codexAvail=${CodexAdapter.isAvailable()} codexModels=[${codexModels.join(',')}]`)
       routeLog(`claudeAvail=${ClaudeAdapter.isAvailable()} claudeModels=[${claudeModels.join(',')}]`)
       routeLog(`hermesAvail=${HermesAdapter.isAvailable()} hermesModels=[${hermesModels.join(',')}]`)
-      if (effectiveModel && effectiveModel !== 'default') {
+      const savedRoute = getDatabase().prepare('SELECT model, cli_backend FROM conversations WHERE id = ?').get(conversationId) as { model: string | null; cli_backend: string | null } | undefined
+      if (effectiveModel && effectiveModel !== 'default' && savedRoute?.model === effectiveModel &&
+          (savedRoute.cli_backend === 'claude-cli' || savedRoute.cli_backend === 'codex-cli' || savedRoute.cli_backend === 'hermes-cli')) {
+        inferredCliBackend = savedRoute.cli_backend
+      } else if (effectiveModel && effectiveModel !== 'default') {
         if (CodexAdapter.isAvailable() && codexModels.some((id) => id === effectiveModel)) {
           inferredCliBackend = 'codex-cli'
         } else if (ClaudeAdapter.isAvailable() && isClaudeCliModelOrCandidate(effectiveModel)) {

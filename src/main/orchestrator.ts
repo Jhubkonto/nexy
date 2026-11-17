@@ -18,6 +18,7 @@ import { startActivity, endActivity } from './activity-tracker'
 import { runAgentTurn } from './agent-turn-runner'
 import { addDelegationNode, createDelegationRun, isDelegationNodeCancelRequested, updateDelegationNode } from './delegation-registry'
 import { abortActiveStream } from './provider-stream-state'
+import { hasUnexecutedToolMarkup, UNEXECUTED_TOOL_MESSAGE } from '../shared/unexecuted-tool-markup'
 
 export const MAX_DELEGATION_DEPTH = 5
 
@@ -145,21 +146,23 @@ async function callSpecialist(
   runId: string,
   globalPrompt?: string,
 ): Promise<string> {
-  return runAgentTurn({
+  const result = await runAgentTurn({
     agentId,
     projectId,
     conversationId,
     fallbackModel,
-    taskContent,
+    taskContent: `${taskContent}\n\nYou have no access to tools, files, or shell commands in this delegated turn. Do not emit tool-call markup or claim to have executed commands. State when you cannot verify information.`,
     // Per-step request ID to avoid collision when multiple specialists run in parallel
     requestId: `${conversationId}:${stepId}`,
     generationOptions,
     globalPrompt,
-    onChunk: (chunk) => {
-      updateDelegationNode(runId, stepId, { tail: chunk })
-      window?.webContents.send('chat:team-step-stream', { stepId, chunk })
-    },
+    // Buffer until validated so a partial tool call is never presented as executed work.
+    onChunk: () => {},
   })
+  if (hasUnexecutedToolMarkup(result)) throw new Error(UNEXECUTED_TOOL_MESSAGE)
+  updateDelegationNode(runId, stepId, { tail: result })
+  window?.webContents.send('chat:team-step-stream', { stepId, chunk: result })
+  return result
 }
 
 /**

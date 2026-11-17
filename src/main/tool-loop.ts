@@ -324,6 +324,7 @@ export async function runProviderMcpToolLoop(
 
     loopMessages.push({
       role: 'assistant' as const,
+      ...(result.reasoningContent !== undefined ? { reasoning_content: result.reasoningContent } : {}),
       content: interstitialText ? (result.content as string) : null,
       tool_calls: result.toolCalls.map((tc) => ({
         id: tc.id,

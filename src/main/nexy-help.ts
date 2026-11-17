@@ -16,7 +16,7 @@ export const NEXY_HELP_CONTENT = `# What Nexy is
 
 Nexy is a general-purpose, provider-agnostic AI workspace — a desktop app (Electron + React) with a
 full-featured Android companion. It is a chat and agent platform first. Users bring their
-own API keys (OpenAI, Anthropic, Azure, Gemini, Mistral, Groq, xAI) or point at a local CLI (Claude
+own API keys (OpenAI, Anthropic, Azure, Gemini, Mistral, Groq, xAI, DeepSeek) or point at a local CLI (Claude
 CLI, Codex CLI) — there is no Nexy account or hosted backend.
 
 Nexy chat conversations do NOT have generic file-editing tools like "Read", "Edit", "Write", "Glob",

@@ -7,6 +7,7 @@ import { getDatabase } from './database'
 import { isPlaceholderConversationTitle } from '../shared/conversation-title'
 import {
   DEFAULT_PROVIDER_MODEL,
+  PROVIDERS,
   NO_PROVIDER_CONFIGURED_MESSAGE,
   getProviderForAgent,
   getProviderCredential,
@@ -940,6 +941,9 @@ export async function dispatchChatSend(
     : agentCfg2?.agenticMode === true
   const conversationModel = typeof convRow?.model === 'string' ? convRow.model : undefined
   const isModelAvailable = (model: string, hermesProfile?: string | null): boolean => {
+    // Keep explicit provider choices even when credentials disappear, so the request
+    // reports the missing source instead of silently using a different model.
+    if (PROVIDERS.some((provider) => model.startsWith(`${provider.name}:`))) return true
     if (ClaudeAdapter.isAvailable() && isClaudeCliModelOrCandidate(model)) return true
     if (CodexAdapter.isAvailable() && getCliModels('codex-cli').some((entry) => entry.id === model)) return true
     if (HermesAdapter.isAvailable() && isHermesAcpReady() && getCliModels('hermes-cli', hermesProfile ?? undefined).some((entry) => entry.id === model)) return true
@@ -2230,6 +2234,7 @@ export async function dispatchChatSend(
         const total = turnUsage.add({
           inputTokens: usage.inputTokens,
           outputTokens: usage.outputTokens,
+          ...(usage.cachedInputTokens !== undefined ? { cachedInputTokens: usage.cachedInputTokens } : {}),
           quality: 'provider',
           source: providerName,
         })

@@ -12,6 +12,7 @@ import {
 } from './providers'
 import type { ProviderMessage } from './providers'
 import { ClaudeAdapter } from './cli-adapters/claude'
+import { getAdapter } from './cli-adapters/registry'
 import { broadcastToMobile, isMobileInForeground } from './ws-server'
 import { broadcastConversationMessages } from './chat-handlers'
 import { sendDebriefCompleteNotification } from './fcm-sender'
@@ -174,41 +175,34 @@ function resolveExtractionProvider(db: ReturnType<typeof getDatabase>, projectId
   return getProviderForAgent(agentModel)
 }
 
+async function runExtraction(db: ReturnType<typeof getDatabase>, projectId: string | null, model: string | undefined, systemPrompt: string, userContent: string, temperature: number): Promise<string> {
+  if (model === 'default') model = undefined
+  const cli = /^(claude-cli|codex-cli|hermes-cli):(.*)$/.exec(model ?? '')
+  if (cli) {
+    const adapter = getAdapter(cli[1])
+    if (!adapter?.isAvailable()) throw new Error(`${cli[1]} is not available`)
+    return adapter.send(undefined, { systemPrompt, messages: [{ role: 'user', content: userContent }], cwd: '', model: cli[2], conversationId: randomUUID() }, () => {})
+  }
+  const resolved = resolveExtractionProvider(db, projectId, model)
+  const credential = getProviderCredential(resolved.provider)
+  if (credential) {
+    const messages: ProviderMessage[] = [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContent }]
+    const result = await sendProviderNonStreaming(resolved.provider, credential, resolved.model, messages, { maxTokens: 2000, temperature })
+    return result.content ?? ''
+  }
+  if (!model && ClaudeAdapter.isAvailable()) {
+    return ClaudeAdapter.send(null as never, { systemPrompt, messages: [{ role: 'user', content: userContent }], cwd: '', model: 'default', conversationId: randomUUID() }, () => {})
+  }
+  throw new Error(NO_PROVIDER_CONFIGURED_MESSAGE)
+}
+
 async function generateDebriefForWsInner(db: ReturnType<typeof getDatabase>, conversationId: string, projectId: string | null, model?: string): Promise<DebriefArtifactResult> {
   const truncatedTranscript = buildConversationTranscript(db, conversationId)
   if (!truncatedTranscript) throw new Error('Conversation has no messages to debrief')
 
   const userContent = `Here is the conversation to analyze:\n\n${truncatedTranscript}`
 
-  const { provider, model: resolvedModel } = resolveExtractionProvider(db, projectId, model)
-  const credential = getProviderCredential(provider)
-
-  let rawText: string
-  if (credential) {
-    const messages: ProviderMessage[] = [
-      { role: 'system', content: DEBRIEF_SYSTEM_PROMPT },
-      { role: 'user', content: userContent },
-    ]
-    const result = await sendProviderNonStreaming(provider, credential, resolvedModel, messages, {
-      maxTokens: 2000,
-      temperature: 0.3,
-    })
-    rawText = result.content ?? ''
-  } else if (ClaudeAdapter.isAvailable()) {
-    rawText = await ClaudeAdapter.send(
-      null as never,
-      {
-        systemPrompt: DEBRIEF_SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: userContent }],
-        cwd: '',
-        model: 'default',
-        conversationId: randomUUID(),
-      },
-      () => {},
-    )
-  } else {
-    throw new Error(NO_PROVIDER_CONFIGURED_MESSAGE)
-  }
+  const rawText = await runExtraction(db, projectId, model, DEBRIEF_SYSTEM_PROMPT, userContent, 0.3)
 
   const cleaned = rawText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
   let parsed: { summary?: unknown; commandsAndTools?: unknown; reproductionGuide?: unknown; mentalModel?: unknown }
@@ -346,35 +340,7 @@ export async function generateDebriefStoryForWs(
   const storySystemPrompt = buildStorySystemPrompt(resolvedTone, resolvedBeatCount)
   const clampedBeatCount = Math.min(5, Math.max(3, Math.round(resolvedBeatCount)))
 
-  const { provider, model: resolvedModel } = resolveExtractionProvider(db, projectId, model)
-  const credential = getProviderCredential(provider)
-
-  let rawText: string
-  if (credential) {
-    const messages: ProviderMessage[] = [
-      { role: 'system', content: storySystemPrompt },
-      { role: 'user', content: userContent },
-    ]
-    const result = await sendProviderNonStreaming(provider, credential, resolvedModel, messages, {
-      maxTokens: 2000,
-      temperature: 0.7,
-    })
-    rawText = result.content ?? ''
-  } else if (ClaudeAdapter.isAvailable()) {
-    rawText = await ClaudeAdapter.send(
-      null as never,
-      {
-        systemPrompt: storySystemPrompt,
-        messages: [{ role: 'user', content: userContent }],
-        cwd: '',
-        model: 'default',
-        conversationId: randomUUID(),
-      },
-      () => {},
-    )
-  } else {
-    throw new Error(NO_PROVIDER_CONFIGURED_MESSAGE)
-  }
+  const rawText = await runExtraction(db, projectId, model, storySystemPrompt, userContent, 0.7)
 
   const cleaned = rawText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
   let parsed: { title?: unknown; beats?: unknown }
