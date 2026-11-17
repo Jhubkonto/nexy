@@ -9,6 +9,17 @@ type TesseractWorker = {
 
 let workerInstance: TesseractWorker | null = null
 let initPromise: Promise<TesseractWorker> | null = null
+const OCR_TIMEOUT_MS = 15_000
+
+function withTimeout<T>(promise: Promise<T>, onTimeout?: () => void): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      onTimeout?.()
+      reject(new Error('OCR timed out'))
+    }, OCR_TIMEOUT_MS)
+    promise.then((value) => { clearTimeout(timer); resolve(value) }, (error) => { clearTimeout(timer); reject(error) })
+  })
+}
 
 function getTesseractPaths(): { workerPath: string; langPath: string } {
   const langPath = join(app.getPath('userData'), 'tesseract-lang')
@@ -42,14 +53,21 @@ async function getWorker(): Promise<TesseractWorker> {
   if (workerInstance) return workerInstance
 
   if (!initPromise) {
-    initPromise = createWorker().then((w) => {
-      workerInstance = w
-      initPromise = null
+    let abandoned = false
+    const pending = createWorker().then((w) => {
+      if (abandoned) {
+        void w.terminate().catch(() => {})
+        throw new Error('OCR initialization timed out')
+      }
       return w
-    }).catch((err) => {
-      initPromise = null
-      throw err
     })
+    const initialization = withTimeout(pending, () => { abandoned = true }).then((w) => {
+      workerInstance = w
+      return w
+    }).finally(() => {
+      if (initPromise === initialization) initPromise = null
+    })
+    initPromise = initialization
   }
 
   return initPromise
@@ -68,12 +86,12 @@ export async function recognizeText(dataUrl: string): Promise<string> {
     }
 
     try {
-      const result = await worker.recognize(dataUrl)
+      const result = await withTimeout(worker.recognize(dataUrl))
       return result.data.text.trim()
     } catch (err) {
       // On recognition error, destroy the worker so next call re-initializes
       workerInstance = null
-      try { await worker.terminate() } catch { /* ignore */ }
+      void worker.terminate().catch(() => {})
       throw new Error(`OCR recognition failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
