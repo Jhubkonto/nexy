@@ -21,7 +21,7 @@ vi.mock('../anthropic-models', () => ({
   getCachedAnthropicModels: getCachedAnthropicModelsMock,
 }))
 
-import { getProviderModelIds, PROVIDERS } from '../provider-registry'
+import { getProviderForAgent, getProviderModelIds, PROVIDERS } from '../provider-registry'
 import type { ProviderConfig } from '../provider-registry'
 
 const providerByName = (name: string): ProviderConfig =>
@@ -37,6 +37,15 @@ afterEach(() => {
 })
 
 describe('getProviderModelIds', () => {
+  it('preserves colons in source-qualified model IDs', () => {
+    expect(getProviderForAgent('openrouter:vendor/model:variant')).toEqual({ provider: 'openrouter', model: 'vendor/model:variant' })
+  })
+  it('discovers and routes DeepSeek models', () => {
+    getCachedProviderModelsMock.mockImplementation((key) => key === 'deepseek_models_cache' ? ['deepseek-flash', 'deepseek-new'] : [])
+    expect(getProviderModelIds(providerByName('deepseek'))).toEqual(['deepseek-flash', 'deepseek-v4-pro', 'deepseek-new'])
+    expect(getProviderForAgent('deepseek-v4-pro')).toEqual({ provider: 'deepseek', model: 'deepseek-v4-pro' })
+    expect(getProviderForAgent('deepseek:deepseek-new')).toEqual({ provider: 'deepseek', model: 'deepseek-new' })
+  })
   it('returns the live OpenRouter cache for openrouter', () => {
     getOpenRouterModelsMock.mockReturnValue(['anthropic/claude-sonnet-4-6', 'openai/gpt-5.5'])
     expect(getProviderModelIds(providerByName('openrouter'))).toEqual([

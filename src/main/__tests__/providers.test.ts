@@ -166,6 +166,7 @@ describe('Providers — IPC Handlers', () => {
 
       const result = await invokeHandler('provider:list')
       expect(result.map((p: { name: string }) => p.name)).toEqual([
+        'deepseek',
         'openai',
         'anthropic',
         'azure',
@@ -323,6 +324,59 @@ describe('Providers — IPC Handlers', () => {
   })
 
   describe('streaming tool rounds', () => {
+    it('sends Flash images with thinking disabled and keeps DeepSeek fields off other providers', async () => {
+      const bodies: string[] = []
+      mockHttpsRequest.mockImplementation((_options: unknown, callback: (res: EventEmitter) => void) => {
+        const req = new EventEmitter() as EventEmitter & { write: (chunk: string) => void; end: () => void }
+        const res = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string> }
+        res.statusCode = 200
+        res.headers = { 'content-type': 'text/event-stream' }
+        let body = ''
+        req.write = (chunk) => { body += chunk }
+        req.end = () => { bodies.push(body); callback(res); res.emit('data', 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'); res.emit('data', 'data: [DONE]\n\n'); res.emit('end') }
+        return req
+      })
+      const { sendOpenAIMessage } = await import('../providers')
+      const messages: ProviderMessage[] = [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,abc' } }] }, { role: 'assistant', content: 'done', reasoning_content: 'private' }]
+      await sendOpenAIMessage('deepseek-test', 'key', 'deepseek-flash', messages, () => {}, { thinkingEffort: 'disabled' }, 'https://api.deepseek.com')
+      await sendOpenAIMessage('other-test', 'key', 'model', messages, () => {}, { thinkingEffort: 'disabled' }, 'https://example.com')
+      const [deepseek, other] = bodies.map((body) => JSON.parse(body))
+      expect(deepseek.thinking).toEqual({ type: 'disabled' })
+      expect(deepseek.messages[0].content[0].type).toBe('image_url')
+      expect(other.thinking).toBeUndefined()
+      expect(other.messages[1].reasoning_content).toBeUndefined()
+    })
+    it('round-trips DeepSeek reasoning and reports cached input tokens', async () => {
+      let requestBody = ''
+      mockHttpsRequest.mockImplementationOnce((_options: unknown, callback: (res: EventEmitter) => void) => {
+        const req = new EventEmitter() as EventEmitter & { write: (chunk: string) => void; end: () => void }
+        const res = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string> }
+        res.statusCode = 200
+        res.headers = { 'content-type': 'text/event-stream' }
+        req.write = (chunk) => { requestBody += chunk }
+        req.end = () => {
+          callback(res)
+          res.emit('data', 'data: {"choices":[{"delta":{"reasoning_content":"think"}}]}\n\n')
+          res.emit('data', 'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"test","arguments":"{}"}}]}}]}\n\n')
+          res.emit('data', 'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3,"prompt_cache_hit_tokens":7}}\n\n')
+          res.emit('data', 'data: [DONE]\n\n')
+          res.emit('end')
+        }
+        return req
+      })
+      const { sendOpenAIWithToolsStream } = await import('../providers')
+      const usage = vi.fn()
+      const result = await sendOpenAIWithToolsStream('key', 'deepseek-flash', [
+        { role: 'assistant', content: null, reasoning_content: 'previous reasoning', tool_calls: [{ id: 'old', type: 'function', function: { name: 'test', arguments: '{}' } }] },
+        { role: 'tool', tool_call_id: 'old', content: 'done' },
+      ], [{ type: 'function', function: { name: 'test', description: 'test', parameters: {} } }], 'required', () => {}, { thinkingEffort: 'low', onUsage: usage }, 'https://api.deepseek.com')
+      const body = JSON.parse(requestBody)
+      expect(body).toMatchObject({ thinking: { type: 'enabled' }, reasoning_effort: 'low', tool_choice: 'auto' })
+      expect(body.messages[0].reasoning_content).toBe('previous reasoning')
+      expect(body.temperature).toBeUndefined()
+      expect(result.reasoningContent).toBe('think')
+      expect(usage).toHaveBeenCalledWith({ inputTokens: 10, outputTokens: 3, cachedInputTokens: 7 })
+    })
     it('streams OpenAI text while buffering fragmented tool-call arguments', async () => {
       let requestBody = ''
       mockHttpsRequest.mockImplementationOnce((options: unknown, callback: (res: EventEmitter) => void) => {
