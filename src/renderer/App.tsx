@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, lazy, Suspense } from 'react'
+import { Loader2 } from 'lucide-react'
 import { Sidebar } from './components/Sidebar'
 import { ChatWindow } from './components/ChatWindow'
 import { SectionPane } from './components/SectionPane'
@@ -98,6 +99,20 @@ export default function App() {
   const hydrate = useAppStore((s) => s.hydrate)
 
   const [agentPanelWidth, setAgentPanelWidth] = useState(440)
+  const [updateDownloading, setUpdateDownloading] = useState(false)
+
+  const handleDownloadUpdate = async () => {
+    setUpdateDownloading(true)
+    try {
+      const downloaded = await window.api.downloadUpdate()
+      if (downloaded) setUpdateDownloaded(true)
+      else addToast('Update download failed. Please try again.', 'error')
+    } catch {
+      addToast('Update download failed. Please try again.', 'error')
+    } finally {
+      setUpdateDownloading(false)
+    }
+  }
 
   const handleAgentPanelResize = useCallback(
     (size: number) => {
@@ -278,10 +293,11 @@ export default function App() {
                 Update v{updateAvailable.version} is available
               </p>
               <button
-                onClick={() => window.api.downloadUpdate()}
-                className="text-xs px-2 py-1 rounded-lg bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-200"
+                onClick={handleDownloadUpdate}
+                disabled={updateDownloading}
+                className="text-xs px-2 py-1 rounded-lg bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:bg-gray-800 dark:hover:bg-gray-200 disabled:cursor-wait"
               >
-                Download
+                {updateDownloading ? <span className="inline-flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />Downloading…</span> : 'Download'}
               </button>
             </div>
           )}

@@ -1,7 +1,7 @@
 /* eslint-disable react-hooks/exhaustive-deps -- chat/actions are aggregate hook objects; individual members are stable. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle, ChevronDown, ChevronRight, ChevronUp, Download, ListChecks, Loader2, Lock, MoreHorizontal, Pin, PinOff, Search, Sparkles, Star, Upload, Users, X, Zap } from 'lucide-react'
-import { getModelLabel, modelIdSupportsTools } from '../../shared/models'
+import { getModelLabel, modelIdSupportsTools, sourceQualifiedModel } from '../../shared/models'
 import { isApiError, type AgentConfig, type ArtifactPromotionRequest, type AvailableModelEntry, type AvailableModelGroup, type CliBackend, type CliModeOverride, type CodexExecutionModeOverride, type ConversationExportPackFormat, type AutomatedWorkflowRunDetail, type AutomatedWorkflowRunStep, type HermesProfileInfo, type WikiCandidate } from '../../shared/types'
 import type { ComposerKeyEvent, ContextRef, ToastType } from '../hooks/chat-types'
 import { useAtMenu } from '../hooks/useAtMenu'
@@ -75,6 +75,7 @@ function defaultArtifactFilePath(kind: ArtifactPromotionRequest['kind']): string
 
 export function ChatWindow() {
   const conversationId = useAppStore((state) => state.currentConversationId)
+  const backgroundActivities = useAppStore((state) => state.backgroundActivities)
   const activeAgentId = useAppStore((state) => state.activeAgentId)
   const activeProjectId = useAppStore((state) => state.activeProjectId)
   const projects = useAppStore((state) => state.projects)
@@ -361,7 +362,9 @@ export function ChatWindow() {
   const isAvailableModel = (model: string | null | undefined): model is string =>
     !!nonDefault(model) && (
       !availableModelsLoaded ||
-      chatAvailableGroups.some((group) => group.models.some((entry) => entry.id === model))
+      chatAvailableGroups.some((group) => group.models.some((entry) => entry.id === model || sourceQualifiedModel(group.sourceKey, entry.id) === model)) ||
+      // Preserve a previously selected source even if it is temporarily unavailable.
+      /^[a-z][a-z0-9-]*:/.test(model!)
     )
 
   const lockModelToAgentBackend =
@@ -1333,12 +1336,13 @@ export function ChatWindow() {
 
   const handleSelectAvailableModel = useCallback(
     (group: AvailableModelGroup, model: AvailableModelEntry) => {
-      setPendingModel(model.id)
+      if (lockModelToAgentBackend && group.sourceKey !== chatAgentBackend) return
+      const selectedModel = group.sourceType === 'provider' ? sourceQualifiedModel(group.sourceKey, model.id) : model.id
+      setPendingModel(selectedModel)
       setPendingModelDirty(true)
       if (lockModelToAgentBackend) {
         // For CLI-backed agents, only allow picking within the same backend.
         // Store as a per-conversation override — does not mutate the agent config.
-        if (group.sourceKey !== chatAgentBackend) return
         if (conversationId) {
           if (group.sourceKey === 'hermes-cli') {
             void actions.handleSetCliBackendAndModel('hermes-cli', model.id, targetHermesProfile ?? null)
@@ -1353,9 +1357,7 @@ export function ChatWindow() {
         // Also update the UI immediately when there is no conversation yet;
         // the backend is staged for the first send inside useChatWindowActions.
       } else {
-        if (conversationId) {
-          void actions.handleSetConversationModel(model.id, group.sourceKey === 'hermes-cli' ? (targetHermesProfile ?? null) : null)
-        }
+        void actions.handleSetConversationModel(selectedModel)
       }
     },
     [actions, chatAgentBackend, conversationId, lockModelToAgentBackend],
@@ -2387,6 +2389,11 @@ export function ChatWindow() {
           </div>
         </div>
       )}
+      {backgroundActivities.filter((activity) => activity.id.startsWith('deferred:') && activity.conversationId === conversationId).map((activity) => (
+        <div key={activity.id} role="status" className="px-4 py-2 text-xs text-gray-600 dark:text-gray-300">
+          {activity.label}{activity.detail ? `: ${activity.detail}` : ''}
+        </div>
+      ))}
       {composer}
     </div>
   )
