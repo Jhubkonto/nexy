@@ -18,6 +18,7 @@ import { useEmergencyStop } from '../../hooks/useEmergencyStop'
 import { CapabilityPopover } from '../CapabilityPopover'
 import type { ComposerMarkdownViewMode } from '../../store/types'
 import { RichTextComposerInput, type RichTextComposerHandle } from './RichTextComposerInput'
+import { resolveVisionSupported } from '../../../shared/models'
 
 
 interface ChatComposerProps {
@@ -340,6 +341,7 @@ export function ChatComposer({
               <>
                 <ComposerActionsMenu
                   disabled={isGenerating}
+                  imageHint={availableGroups.some((group) => group.sourceKey === 'deepseek' && group.models.some((model) => model.id === effectiveModel)) && !resolveVisionSupported('deepseek', effectiveModel) ? 'Images will be sent as OCR text. Switch to DeepSeek Flash for vision.' : undefined}
                   showContextInspector={showContextInspector}
                   onAttachFiles={onAttachFiles}
                   onAttachFolder={onAttachFolder}

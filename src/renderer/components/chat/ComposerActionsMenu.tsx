@@ -4,6 +4,7 @@ import { NexyIcon, type NexyIconName } from '../ui/icons/NexyIcon'
 
 interface ComposerActionsMenuProps {
   disabled?: boolean
+  imageHint?: string
   showContextInspector: boolean
   onAttachFiles: () => void | Promise<void>
   onAttachFolder: () => void | Promise<void>
@@ -17,11 +18,13 @@ interface MenuAction {
   label: string
   icon: NexyIconName
   disabled?: boolean
+  title?: string
   onSelect: () => void | Promise<void>
 }
 
 export function ComposerActionsMenu({
   disabled = false,
+  imageHint,
   showContextInspector,
   onAttachFiles,
   onAttachFolder,
@@ -49,7 +52,7 @@ export function ComposerActionsMenu({
   }, [open])
 
   const actions: MenuAction[] = [
-    { label: 'Attach files', icon: 'attach', disabled, onSelect: onAttachFiles },
+    { label: 'Attach files', icon: 'attach', disabled, title: imageHint, onSelect: onAttachFiles },
     { label: 'Attach folder', icon: 'folder', disabled, onSelect: onAttachFolder },
     ...(onPasteClipboardImage
       ? [{ label: 'Paste image from clipboard', icon: 'clipboard' as const, disabled, onSelect: onPasteClipboardImage }]
@@ -93,11 +96,12 @@ export function ComposerActionsMenu({
           aria-label="Message actions"
           className="absolute bottom-full left-0 z-30 mb-1 min-w-52 rounded-nexy-sm border-2 border-nexy-border bg-nexy-raised p-1 text-nexy-text shadow-nexy"
         >
-          {actions.map(({ label, icon, disabled: actionDisabled, onSelect }) => (
+          {actions.map(({ label, icon, disabled: actionDisabled, onSelect, title }) => (
             <button
               key={label}
               type="button"
               role="menuitem"
+              title={title}
               disabled={actionDisabled}
               className="flex w-full items-center gap-2 rounded-nexy-sm border border-transparent px-2 py-1.5 text-left text-xs hover:border-nexy-border hover:bg-nexy-recessed disabled:cursor-not-allowed disabled:opacity-50"
               onClick={() => {

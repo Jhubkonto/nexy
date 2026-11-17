@@ -968,6 +968,8 @@ export function useChatWindowActions({
 
   const handleSetConversationModel = useCallback(
     async (model: string, hermesProfile?: string | null) => {
+      pendingCliModelRef.current = null
+      pendingCliBackendRef.current = null
       if (!conversationId) return
       const value = model === 'default' ? null : model
       const write = pendingModelWriteRef.current.then(async () => {
