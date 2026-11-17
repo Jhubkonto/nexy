@@ -193,12 +193,12 @@ async function runAgentGeneratorProviderChat(
   const selectedModel = modelOverride ?? getAgentGeneratorModel()
 
   // Resolve CLI backend: explicit prefix OR bare model ID that belongs to a CLI
-  let cliBackend: 'claude-cli' | 'codex-cli' | undefined
+  let cliBackend: 'claude-cli' | 'codex-cli' | 'hermes-cli' | undefined
   let cliModel = selectedModel
   if (selectedModel.includes(':')) {
     const colonIdx = selectedModel.indexOf(':')
     const prefix = selectedModel.slice(0, colonIdx)
-    if (prefix === 'claude-cli' || prefix === 'codex-cli') {
+    if (prefix === 'claude-cli' || prefix === 'codex-cli' || prefix === 'hermes-cli') {
       cliBackend = prefix
       cliModel = selectedModel.slice(colonIdx + 1)
     }

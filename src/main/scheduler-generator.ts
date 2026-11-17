@@ -202,12 +202,12 @@ async function runScheduleGeneratorProviderChat(
 ): Promise<string> {
   const selectedModel = modelOverride ?? getScheduleGeneratorModel()
 
-  let cliBackend: 'claude-cli' | 'codex-cli' | undefined
+  let cliBackend: 'claude-cli' | 'codex-cli' | 'hermes-cli' | undefined
   let cliModel = selectedModel
   if (selectedModel.includes(':')) {
     const colonIdx = selectedModel.indexOf(':')
     const prefix = selectedModel.slice(0, colonIdx)
-    if (prefix === 'claude-cli' || prefix === 'codex-cli') {
+    if (prefix === 'claude-cli' || prefix === 'codex-cli' || prefix === 'hermes-cli') {
       cliBackend = prefix
       cliModel = selectedModel.slice(colonIdx + 1)
     }
