@@ -130,7 +130,7 @@ private fun ActivityFeedRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        CircularProgressIndicator(
+        if (activity.label != "Background task status unknown") CircularProgressIndicator(
             modifier = Modifier
                 .size(16.dp)
                 .semantics { contentDescription = "Activity in progress" },

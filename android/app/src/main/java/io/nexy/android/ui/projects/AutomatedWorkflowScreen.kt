@@ -508,6 +508,7 @@ fun AutomatedWorkflowScreen(
             containerColor = MaterialTheme.colorScheme.surface,
         ) {
             ModelPickerSheet(
+                qualifyCli = true,
                 title = "Workflow generator model",
                 models = models,
                 cliStatus = cliStatus,

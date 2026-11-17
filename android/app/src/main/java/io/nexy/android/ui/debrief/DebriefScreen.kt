@@ -199,6 +199,7 @@ fun DebriefScreen(
             containerColor = MaterialTheme.colorScheme.surface,
         ) {
             ModelPickerSheet(
+                qualifyCli = true,
                 title = "Debrief model",
                 subtitle = "Which model should read the transcript and write the debrief?",
                 models = models,

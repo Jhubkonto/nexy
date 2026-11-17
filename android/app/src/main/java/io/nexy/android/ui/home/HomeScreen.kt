@@ -115,6 +115,7 @@ fun HomeScreen(
     val highlightProjectId by vm.highlightProjectId.collectAsStateWithLifecycle()
     val highlightAgentId by vm.highlightAgentId.collectAsStateWithLifecycle()
     val activeConversationIds by vm.activeConversationIds.collectAsStateWithLifecycle()
+    val backgroundActivities by io.nexy.android.data.BackgroundActivityTracker.activities.collectAsStateWithLifecycle()
     val pendingConversationIds by vm.pendingConversationIds.collectAsStateWithLifecycle()
     val completedWhileAwayIds by vm.completedWhileAwayIds.collectAsStateWithLifecycle()
     val completionFilter by vm.completionFilter.collectAsStateWithLifecycle()
@@ -454,7 +455,9 @@ fun HomeScreen(
                     onTogglePinConversation = { id, pinned -> vm.setPinnedConversation(id, pinned) },
                     onMarkComplete = { vm.markConversationComplete(it) },
                     onMarkIncomplete = { vm.markConversationIncomplete(it) },
-                    activeConversationIds = activeConversationIds,
+                    activeConversationIds = activeConversationIds + backgroundActivities.filter {
+                        it.id.startsWith("deferred:") && it.label == "Background task running"
+                    }.mapNotNull { it.conversationId },
                     pendingConversationIds = pendingConversationIds,
                     completedWhileAwayIds = completedWhileAwayIds,
                     totalCount = conversationTotalCount,

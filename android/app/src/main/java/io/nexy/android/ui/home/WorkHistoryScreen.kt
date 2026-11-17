@@ -366,6 +366,8 @@ fun WorkHistoryScreen(onBack: () -> Unit, onOpenChat: (String) -> Unit, initialR
     if (showModelSheet) {
         ModalBottomSheet(onDismissRequest = { showModelSheet = false }, sheetState = rememberModalBottomSheetState(), containerColor = MaterialTheme.colorScheme.surface) {
             ModelPickerSheet(
+                qualifyCli = true,
+                unavailableBackends = setOf("codex-cli", "hermes-cli"),
                 title = "Report model",
                 subtitle = "API models need a key on the desktop. Claude CLI models run without tools.",
                 models = models,
