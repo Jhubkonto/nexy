@@ -265,105 +265,21 @@ fun AgentGeneratorScreen(
     // Model picker sheet — same grouped layout as ChatScreen
     if (showModelSheet) {
         ModalBottomSheet(
-            onDismissRequest = { showModelSheet = false; modelQuery = "" },
+            onDismissRequest = { showModelSheet = false },
             sheetState = modelSheetState,
             containerColor = MaterialTheme.colorScheme.surface,
         ) {
-            data class ModelItem(val model: io.nexy.android.data.model.ModelOption)
-            data class HeaderItem(val vendor: String)
-
-            val query = modelQuery.trim().lowercase()
-            val showDefault = query.isEmpty() || "default model".contains(query)
-            val sheetItems: List<Any> = buildList {
-                val grouped = models.filterNot { it.id == "default" }.groupBy { it.vendor ?: "" }
-                val hasVendorGroups = grouped.any { it.key.isNotBlank() }
-                if (hasVendorGroups) {
-                    grouped.forEach { (vendor, vendorModels) ->
-                        val filtered = if (query.isEmpty()) vendorModels
-                                       else vendorModels.filter { it.label.lowercase().contains(query) }
-                        if (filtered.isNotEmpty()) {
-                            if (vendor.isNotBlank()) add(HeaderItem(vendor))
-                            filtered.forEach { add(ModelItem(it)) }
-                        }
-                    }
-                } else {
-                    models.filterNot { it.id == "default" }.forEach { model ->
-                        if (query.isEmpty() || model.label.lowercase().contains(query)) {
-                            add(ModelItem(model))
-                        }
-                    }
-                }
-            }
-
-            LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
-                item {
-                    Text(
-                        "Generation model",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
-                    )
-                    OutlinedTextField(
-                        value = modelQuery,
-                        onValueChange = { modelQuery = it },
-                        placeholder = { Text("Search models…", style = MaterialTheme.typography.bodyMedium) },
-                        leadingIcon = { NexyIcon(NexyIconName.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
-                        trailingIcon = {
-                            if (modelQuery.isNotEmpty()) {
-                                IconButton(onClick = { modelQuery = "" }) {
-                                    NexyIcon(NexyIconName.Close, contentDescription = "Clear", modifier = Modifier.size(18.dp))
-                                }
-                            }
-                        },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, autoCorrectEnabled = true),
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                        shape = MaterialTheme.shapes.medium,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(top = 4.dp))
-                }
-                if (showDefault) {
-                    item {
-                        ListItem(
-                            headlineContent = { Text("Default model") },
-                            modifier = Modifier.clickable {
-                                vm.setModel(null)
-                                modelQuery = ""
-                                scope.launch { modelSheetState.hide() }.invokeOnCompletion { showModelSheet = false }
-                            },
-                            trailingContent = if (uiState.selectedModel == null) ({ Text("✓", color = MaterialTheme.colorScheme.primary) }) else null,
-                        )
-                    }
-                }
-                items(sheetItems) { item ->
-                    when (item) {
-                        is HeaderItem -> Text(
-                            item.vendor,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                        )
-                        is ModelItem -> ListItem(
-                            headlineContent = { Text(item.model.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            modifier = Modifier.clickable {
-                                vm.setModel(item.model.id)
-                                modelQuery = ""
-                                scope.launch { modelSheetState.hide() }.invokeOnCompletion { showModelSheet = false }
-                            },
-                            trailingContent = if (item.model.id == uiState.selectedModel) ({ Text("✓", color = MaterialTheme.colorScheme.primary) }) else null,
-                        )
-                    }
-                }
-                if (sheetItems.isEmpty() && !showDefault) {
-                    item {
-                        Text(
-                            "No models match \"$modelQuery\"",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
-                        )
-                    }
-                }
-            }
+            io.nexy.android.ui.chat.ModelPickerSheet(
+                qualifyCli = true,
+                title = "Generation model",
+                models = models,
+                cliStatus = emptyMap(),
+                selectedModelId = uiState.selectedModel,
+                onSelect = { model ->
+                    vm.setModel(model)
+                    scope.launch { modelSheetState.hide() }.invokeOnCompletion { showModelSheet = false }
+                },
+            )
         }
     }
 }
