@@ -1,0 +1,25 @@
+{
+  "name": "Easy8 (Easy Redmine)",
+  "command": "npx",
+  "args": [
+    "-y",
+    "mcp-remote",
+    "https://your-easy8.example.com/mcp",
+    "--header",
+    "X-Easy8-API-Key: YOUR_API_KEY"
+  ],
+  "env": {},
+  "enabled": true,
+  "sandboxProfile": {
+    "version": 1,
+    "network": "allowed",
+    "childProcesses": "allowed",
+    "filesystem": [],
+    "memoryLimitMiB": 512,
+    "maxProcesses": 8,
+    "startupTimeoutMs": 15000,
+    "gracefulShutdownTimeoutMs": 2000,
+    "hardTerminationTimeoutMs": 5000,
+    "maxDiagnosticBytes": 65536
+  }
+}
