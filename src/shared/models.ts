@@ -21,6 +21,8 @@ export interface KnownModel {
 }
 
 export const KNOWN_MODELS: KnownModel[] = [
+  { id: 'deepseek-flash', name: 'DeepSeek Flash', vendor: 'DeepSeek', capabilities: ['tool_calls', 'vision'] },
+  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', vendor: 'DeepSeek' },
   { id: 'gpt-5.5',            name: 'GPT-5.5',            vendor: 'OpenAI',    multiplier: 57 },
   { id: 'gpt-5.4',            name: 'GPT-5.4',            vendor: 'OpenAI',    multiplier: 6 },
   { id: 'gpt-5.4-mini',       name: 'GPT-5.4 mini',       vendor: 'OpenAI',    multiplier: 6 },
@@ -44,6 +46,11 @@ export const KNOWN_MODELS: KnownModel[] = [
   { id: 'claude-sonnet-4',    name: 'Claude Sonnet 4',    vendor: 'Anthropic', multiplier: 6 },
   { id: 'claude-haiku-4.5',   name: 'Claude Haiku 4.5',   vendor: 'Anthropic', multiplier: 0.33 },
 ]
+
+export function resolveVisionSupported(providerName: string, modelId: string | null | undefined): boolean {
+  if (providerName !== 'deepseek') return true
+  return ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'].includes((modelId ?? '').toLowerCase())
+}
 
 export const MODEL_LABELS: Record<string, string> = Object.fromEntries(
   KNOWN_MODELS.map((m) => [m.id, m.name])
@@ -97,6 +104,11 @@ export function getModelLabel(model: string | null | undefined, catalog?: Catalo
     if (entry) return entry.name
   }
   return MODEL_LABELS[model] ?? model
+}
+
+/** Preserve the chosen source while avoiding a second prefix for Azure deployments. */
+export function sourceQualifiedModel(sourceKey: string, modelId: string): string {
+  return modelId.startsWith(`${sourceKey}:`) ? modelId : `${sourceKey}:${modelId}`
 }
 
 export function getModelMultiplier(model: string | null | undefined, catalog?: CatalogModel[]): string | null {

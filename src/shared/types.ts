@@ -403,6 +403,7 @@ export const PROVIDER_THINKING_SUPPORT: Record<string, boolean | 'o-series-only'
   azure: 'o-series-only',
   openrouter: false,
   groq: false,
+  deepseek: true,
   mistral: false,
   gemini: false,
   xai: false,
@@ -2399,7 +2400,7 @@ export type IpcReturnMap = {
   'skill:update': SkillConfig
   // App
   'app:check-updates': { updateAvailable: boolean; currentVersion?: string; latestVersion?: string }
-  'app:download-update': void
+  'app:download-update': boolean
   'app:get-setting': string | null
   'app:get-settings': Record<string, string>
   'app:get-theme': string
