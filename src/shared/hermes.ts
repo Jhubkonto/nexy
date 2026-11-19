@@ -68,3 +68,46 @@ export interface HermesAcpReadiness {
   /** Human-readable detail when not ready (e.g. missing credentials). */
   detail?: string
 }
+
+// ---------------------------------------------------------------------------
+// Model drop-down profile grouping
+// ---------------------------------------------------------------------------
+
+/**
+ * The source key prefix used by the chat model picker to distinguish one Hermes
+ * profile's model group from another. Each group's key is `hermes-cli:<profile>`;
+ * model IDs inside a group stay bare so the picked model string never needs to
+ * carry the profile.
+ */
+export const HERMES_CLI_SOURCE_KEY = 'hermes-cli'
+
+/** Builds a picker group source key for a profile, e.g. `hermes-cli:localllm`. */
+export function hermesSourceKey(profile: string): string {
+  return `${HERMES_CLI_SOURCE_KEY}:${profile}`
+}
+
+/** Returns the profile name from a group source key, or `null` for non-Hermes keys. */
+export function parseHermesSourceKey(sourceKey: string): string | null {
+  if (!sourceKey || !sourceKey.startsWith(`${HERMES_CLI_SOURCE_KEY}:`)) return null
+  const profile = sourceKey.slice(HERMES_CLI_SOURCE_KEY.length + 1).trim()
+  return profile || null
+}
+
+/** Human-readable picker label for a profile group. */
+export function hermesProfileLabel(profile: string, isDefault = false): string {
+  return isDefault ? 'Hermes · Default' : `Hermes · ${profile}`
+}
+
+/**
+ * Resolves the effective Hermes profile for a chat turn. Precedence:
+ * per-conversation override → agent profile → `default`.
+ */
+export function resolveEffectiveHermesProfile(
+  conversationOverride: string | null | undefined,
+  agentProfile: string | null | undefined,
+): string {
+  const override = conversationOverride?.trim()
+  if (override) return override
+  const agent = agentProfile?.trim()
+  return agent || HERMES_DEFAULT_PROFILE
+}

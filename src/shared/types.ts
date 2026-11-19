@@ -2336,14 +2336,28 @@ export interface AvailableModelGroup {
   sourceLabel: string
   sourceType: 'cli' | 'provider'
   models: AvailableModelEntry[]
+  /** Muted secondary text for the group row, e.g. a Hermes profile's configured model or description. */
+  description?: string
+}
+
+/** Options for `model:list-available`. */
+export interface AvailableModelGroupOptions {
+  /**
+   * Emit one `hermes-cli:<profile>` group per discovered Hermes profile instead of a single
+   * `hermes-cli` group. Opt-in because callers that store `sourceQualifiedModel()` strings
+   * (generators, schedules) and older Android clients only understand the bare backend key.
+   */
+  hermesProfileGroups?: boolean
 }
 
 export interface CatalogModel {
   id: string
   name: string
   vendor: string
+  provider?: string
   capabilities: string[]
   contextWindow?: number
+  maxOutputTokens?: number
   /** Premium request multiplier returned by the /models API (e.g. 0, 0.33, 1, 3). */
   multiplier?: number
 }

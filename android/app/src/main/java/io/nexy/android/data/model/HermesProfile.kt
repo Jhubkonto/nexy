@@ -19,6 +19,30 @@ const val HERMES_DEFAULT_PROFILE = "default"
 /** Returns true when [name] is a syntactically valid Hermes profile name. */
 fun isValidHermesProfile(name: String): Boolean = HERMES_PROFILE_RE.matches(name)
 
+// Model picker profile grouping — twins of the helpers in shared/hermes.ts.
+
+/** Source-key prefix for per-profile Hermes model groups (`hermes-cli:<profile>`). */
+const val HERMES_CLI_SOURCE_KEY = "hermes-cli"
+
+/** Builds a picker group source key for [profile], e.g. `hermes-cli:localllm`. */
+fun hermesSourceKey(profile: String): String = "$HERMES_CLI_SOURCE_KEY:$profile"
+
+/** Returns the profile from a group source key, or null for non-Hermes or bare `hermes-cli` keys. */
+fun parseHermesSourceKey(sourceKey: String?): String? {
+    if (sourceKey == null || !sourceKey.startsWith("$HERMES_CLI_SOURCE_KEY:")) return null
+    return sourceKey.substring(HERMES_CLI_SOURCE_KEY.length + 1).trim().takeIf { it.isNotEmpty() }
+}
+
+/** Human-readable picker label for a profile group. */
+fun hermesProfileLabel(profile: String, isDefault: Boolean = false): String =
+    if (isDefault) "Hermes · Default" else "Hermes · $profile"
+
+/** Effective profile for a chat turn: conversation override → agent profile → `default`. */
+fun resolveEffectiveHermesProfile(conversationOverride: String?, agentProfile: String?): String =
+    conversationOverride?.trim()?.takeIf { it.isNotEmpty() }
+        ?: agentProfile?.trim()?.takeIf { it.isNotEmpty() }
+        ?: HERMES_DEFAULT_PROFILE
+
 /** A Hermes profile as surfaced to the config UI (mirrors shared `HermesProfileInfo`). */
 data class HermesProfileInfo(
     val name: String,
