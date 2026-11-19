@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto'
 import { parseSseStream, httpsRequestUrl, providerHttpError } from '../http-client'
 import type { ProviderNonStreamResult, ToolCallResult, ToolChoice, ToolDefinition } from '../provider-types'
 import type { ProviderMessage } from '../provider-core-types'
@@ -6,6 +7,7 @@ import { runStreamingRequest, rejectHttpError } from './streaming'
 import { debugLog } from '../debug-mode'
 import { resolveProviderCredentialInput, type ProviderCredentialInput } from '../credential-vault'
 import { extractCitations, type Citation } from '../../shared/citations'
+import { createToolMarkupBuffer, hasUnexecutedToolMarkup, parseDsmlToolCalls } from '../../shared/unexecuted-tool-markup'
 
 // Returns true for OpenAI o-series and compatible reasoning models.
 function supportsReasoningEffort(model: string): boolean {
@@ -26,7 +28,16 @@ function isDeepSeek(baseUrl?: string): boolean {
 
 function prepareMessages(messages: ProviderMessage[], baseUrl?: string): ProviderMessage[] {
   const converted = toOpenAICompatibleMessages(messages)
-  if (isDeepSeek(baseUrl)) return converted
+  if (isDeepSeek(baseUrl)) return converted.map((message) => {
+    if (message.role !== 'assistant') return message
+    // Do not teach the model to repeat a failed tool protocol from chat history.
+    const content = typeof message.content === 'string' && hasUnexecutedToolMarkup(message.content)
+      ? '[An earlier response contained invalid tool-call markup. No calls in that text were executed.]'
+      : message.content
+    // Non-thinking recovery rounds have no reasoning. Represent that explicitly
+    // when returning to thinking mode; never replace reasoning we did receive.
+    return { ...message, content, reasoning_content: message.reasoning_content ?? '' }
+  })
   return converted.map((message) => {
     if (message.role !== 'assistant') return message
     const { reasoning_content: _reasoning, ...rest } = message
@@ -36,12 +47,15 @@ function prepareMessages(messages: ProviderMessage[], baseUrl?: string): Provide
 
 function applyProviderOptions(body: Record<string, unknown>, model: string, effort?: string, baseUrl?: string): void {
   if (!isDeepSeek(baseUrl)) { applyReasoningEffort(body, model, effort); return }
-  const enabled = effort !== 'disabled'
+  // DeepSeek rejects required tool choice in thinking mode. Preserve the caller's
+  // request to force a tool (including protocol recovery) by disabling thinking
+  // for this request, rather than silently weakening required to auto.
+  // https://api-docs.deepseek.com/api/create-chat-completion/
+  const enabled = effort !== 'disabled' && body.tool_choice !== 'required'
   body.thinking = { type: enabled ? 'enabled' : 'disabled' }
   if (enabled) {
     delete body.temperature
     body.reasoning_effort = effort === 'max' ? 'max' : effort === 'low' ? 'low' : 'high'
-    if (body.tool_choice === 'required') body.tool_choice = 'auto'
   }
 }
 
@@ -162,6 +176,25 @@ function extractToolCalls(msg: Record<string, unknown> | undefined): ToolCallRes
   })
 }
 
+/** Recover only DeepSeek tool rounds; the caller still owns policy and execution. */
+function normalizeDeepSeekToolCalls(
+  result: ProviderNonStreamResult,
+  tools: ToolDefinition[],
+  toolChoice: ToolChoice,
+  baseUrl?: string,
+): ProviderNonStreamResult {
+  if (!isDeepSeek(baseUrl) || toolChoice === 'none' || !tools.length || result.toolCalls.length || !result.content) return result
+  const parsed = parseDsmlToolCalls(result.content)
+  const allowedNames = new Set(tools.map((tool) => tool.function.name))
+  if (!parsed || parsed.toolCalls.some((call) => !allowedNames.has(call.name))) return result
+  debugLog('openai', `recovered ${parsed.toolCalls.length} DSML tool calls from DeepSeek content`)
+  return {
+    ...result,
+    content: parsed.content,
+    toolCalls: parsed.toolCalls.map((call) => ({ ...call, id: `call_dsml_${randomUUID()}` })),
+  }
+}
+
 /** Extracts token usage from a non-streaming chat-completions response, if present. */
 function extractUsage(parsed: Record<string, unknown>): { inputTokens: number; outputTokens: number; cachedInputTokens?: number } | undefined {
   const usage = parsed.usage as { prompt_tokens?: number; completion_tokens?: number; prompt_cache_hit_tokens?: number } | undefined
@@ -191,10 +224,32 @@ function extractFinishReason(parsed: Record<string, unknown>): string | undefine
 function emptyResponseError(finishReason: string | undefined): Error & { finishReason?: string } {
   const message = finishReason === 'length'
     ? 'The model\'s response was cut off because it ran out of tokens. Try increasing the max output tokens or shortening the conversation.'
-    : 'The model returned an empty response. The conversation may be too long for this model — try starting a new conversation.'
+    : 'The model returned an empty response instead of an answer.'
   const err = new Error(message) as Error & { finishReason?: string }
+  err.name = 'EmptyProviderResponseError'
   err.finishReason = finishReason
   return err
+}
+
+/** A partial response is not a completed answer or an executable tool batch. */
+function validateCompletion(content: string | null, toolCalls: ToolCallResult[], finishReason?: string, requireFinishReason = false, reasoningContent?: string): void {
+  if (finishReason === 'length' || finishReason === 'content_filter' || finishReason === 'insufficient_system_resource' || finishReason === 'aborted' || (requireFinishReason && !finishReason)) {
+    const detail = finishReason === 'length'
+      ? 'The model ran out of tokens before completing its response. Increase the max output tokens or reduce thinking effort.'
+      : finishReason === 'content_filter'
+        ? 'The provider filtered its response.'
+        : finishReason === 'insufficient_system_resource'
+          ? 'The provider interrupted its response because of insufficient inference resources.'
+          : finishReason === 'aborted'
+            ? 'The provider aborted its response.'
+            : 'The provider stream ended without a completion finish reason.'
+    throw Object.assign(new Error(`${detail} No tool calls from this response were executed.`), { finishReason, rejectedToolCallCount: toolCalls.length })
+  }
+  if (!content?.trim() && !toolCalls.length) throw Object.assign(emptyResponseError(finishReason), { reasoningContent })
+}
+
+function logCompletion(path: string, content: string | null, toolCalls: ToolCallResult[], finishReason?: string): void {
+  debugLog('openai', `${path}: finishReason=${finishReason ?? 'missing'} contentChars=${content?.length ?? 0} tools=${toolCalls.length}`)
 }
 
 interface StreamOptions {
@@ -242,14 +297,17 @@ function streamChatCompletions(
           options.onCitations?.(extractCitations(parsed))
           const content = parsed.choices?.[0]?.message?.content
           if (content) { fullContent = content; onChunk(content) }
-        } catch { /* malformed */ }
+          const finishReason = extractFinishReason(parsed)
+          logCompletion('stream-json', content, [], finishReason)
+          validateCompletion(content, [], finishReason)
+        } catch (error) { finish.reject(error as Error); return }
         finish.resolve(fullContent)
       })
       res.on('error', (err: Error) => finish.reject(err))
       return
     }
 
-    let sawEmptyStop = false
+    let finishReason: string | undefined
     let reasoningBlockOpen = false
     parseSseStream(res, (data) => {
       try {
@@ -261,7 +319,7 @@ function streamChatCompletions(
         }
         const choice = parsed.choices?.[0]
         const delta = choice?.delta
-        const finishReason = choice?.finish_reason
+        if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason
         const textContent = delta?.content ?? choice?.message?.content
         const reasoning = delta?.reasoning ?? delta?.reasoning_content
         if (reasoning && typeof reasoning === 'string') {
@@ -281,18 +339,16 @@ function streamChatCompletions(
             options.onThinkingEnd?.('reasoning-0')
             reasoningBlockOpen = false
           }
-          sawEmptyStop = true
         }
       } catch {
         // Skip malformed chunks
       }
     })
       .then(() => {
+        if (reasoningBlockOpen) options.onThinkingEnd?.('reasoning-0')
         if (latestUsage) options.onUsage?.(latestUsage)
-        if (fullContent === '' && sawEmptyStop) {
-          finish.reject(new Error('The model returned an empty response. The conversation may be too long for this model — try starting a new conversation.'))
-          return
-        }
+        logCompletion('stream', fullContent, [], finishReason)
+        validateCompletion(fullContent, [], finishReason, isDeepSeek(endpoint.url))
         finish.resolve(fullContent)
       })
       .catch((err: Error) => finish.reject(err))
@@ -357,12 +413,13 @@ function streamChatCompletionsWithTools(
             content,
             ...(typeof msg?.reasoning_content === 'string' ? { reasoningContent: msg.reasoning_content } : {}),
             toolCalls: extractToolCalls(msg),
+            ...(extractFinishReason(parsed) ? { finishReason: extractFinishReason(parsed) } : {}),
             ...(typeof parsed.model === 'string' ? { model: parsed.model } : {}),
             ...(usage ? { usage } : {}),
           }
-        } catch {
-          // Keep the empty result; the normal tool-loop recovery handles it.
-        }
+          logCompletion('tool-stream-json', content, streamedResult.toolCalls, streamedResult.finishReason)
+          validateCompletion(content, streamedResult.toolCalls, streamedResult.finishReason, false, streamedResult.reasoningContent)
+        } catch (error) { finish.reject(error as Error); return }
         finish.resolve(streamedResult.content ?? '')
       })
       res.on('error', (err: Error) => finish.reject(err))
@@ -373,7 +430,7 @@ function streamChatCompletionsWithTools(
     let model: string | undefined
     let usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number } | undefined
     let reasoningContent = ''
-    let sawEmptyStop = false
+    let finishReason: string | undefined
     let reasoningBlockOpen = false
     const calls = new Map<number, { id: string; name: string; arguments: string }>()
 
@@ -387,6 +444,7 @@ function streamChatCompletionsWithTools(
           usage = extractUsage(parsed as Record<string, unknown>)
         }
         const choice = parsed.choices?.[0]
+        if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason
         const delta = choice?.delta ?? {}
         const textContent = delta.content ?? choice?.message?.content
         const reasoning = delta.reasoning ?? delta.reasoning_content
@@ -426,7 +484,6 @@ function streamChatCompletionsWithTools(
           if (typeof delta.function_call.arguments === 'string') existing.arguments += delta.function_call.arguments
           calls.set(0, existing)
         }
-        if (!textContent && choice?.finish_reason === 'stop') sawEmptyStop = true
       } catch {
         // Skip malformed chunks; the provider stream parser continues.
       }
@@ -437,18 +494,17 @@ function streamChatCompletionsWithTools(
           .sort(([a], [b]) => a - b)
           .map(([, call]) => ({ id: call.id, function: { name: call.name, arguments: call.arguments } }))
         const toolCalls = extractToolCalls({ tool_calls: rawCalls })
-        if (sawEmptyStop && fullContent === '' && toolCalls.length === 0) {
-          finish.reject(new Error('The model returned an empty response. The conversation may be too long for this model — try starting a new conversation.'))
-          return
-        }
+        if (usage) options.onUsage?.(usage)
+        logCompletion('tool-stream', fullContent, toolCalls, finishReason)
+        validateCompletion(fullContent, toolCalls, finishReason, isDeepSeek(endpoint.url), reasoningContent)
         streamedResult = {
           content: fullContent || null,
           ...(reasoningContent ? { reasoningContent } : {}),
           toolCalls,
+          ...(finishReason ? { finishReason } : {}),
           ...(model ? { model } : {}),
           ...(usage ? { usage } : {}),
         }
-        if (usage) options.onUsage?.(usage)
         finish.resolve(fullContent)
       })
       .catch((err: Error) => finish.reject(err))
@@ -485,7 +541,18 @@ export async function sendOpenAIMessage(
   const body = JSON.stringify(bodyObj)
   debugLog('openai', `stream: model=${model} baseUrl=${baseUrl ?? 'openai-default'} reasoningEffort=${bodyObj.reasoning_effort ?? 'none'} msgs=${messages.length} keyLen=${apiKey.length}`)
 
-  return streamChatCompletions(conversationId, openAiEndpoint(apiKey, baseUrl), body, onChunk, options)
+  if (!isDeepSeek(baseUrl)) return streamChatCompletions(conversationId, openAiEndpoint(apiKey, baseUrl), body, onChunk, options)
+  const markupBuffer = createToolMarkupBuffer(onChunk)
+  try {
+    const content = await streamChatCompletions(conversationId, openAiEndpoint(apiKey, baseUrl), body, markupBuffer.write, options)
+    if (!markupBuffer.flush() || hasUnexecutedToolMarkup(content)) {
+      throw new Error('DeepSeek returned tool calls as text instead of structured tool calls. No calls in that text were executed; please retry or use another model.')
+    }
+    return content
+  } catch (error) {
+    markupBuffer.flush()
+    throw error
+  }
 }
 
 export async function sendOpenAINonStreaming(
@@ -566,33 +633,20 @@ export async function sendOpenAIWithTools(
   const content = typeof msg?.content === 'string' ? msg.content : null
   const toolCalls = extractToolCalls(msg)
   const finishReason = extractFinishReason(parsed)
-  // Mirrors the streaming path's empty-stop detection (see streamChatCompletions above), which this
-  // non-streaming call previously lacked entirely: a `null`/empty message with no tool calls and a
-  // terminal finish_reason ('stop' or 'length') means the model produced nothing usable, not that it
-  // chose to say nothing. Surfacing this as a specific error (instead of silently returning
-  // `content: null`) lets the tool loop show an actionable message and, on 'length', retry with a
-  // bigger token budget instead of the vague "no final response" fallback.
-  if (!content && toolCalls.length === 0 && (finishReason === 'stop' || finishReason === 'length')) {
-    debugLog('openai', `withTools: empty response detected finishReason=${finishReason ?? 'unknown'} model=${model}`)
-    throw emptyResponseError(finishReason)
-  }
-  return {
+  logCompletion('withTools', content, toolCalls, finishReason)
+  validateCompletion(content, toolCalls, finishReason, false, typeof reasoning === 'string' ? reasoning : undefined)
+  return normalizeDeepSeekToolCalls({
     content,
     toolCalls,
+    ...(finishReason ? { finishReason } : {}),
     ...(typeof reasoning === 'string' ? { reasoningContent: reasoning } : {}),
     ...(typeof parsed.model === 'string' ? { model: parsed.model } : {}),
     ...(usage ? { usage } : {}),
     ...(citations.length > 0 ? { citations } : {}),
-  }
+  }, tools, toolChoice, baseUrl)
 }
 
-/**
- * Wraps {@link sendOpenAIWithTools} with a single automatic retry when the forced final answer
- * came back empty because the model hit its `max_tokens` cap (`finishReason === 'length'`). Long
- * agentic tool loops routinely leave little budget for the wrap-up summary; a one-shot retry with a
- * doubled budget (capped at 16384, matching the app-wide max_tokens ceiling) recovers the common
- * case instead of surfacing a truncation error to the user.
- */
+/** Compatibility entry point. Chat owns the single, turn-wide output-budget recovery. */
 export async function sendOpenAIWithToolsResilient(
   apiKey: ProviderCredentialInput,
   model: string,
@@ -602,18 +656,10 @@ export async function sendOpenAIWithToolsResilient(
   options: Parameters<typeof sendOpenAIWithTools>[5] = {},
   baseUrl?: string,
 ): Promise<ProviderNonStreamResult> {
-  try {
-    return await sendOpenAIWithTools(apiKey, model, messages, tools, toolChoice, options, baseUrl)
-  } catch (error) {
-    const finishReason = error instanceof Error ? (error as Error & { finishReason?: string }).finishReason : undefined
-    if (finishReason !== 'length') throw error
-    const bumped = Math.min(16384, (options.maxTokens ?? 4096) * 2)
-    debugLog('openai', `withTools: retrying truncated final answer with bumped max_tokens=${bumped} model=${model}`)
-    return sendOpenAIWithTools(apiKey, model, messages, tools, toolChoice, { ...options, maxTokens: bumped }, baseUrl)
-  }
+  return sendOpenAIWithTools(apiKey, model, messages, tools, toolChoice, options, baseUrl)
 }
 
-export function sendOpenAIWithToolsStream(
+export async function sendOpenAIWithToolsStream(
   apiKey: ProviderCredentialInput,
   model: string,
   messages: ProviderMessage[],
@@ -646,13 +692,32 @@ export function sendOpenAIWithToolsStream(
     bodyObj.tool_choice = toolChoice
   }
   applyProviderOptions(bodyObj, model, options.thinkingEffort, baseUrl)
-  return streamChatCompletionsWithTools(
-    options.conversationId ?? '',
-    openAiEndpoint(apiKey, baseUrl),
-    JSON.stringify(bodyObj),
-    onChunk,
-    options,
-  )
+  let emittedLength = 0
+  const markupBuffer = isDeepSeek(baseUrl) ? createToolMarkupBuffer((chunk) => {
+    emittedLength += chunk.length
+    onChunk(chunk)
+  }) : undefined
+  let result: ProviderNonStreamResult
+  try {
+    result = await streamChatCompletionsWithTools(
+      options.conversationId ?? '',
+      openAiEndpoint(apiKey, baseUrl),
+      JSON.stringify(bodyObj),
+      markupBuffer?.write ?? onChunk,
+      options,
+    )
+  } catch (error) {
+    markupBuffer?.flush()
+    throw error
+  }
+  const normalized = normalizeDeepSeekToolCalls(result, tools, toolChoice, baseUrl)
+  if (normalized !== result) {
+    const remaining = (normalized.content ?? '').slice(emittedLength)
+    if (remaining) onChunk(remaining)
+  } else {
+    markupBuffer?.flush()
+  }
+  return normalized
 }
 
 export async function sendAzureMessage(
