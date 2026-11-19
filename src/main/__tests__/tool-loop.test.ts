@@ -17,10 +17,11 @@ vi.mock('../mcp', () => ({
   servers: mockServers
 }))
 
-import { MCP_MAX_ITERATIONS, MCP_REQUIRED_ITERATIONS, MAX_TOOL_RESULT_CHARS, MAX_LOOP_CONTEXT_CHARS, runProviderMcpToolLoop } from '../tool-loop'
+import { MCP_MAX_ITERATIONS, MCP_REQUIRED_ITERATIONS, MAX_TOOL_RESULT_CHARS, runProviderMcpToolLoop } from '../tool-loop'
 import type { ModelToolCaller, ModelToolStreamCaller } from '../tool-loop'
 import type { ProviderMessage } from '../providers'
 import type { ToolDefinition } from '../provider-types'
+import { estimateToolRequestTokens, toolLoopInputBudget } from '../tool-loop-context'
 
 function makeWebContents() {
   return {
@@ -83,6 +84,55 @@ describe('runProviderMcpToolLoop', () => {
     mockServers.clear()
     mockServers.set('server-1', { config: { name: 'Browser Server' } })
     mockCallMcpTool.mockResolvedValue({ success: true, result: 'clicked' })
+  })
+
+  it('continues the large Flash investigation and records exact per-turn provider history', async () => {
+    const history = vi.fn()
+    const messages: ProviderMessage[] = [{ role: 'user', content: 'Investigate profiles ' + 'x'.repeat(119_742) }]
+    const caller: ModelToolCaller = vi.fn()
+      .mockResolvedValueOnce({ content: null, reasoningContent: 'Read the file', toolCalls: [{ id: 'read', name: 'server-1__click', arguments: {} }] })
+      .mockResolvedValueOnce({ content: 'Profiles can be added.', reasoningContent: 'Source confirms it', toolCalls: [] })
+    const result = await runProviderMcpToolLoop(caller, messages, toolDefs, toolMap, 'agent', null, undefined, vi.fn(),
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, { contextWindow: 1_000_000, maxOutputTokens: 16_384, onHistory: history })
+    expect(result).toBe('Profiles can be added.')
+    expect(caller).toHaveBeenCalledTimes(2)
+    expect(caller).toHaveBeenLastCalledWith(expect.arrayContaining([
+      expect.objectContaining({ role: 'assistant', reasoning_content: 'Read the file', tool_calls: expect.any(Array) }),
+      expect.objectContaining({ role: 'tool', tool_call_id: 'read' }),
+    ]), toolDefs, 'auto')
+    expect(history).toHaveBeenCalledWith([
+      expect.objectContaining({ role: 'assistant', reasoning_content: 'Read the file' }),
+      expect.objectContaining({ role: 'tool', tool_call_id: 'read' }),
+      { role: 'assistant', content: 'Profiles can be added.', reasoning_content: 'Source confirms it' },
+    ])
+  })
+
+  it('retries streamed DSML as a structured tool call without displaying or executing the markup', async () => {
+    const markup = '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="server-1__click"></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>'
+    const stream: ModelToolStreamCaller = vi.fn()
+      .mockImplementationOnce(async (_messages, _tools, _choice, chunk) => {
+        chunk(markup.slice(0, 3))
+        chunk(markup.slice(3))
+        return { content: markup, toolCalls: [] }
+      })
+      .mockResolvedValueOnce({ content: null, toolCalls: [{ id: 'call-1', name: 'server-1__click', arguments: {} }] })
+      .mockResolvedValueOnce({ content: 'done', toolCalls: [] })
+    const onChunk = vi.fn()
+    const result = await runProviderMcpToolLoop(vi.fn(), [{ role: 'user', content: 'test' }], toolDefs, toolMap, 'agent', null, undefined, onChunk, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, stream)
+    expect(result).toBe('done')
+    expect(onChunk.mock.calls.flat().join('')).toBe('done')
+    expect(mockCallMcpTool).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(stream).mock.calls[1][2]).toBe('required')
+  })
+
+  it('reports repeated unexecuted markup without running a tool', async () => {
+    const markup = '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="server-1__click">'
+    const caller = vi.fn().mockResolvedValue({ content: markup, toolCalls: [] })
+    const result = await runProviderMcpToolLoop(caller, [{ role: 'user', content: 'test' }], toolDefs, toolMap, 'agent', null, undefined, vi.fn())
+    expect(result).toContain('Those calls were not executed')
+    expect(caller).toHaveBeenCalledTimes(2)
+    expect(mockCallMcpTool).not.toHaveBeenCalled()
   })
 
   it('carries reasoning from an assistant tool call into the next round', async () => {
@@ -410,6 +460,9 @@ describe('runProviderMcpToolLoop', () => {
     )
 
     expect(result).toBe('fallback final')
+    const finalMessages = (caller as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0] as ProviderMessage[]
+    expect(finalMessages[0].content).toContain('Tool use has ended for this turn')
+    expect(finalMessages[0].content).not.toContain('Continue calling tools until')
     expect(caller).toHaveBeenCalledTimes(MCP_MAX_ITERATIONS + 1)
     expect(caller).toHaveBeenLastCalledWith(expect.any(Array), undefined, 'none')
   })
@@ -505,6 +558,46 @@ describe('runProviderMcpToolLoop', () => {
     expect(result).toBe('Done.')
     expect(choices).toEqual(['auto', 'required', 'auto'])
     expect(mockCallMcpTool).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    "I'll investigate the Hermes profile handling and the model drop-down wiring, without changing anything.",
+    "I'll check DeepSeek's current API docs on tool calling and reasoning-model constraints for the flash model, and re-read how the loop handles a zero-tool-call response.",
+  ])('recovers the transcript preamble: %s', async (preamble) => {
+    const caller: ModelToolCaller = vi.fn()
+      .mockResolvedValueOnce({ content: preamble, reasoningContent: 'Inspect the implementation.', toolCalls: [] })
+      .mockResolvedValueOnce({ content: null, toolCalls: [{ id: 'c1', name: 'server-1__click', arguments: {} }] })
+      .mockResolvedValueOnce({ content: 'Here are the findings.', toolCalls: [] })
+    const result = await runProviderMcpToolLoop(caller, [{ role: 'user', content: 'Investigate the issue' }], toolDefs, toolMap, 'agent', null, undefined, vi.fn())
+    expect(result).toBe('Here are the findings.')
+    expect(vi.mocked(caller).mock.calls[1][2]).toBe('required')
+    expect(vi.mocked(caller).mock.calls[1][0]).toContainEqual({ role: 'assistant', content: preamble, reasoning_content: 'Inspect the implementation.' })
+    expect(mockCallMcpTool).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    'The selector accepts model targets. Hermes profiles can use the existing target format.',
+    'The documentation says: "I will read the file now." This is an example.',
+  ])('accepts a factual answer after inspection: %s', async (answer) => {
+    const caller: ModelToolCaller = vi.fn()
+      .mockResolvedValueOnce({ content: null, toolCalls: [{ id: 'c1', name: 'server-1__browser_snapshot', arguments: {} }] })
+      .mockResolvedValueOnce({ content: answer, toolCalls: [] })
+    const result = await runProviderMcpToolLoop(caller, [{ role: 'user', content: 'Investigate the selector' }], toolDefsWithSnapshot, toolMapWithSnapshot, 'agent', null, undefined, vi.fn())
+    expect(result).toBe(answer)
+    expect(caller).toHaveBeenCalledTimes(2)
+    expect(mockCallMcpTool).toHaveBeenCalledOnce()
+  })
+
+  it('bounds blank-answer recovery without forcing the clarification tool', async () => {
+    const askUser = [{ type: 'function' as const, function: { name: 'nexy_ask_user', description: 'Ask a question', parameters: {} } }]
+    const caller: ModelToolCaller = vi.fn().mockResolvedValue({ content: '\n\n', toolCalls: [] })
+    const chunk = vi.fn()
+    const result = await runProviderMcpToolLoop(caller, [{ role: 'user', content: 'Hello' }], askUser, new Map(), 'agent', null, undefined, chunk)
+    expect(result).toContain('repeatedly returned an empty answer')
+    expect(caller).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(caller).mock.calls.map((call) => call[2])).toEqual(['auto', 'auto'])
+    expect(chunk.mock.calls.flat().join('')).toBe(result)
+    expect(mockCallMcpTool).not.toHaveBeenCalled()
   })
 
   it('shows a BYOK tool as in progress before a slow MCP call finishes', async () => {
@@ -641,7 +734,7 @@ describe('runProviderMcpToolLoop', () => {
         return { content: null, toolCalls: [{ id: 'c1', name: 'server-1__browser_snapshot', arguments: {} }] }
       }
       // Both the planning response and the recovery iteration return text
-      return { content: 'Still planning...', toolCalls: [] }
+      return { content: 'I will inspect the page now.', toolCalls: [] }
     })
 
     const onChunk = vi.fn()
@@ -656,8 +749,7 @@ describe('runProviderMcpToolLoop', () => {
       onChunk
     )
 
-    // After one recovery attempt the loop exits with the second planning text
-    expect(result).toBe('Still planning...')
+    expect(result).toContain('repeated a plan without calling a tool')
     // Exactly 3 calls: snapshot call, planning text (recovery triggered), recovery forced call (also text → exit)
     expect(caller).toHaveBeenCalledTimes(3)
     expect(choices[2]).toBe('required')
@@ -705,9 +797,9 @@ describe('runProviderMcpToolLoop', () => {
     expect(rendererCall).toBeDefined()
     expect(rendererCall![1].result).toBe(largeResult)
   })
-  it('stops calling tools once accumulated context exceeds the budget and forces a final answer', async () => {
+  it('continues tool use after compacting context and finalises at the iteration limit', async () => {
     // Each tool result is right at MAX_TOOL_RESULT_CHARS, so a handful of rounds pushes the
-    // conversation over MAX_LOOP_CONTEXT_CHARS well before MCP_MAX_ITERATIONS is reached.
+    // conversation over the default input budget before the iteration limit is reached.
     mockCallMcpTool.mockResolvedValue({ success: true, result: 'x'.repeat(MAX_TOOL_RESULT_CHARS) })
 
     let toolCallCount = 0
@@ -732,8 +824,7 @@ describe('runProviderMcpToolLoop', () => {
     )
 
     expect(result).toBe('final answer with what I have')
-    // Should stop well short of MCP_MAX_ITERATIONS once the budget is exceeded
-    expect(toolCallCount).toBeLessThan(MCP_MAX_ITERATIONS)
+    expect(toolCallCount).toBe(MCP_MAX_ITERATIONS)
     expect(caller).toHaveBeenLastCalledWith(expect.any(Array), undefined, 'none')
   })
 
@@ -760,11 +851,7 @@ describe('runProviderMcpToolLoop', () => {
       vi.fn()
     )
 
-    const totalChars = (finalMessages as { content?: unknown }[]).reduce(
-      (sum, m) => sum + (typeof m.content === 'string' ? m.content.length : 0),
-      0
-    )
-    expect(totalChars).toBeLessThan(MAX_LOOP_CONTEXT_CHARS * 1.5)
+    expect(estimateToolRequestTokens(finalMessages as ProviderMessage[], toolDefs)).toBeLessThanOrEqual(toolLoopInputBudget({}))
     // Leading system+user messages are preserved
     expect(finalMessages[0]).toMatchObject({ role: 'system' })
     expect(finalMessages[1]).toMatchObject({ role: 'user', content: 'gather a lot of context' })
@@ -990,6 +1077,78 @@ describe('runProviderMcpToolLoop', () => {
     expect(caller).not.toHaveBeenCalledWith(expect.any(Array), undefined, 'none')
   })
 
+  it('falls back once when the forced final stream contains only whitespace', async () => {
+    const caller: ModelToolCaller = vi.fn(async (_messages, _tools, choice) => choice === 'none'
+      ? { content: 'Completed answer.', toolCalls: [] }
+      : { content: null, toolCalls: [{ id: randomId(), name: 'server-1__click', arguments: {} }] })
+    const chunk = vi.fn()
+    const result = await runWithFinalStream(caller, chunk, async (_messages, emit) => { emit('\n\n') })
+    expect(result.trim()).toBe('Completed answer.')
+    expect(chunk.mock.calls.flat().join('')).toBe(result)
+    expect(caller).toHaveBeenCalledTimes(MCP_MAX_ITERATIONS + 1)
+    expect(mockCallMcpTool).toHaveBeenCalledTimes(MCP_MAX_ITERATIONS)
+  })
+
+  it('reports a blank final fallback even after interstitial text has streamed', async () => {
+    let round = 0
+    const caller: ModelToolCaller = vi.fn(async (_messages, _tools, choice) => choice === 'none'
+      ? { content: '\n\n', toolCalls: [] }
+      : { content: ++round === 1 ? 'Checking the files. ' : null, toolCalls: [{ id: randomId(), name: 'server-1__click', arguments: {} }] })
+    const chunk = vi.fn()
+    const result = await runWithFinalStream(caller, chunk, async () => {})
+    expect(result).toContain('Checking the files.')
+    expect(result).toContain('empty final answer')
+    expect(chunk.mock.calls.flat().join('')).toBe(result)
+  })
+
+  it('recovers fragmented DSML in the forced final stream without displaying or executing it', async () => {
+    const caller: ModelToolCaller = vi.fn(async (_messages, _tools, choice) => choice === 'none'
+      ? { content: 'Recovered final answer.', toolCalls: [] }
+      : { content: null, toolCalls: [{ id: randomId(), name: 'server-1__click', arguments: {} }] })
+    const onChunk = vi.fn()
+    const markup = '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="server-1__click"></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>'
+    const result = await runWithFinalStream(caller, onChunk, async (_messages, chunk) => {
+      for (const char of markup) chunk(char)
+    })
+    expect(result).toBe('Recovered final answer.')
+    expect(onChunk.mock.calls.flat().join('')).toBe(result)
+    expect(mockCallMcpTool).toHaveBeenCalledTimes(MCP_MAX_ITERATIONS)
+  })
+
+  it('reports repeated forced-final markup from streaming and non-streaming calls', async () => {
+    const markup = '<｜DSML｜tool_calls><｜DSML｜invoke name="server-1__click">'
+    const caller: ModelToolCaller = vi.fn(async (_messages, _tools, choice) => choice === 'none'
+      ? { content: markup, toolCalls: [] }
+      : { content: null, toolCalls: [{ id: randomId(), name: 'server-1__click', arguments: {} }] })
+    const onChunk = vi.fn()
+    const result = await runWithFinalStream(caller, onChunk, async (_messages, chunk) => { chunk(markup) })
+    expect(result).toContain('No calls in that text were executed')
+    expect(result).not.toContain('DSML')
+    expect(onChunk.mock.calls.flat().join('')).toBe(result)
+    expect(mockCallMcpTool).toHaveBeenCalledTimes(MCP_MAX_ITERATIONS)
+  })
+
+  it('rejects an oversized current task before sending an invalid request', async () => {
+    const caller: ModelToolCaller = vi.fn()
+    await expect(runProviderMcpToolLoop(caller,
+      [{ role: 'user', content: 'x'.repeat(100_001) }],
+      toolDefs, toolMap, 'agent', null, undefined, vi.fn()))
+      .rejects.toThrow('current task and system instructions exceed')
+    expect(caller).not.toHaveBeenCalled()
+    expect(mockCallMcpTool).not.toHaveBeenCalled()
+  })
+
+  it('preserves ordinary HTML in the forced final stream', async () => {
+    const caller: ModelToolCaller = vi.fn(async () => ({ content: null, toolCalls: [{ id: randomId(), name: 'server-1__click', arguments: {} }] }))
+    const onChunk = vi.fn()
+    const result = await runWithFinalStream(caller, onChunk, async (_messages, chunk) => {
+      chunk('<div>')
+      chunk('example</div>')
+    })
+    expect(result).toBe('<div>example</div>')
+    expect(onChunk.mock.calls.flat().join('')).toBe(result)
+  })
+
   it('falls back to the non-streaming final caller when finalStreamCaller fails before emitting', async () => {
     const caller: ModelToolCaller = vi.fn(async (_messages, _tools, toolChoice) => {
       if (toolChoice === 'none') return { content: 'fallback final', toolCalls: [] }
@@ -1034,13 +1193,11 @@ describe('runProviderMcpToolLoop', () => {
     const result = await runWithFinalStream(caller, onChunk, finalStreamCaller)
 
     // FIXED: the specific truncation diagnosis now reaches the user instead of the generic placeholder.
-    expect(result).toBe(
-      'The model returned an empty response. The conversation may be too long for this model — try starting a new conversation.'
-    )
+    expect(result).toContain('The model returned an empty response.')
     expect(caller).toHaveBeenLastCalledWith(expect.any(Array), undefined, 'none')
   })
 
-  it('still falls back to the generic placeholder for non-diagnostic errors on the final call', async () => {
+  it('surfaces non-diagnostic errors on the final call', async () => {
     const caller: ModelToolCaller = vi.fn(async (_messages, _tools, toolChoice) => {
       if (toolChoice === 'none') throw new Error('socket hang up')
       return { content: null, toolCalls: [{ id: randomId(), name: 'server-1__click', arguments: {} }] }
@@ -1051,7 +1208,8 @@ describe('runProviderMcpToolLoop', () => {
 
     const result = await runWithFinalStream(caller, onChunk, finalStreamCaller)
 
-    expect(result).toBe('I completed some tool actions, but the provider stopped before providing a final response.')
+    expect(result).toContain('socket hang up')
+    expect(onChunk).toHaveBeenCalledWith(expect.stringContaining('socket hang up'))
   })
 
   it('keeps partial text when finalStreamCaller fails after emitting', async () => {
@@ -1066,10 +1224,20 @@ describe('runProviderMcpToolLoop', () => {
       throw new Error('connection dropped mid-stream')
     })
 
-    await expect(runWithFinalStream(caller, onChunk, finalStreamCaller)).resolves.toBe('partial answer')
+    await expect(runWithFinalStream(caller, onChunk, finalStreamCaller)).resolves.toContain('partial answer\n\nThe provider stopped before completing its response: connection dropped mid-stream')
     expect(onChunk).toHaveBeenCalledWith('partial answer')
     // No fallback: the non-streaming forced-'none' call must not run (would duplicate the text).
     expect(caller).not.toHaveBeenCalledWith(expect.any(Array), undefined, 'none')
+  })
+
+  it('reports provider errors after a tool round', async () => {
+    const caller: ModelToolCaller = vi.fn()
+      .mockResolvedValueOnce({ content: null, toolCalls: [{ id: randomId(), name: 'server-1__click', arguments: {} }] })
+      .mockRejectedValueOnce(new Error('provider rejected request'))
+    const onChunk = vi.fn()
+    const result = await runProviderMcpToolLoop(caller, [{ role: 'user', content: 'hello' }], toolDefs, toolMap, 'agent-1', null, makeWebContents(), onChunk)
+    expect(result).toContain('provider rejected request')
+    expect(onChunk).toHaveBeenCalledWith(expect.stringContaining('provider rejected request'))
   })
 })
 
