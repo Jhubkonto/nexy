@@ -1379,7 +1379,8 @@ class ChatViewModel(
         val normalized = model?.takeIf { it.isNotBlank() && it != "default" }
         _userSelectedModel.value = true
         _selectedModel.value = normalized
-        if (cliBackend == "hermes-cli" && (hermesProfile != null || _userSelectedHermesProfile.value)) {
+        // Profile and model are always written together for Hermes, including the default profile.
+        if (cliBackend == "hermes-cli") {
             _userSelectedHermesProfile.value = true
             _selectedHermesProfile.value = hermesProfile?.trim()?.takeIf { it.isNotBlank() }
         }

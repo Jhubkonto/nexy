@@ -35,6 +35,8 @@ data class ModelOption(
     val vendor: String? = null,
     val isCliSourced: Boolean = false,
     val backend: String? = null,
+    /** Hermes profile for entries from a `hermes-cli:<profile>` group; null elsewhere. */
+    val hermesProfile: String? = null,
 )
 
 data class NewContentConversation(

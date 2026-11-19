@@ -116,6 +116,7 @@ import io.nexy.android.data.model.PromptEntry
 import io.nexy.android.data.model.isVisibleInProject
 import io.nexy.android.data.model.normalizePromptProjectId
 import io.nexy.android.data.model.WsEvent
+import io.nexy.android.data.model.HERMES_DEFAULT_PROFILE
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.snapshotFlow
@@ -275,7 +276,6 @@ fun ChatScreen(
     val models by WsRepository.models.collectAsStateWithLifecycle()
     val modelSource by WsRepository.modelSource.collectAsStateWithLifecycle()
     val cliStatus by WsRepository.cliStatus.collectAsStateWithLifecycle()
-    val hermesInfo by WsRepository.hermesInfo.collectAsStateWithLifecycle()
     val connectionState by WsRepository.connectionState.collectAsStateWithLifecycle()
     val capabilities by WsRepository.capabilities.collectAsStateWithLifecycle()
     val availableSkills by WsRepository.skills.collectAsStateWithLifecycle()
@@ -908,6 +908,8 @@ fun ChatScreen(
                 if (!chatBackend.isNullOrBlank()) put("backend", chatBackend)
                 if (!chatAgentId.isNullOrBlank()) put("agentId", chatAgentId)
                 if (!targetHermesProfile.isNullOrBlank()) put("hermesProfile", targetHermesProfile)
+                // One `hermes-cli:<profile>` group per Hermes profile replaces the old profile dropdown.
+                put("hermesProfileGroups", true)
             },
         )
     }
@@ -1132,15 +1134,24 @@ fun ChatScreen(
                 models = chatModels,
                 cliStatus = cliStatus,
                 selectedModelId = activeModelId,
-                hermesProfiles = if (activeCliBackend == "hermes-cli") hermesInfo.profiles else emptyList(),
                 selectedHermesProfile = targetHermesProfile,
-                onSelectHermesProfile = { profile ->
-                    vm.setHermesProfile(profile)
-                    selectedModel?.let { model -> vm.setModel(model, profile, "hermes-cli") }
-                },
                 subtitle = backendLockDetail,
                 emptyStateText = emptyModelListDetail(modelSource),
                 effectiveMode = effectiveMode,
+                onSelectOption = { option ->
+                    val profile = option?.hermesProfile
+                    if (profile != null && forcedAgentBackend == null) {
+                        // Profile, model and backend are written together; default is stored as null.
+                        vm.setModel(option.id, profile.takeIf { it != HERMES_DEFAULT_PROFILE }, "hermes-cli")
+                    } else {
+                        val modelId = option?.let { if (it.isCliSourced && it.backend != null) "${it.backend}:${it.id}" else it.id }
+                        val selectedBackend = modelId?.substringBefore(':')?.takeIf { it in setOf("claude-cli", "codex-cli", "hermes-cli") }
+                            ?: option?.backend
+                        val storedModel = if (selectedBackend != null && modelId?.startsWith("$selectedBackend:") == true) modelId.substringAfter(':') else modelId
+                        vm.setModel(storedModel, if (selectedBackend == "hermes-cli") targetHermesProfile else null, selectedBackend)
+                    }
+                    scope.launch { modelSheetState.hide() }.invokeOnCompletion { showModelSheet = false }
+                },
             ) { modelId ->
                 val selectedBackend = modelId?.substringBefore(':')?.takeIf { it in setOf("claude-cli", "codex-cli", "hermes-cli") }
                     ?: models.find { it.id == modelId }?.backend

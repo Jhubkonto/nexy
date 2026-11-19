@@ -1006,6 +1006,37 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun selectingHermesProfileModelWritesProfileModelAndBackendTogether() = runTest {
+        val fakeWs = FakeWsClient()
+        val vm = ChatViewModel("conv-1", fakeWs)
+        advanceUntilIdle()
+
+        vm.setModel("openrouter/auto", "localllm", "hermes-cli")
+        assertEquals(
+            SentCommand(
+                "conversation:set-model",
+                mapOf(
+                    "conversationId" to "conv-1",
+                    "model" to "openrouter/auto",
+                    "cliBackend" to "hermes-cli",
+                    "hermesProfile" to "localllm",
+                ),
+            ),
+            fakeWs.sentCommands.last(),
+        )
+        assertEquals("localllm", vm.selectedHermesProfile.value)
+
+        // Picking the same model from the default profile group clears the override explicitly.
+        vm.setModel("openrouter/auto", null, "hermes-cli")
+        assertEquals("", fakeWs.sentCommands.last().data["hermesProfile"])
+        assertEquals("hermes-cli", fakeWs.sentCommands.last().data["cliBackend"])
+        assertEquals(null, vm.selectedHermesProfile.value)
+        assertTrue(vm.userSelectedHermesProfile.value)
+
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
     fun refreshMessagesRequestsHistoryAgain() = runTest {
         val fakeWs = FakeWsClient()
         val vm = ChatViewModel("conv-1", fakeWs)

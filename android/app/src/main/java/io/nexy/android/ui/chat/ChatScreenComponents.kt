@@ -30,11 +30,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuAnchorType
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -63,7 +59,7 @@ import androidx.compose.ui.unit.dp
 import io.nexy.android.ui.components.nexyDither
 import io.nexy.android.data.model.CliInstallInfo
 import io.nexy.android.data.model.ModelOption
-import io.nexy.android.data.model.HermesProfileInfo
+import io.nexy.android.data.model.HERMES_DEFAULT_PROFILE
 import io.nexy.android.data.model.PromptEntry
 import io.nexy.android.data.model.isVisibleInProject
 import io.nexy.android.data.model.WsEvent
@@ -203,13 +199,19 @@ fun ModelPickerSheet(
     emptyStateText: String = "No models available yet.",
     showDefaultModel: Boolean = true,
     effectiveMode: io.nexy.android.data.EffectiveConnectionMode = io.nexy.android.data.EffectiveConnectionMode.CONNECTED,
-    hermesProfiles: List<HermesProfileInfo> = emptyList(),
+    /** Disambiguates the active entry when the same bare model is offered by several Hermes profiles. */
     selectedHermesProfile: String? = null,
-    onSelectHermesProfile: ((String?) -> Unit)? = null,
     qualifyCli: Boolean = false,
     unavailableBackends: Set<String> = emptySet(),
+    /** When set, receives the full option (including its Hermes profile) instead of [onSelect]. */
+    onSelectOption: ((ModelOption?) -> Unit)? = null,
     onSelect: (String?) -> Unit,
 ) {
+    val selectedProfileKey = selectedHermesProfile?.trim()?.takeIf { it.isNotEmpty() } ?: HERMES_DEFAULT_PROFILE
+    fun isSelected(model: ModelOption): Boolean {
+        val idMatches = model.id == selectedModelId || (model.isCliSourced && "${model.backend}:${model.id}" == selectedModelId)
+        return idMatches && (model.hermesProfile == null || model.hermesProfile == selectedProfileKey)
+    }
     var modelQuery by remember { mutableStateOf("") }
 
     val query = modelQuery.trim().lowercase()
@@ -235,7 +237,8 @@ fun ModelPickerSheet(
                 Text(title, style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
             }
-            val activeModel = models.firstOrNull { it.id == selectedModelId || (it.isCliSourced && "${it.backend}:${it.id}" == selectedModelId) }
+            val activeModel = models.firstOrNull { isSelected(it) }
+                ?: models.firstOrNull { it.id == selectedModelId || (it.isCliSourced && "${it.backend}:${it.id}" == selectedModelId) }
             Text("Active: ${activeModel?.let { listOfNotNull(it.label, it.vendor).joinToString(" · ") } ?: if (selectedModelId.isNullOrBlank() || selectedModelId == "default") "Default model" else selectedModelId}",
                 style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
             if (subtitle != null) {
@@ -264,66 +267,6 @@ fun ModelPickerSheet(
                 shape = MaterialTheme.shapes.medium,
             )
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(top = 4.dp))
-            if (hermesProfiles.isNotEmpty() && onSelectHermesProfile != null) {
-                var hermesProfileMenuExpanded by remember { mutableStateOf(false) }
-                val selectedProfile = selectedHermesProfile?.takeIf { it.isNotBlank() }
-                val selectedProfileLabel = selectedProfile ?: "Default profile"
-                ExposedDropdownMenuBox(
-                    expanded = hermesProfileMenuExpanded,
-                    onExpandedChange = { hermesProfileMenuExpanded = it },
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                ) {
-                    OutlinedTextField(
-                        value = selectedProfileLabel,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Hermes profile") },
-                        supportingText = { Text("Choose one of the profiles available on the desktop") },
-                        singleLine = true,
-                        trailingIcon = {
-                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = hermesProfileMenuExpanded)
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
-                    )
-                    ExposedDropdownMenu(
-                        expanded = hermesProfileMenuExpanded,
-                        onDismissRequest = { hermesProfileMenuExpanded = false },
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Default profile") },
-                            onClick = {
-                                onSelectHermesProfile(null)
-                                hermesProfileMenuExpanded = false
-                            },
-                        )
-                        hermesProfiles.filterNot { it.isDefault }.forEach { profile ->
-                            DropdownMenuItem(
-                                text = {
-                                    Column {
-                                        Text(profile.name)
-                                        val detail = listOfNotNull(profile.model, profile.description)
-                                            .joinToString(" Â· ")
-                                            .takeIf { it.isNotBlank() }
-                                        if (detail != null) {
-                                            Text(
-                                                detail,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
-                                    }
-                                },
-                                onClick = {
-                                    onSelectHermesProfile(profile.name)
-                                    hermesProfileMenuExpanded = false
-                                },
-                            )
-                        }
-                    }
-                }
-            }
         }
 
         if (showDefault && selectedVendor == null) {
@@ -333,7 +276,7 @@ fun ModelPickerSheet(
                     vendor = null,
                     selected = selectedModelId == null || selectedModelId == "default" || selectedModelId.isBlank(),
                 ) {
-                    onSelect(null)
+                    if (onSelectOption != null) onSelectOption(null) else onSelect(null)
                 }
             }
         }
@@ -357,8 +300,11 @@ fun ModelPickerSheet(
                 items(sheetItems) { item ->
                     val unavailable = item.unavailable || (item.model.backend?.let { it in unavailableBackends } == true)
                     ModelSheetItem(label = item.model.label, vendor = null,
-                        selected = item.model.id == selectedModelId || (item.model.isCliSourced && "${item.model.backend}:${item.model.id}" == selectedModelId), unavailable = unavailable) {
-                        if (!unavailable) onSelect(if (qualifyCli && item.model.isCliSourced && item.model.backend != null) "${item.model.backend}:${item.model.id}" else item.model.id)
+                        selected = isSelected(item.model), unavailable = unavailable) {
+                        if (!unavailable) {
+                            if (onSelectOption != null) onSelectOption(item.model)
+                            else onSelect(if (qualifyCli && item.model.isCliSourced && item.model.backend != null) "${item.model.backend}:${item.model.id}" else item.model.id)
+                        }
                     }
                 }
             }

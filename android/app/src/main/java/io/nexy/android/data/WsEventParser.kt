@@ -40,6 +40,8 @@ import io.nexy.android.data.model.TeachbackRubricDimension
 import io.nexy.android.data.model.CliInstallInfo
 import io.nexy.android.data.model.HermesCliInfo
 import io.nexy.android.data.model.HermesProfileInfo
+import io.nexy.android.data.model.HERMES_CLI_SOURCE_KEY
+import io.nexy.android.data.model.parseHermesSourceKey
 import io.nexy.android.data.model.ConversationExportPackData
 import io.nexy.android.data.model.PromptEntry
 import io.nexy.android.data.model.PromptVersion
@@ -542,6 +544,9 @@ fun parseWsEvent(
                         val key = group.optString("sourceKey")
                         val label = group.optString("sourceLabel")
                         val cli = group.optString("sourceType") == "cli"
+                        // `hermes-cli:<profile>` groups route to hermes-cli; the profile travels separately.
+                        val groupHermesProfile = parseHermesSourceKey(key)
+                        val groupBackend = if (groupHermesProfile != null) HERMES_CLI_SOURCE_KEY else key
                         val entries = group.optJSONArray("models") ?: continue
                         for (j in 0 until entries.length()) {
                             val entry = entries.optJSONObject(j) ?: continue
@@ -552,7 +557,8 @@ fun parseWsEvent(
                                 label = entry.optString("label").ifBlank { id },
                                 vendor = label,
                                 isCliSourced = cli,
-                                backend = if (cli) key else null,
+                                backend = if (cli) groupBackend else null,
+                                hermesProfile = groupHermesProfile,
                             ))
                         }
                     }

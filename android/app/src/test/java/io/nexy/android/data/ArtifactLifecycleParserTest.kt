@@ -66,6 +66,22 @@ class ArtifactLifecycleParserTest {
     }
 
     @Test
+    fun hermesProfileGroupsRouteToHermesAndCarryTheirProfile() = runTest {
+        val event = parseEvent(
+            """{"event":"model:list","data":{"models":[],"groups":[
+              {"sourceKey":"hermes-cli:default","sourceLabel":"Hermes · Default","sourceType":"cli","models":[{"id":"openrouter/auto","label":"Auto"}]},
+              {"sourceKey":"hermes-cli:localllm","sourceLabel":"Hermes · localllm","sourceType":"cli","models":[{"id":"openrouter/auto","label":"Auto"}]},
+              {"sourceKey":"hermes-cli","sourceLabel":"Hermes Agent","sourceType":"cli","models":[{"id":"legacy/model","label":"Legacy"}]}
+            ]}}"""
+        ) as WsEvent.ModelList
+        // Model IDs stay bare; the profile travels on the option, never inside the ID.
+        assertEquals(listOf("openrouter/auto", "openrouter/auto", "legacy/model"), event.models.map { it.id })
+        assertEquals(listOf("hermes-cli", "hermes-cli", "hermes-cli"), event.models.map { it.backend })
+        assertEquals(listOf("default", "localllm", null), event.models.map { it.hermesProfile })
+        assertEquals(listOf("Hermes · Default", "Hermes · localllm", "Hermes Agent"), event.models.map { it.vendor })
+    }
+
+    @Test
     fun parsesArtifactDetailWithStorageRootAndVersionFiles() = runTest {
         val event = parseEvent(
             """
