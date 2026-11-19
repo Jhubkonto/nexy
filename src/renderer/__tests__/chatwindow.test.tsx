@@ -1561,6 +1561,105 @@ describe("ChatWindow — Model Dropdown (O.2)", () => {
     expect(mockApi.updateAgent).not.toHaveBeenCalled();
   });
 
+  describe("Hermes profile groups", () => {
+    const profileGroups = [
+      { sourceKey: "hermes-cli:default", sourceLabel: "Hermes · Default", sourceType: "cli" as const, models: [{ id: "openrouter/auto", label: "Auto router" }] },
+      { sourceKey: "hermes-cli:localllm", sourceLabel: "Hermes · localllm", sourceType: "cli" as const, models: [{ id: "openrouter/auto", label: "Auto router" }] },
+    ];
+    const legacyGroups = [
+      { sourceKey: "hermes-cli", sourceLabel: "Hermes Agent", sourceType: "cli" as const, models: [{ id: "openrouter/auto", label: "Auto router" }] },
+    ];
+    const auth = { authenticated: true, mode: "byok" as const, user: null, cliInstalled: true, clis: { claude: false, codex: false } };
+
+    async function pickLocalllmModel(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(screen.getByRole("button", { name: /conversation model/i }));
+      await user.click(await screen.findByRole("button", { name: /^Hermes \d+ profiles?/ }));
+      await user.click(await screen.findByRole("button", { name: /^localllm/ }));
+      await user.click(await screen.findByRole("button", { name: "Auto router" }));
+    }
+
+    it("requests profile groups and persists profile, model and backend together", async () => {
+      const user = userEvent.setup();
+      mockApi.listAvailableModels.mockResolvedValue(profileGroups);
+      mockStore = createMockAppStore({
+        authState: auth,
+        currentConversationId: "conv-1",
+        conversations: [{ id: "conv-1", title: "Chat", project_id: null, model: null, pinned: false, created_at: 0, updated_at: 0 }],
+        availableModelGroups: legacyGroups,
+      });
+      setupStoreMock(useAppStore, mockStore);
+      render(<ChatWindow />);
+
+      await waitFor(() => expect(mockApi.listAvailableModels).toHaveBeenCalledWith(undefined, { hermesProfileGroups: true }));
+      await pickLocalllmModel(user);
+
+      expect(mockApi.setConversationModel).toHaveBeenCalledTimes(1);
+      expect(mockApi.setConversationModel).toHaveBeenCalledWith("conv-1", "openrouter/auto", "hermes-cli", "localllm");
+      expect(await screen.findByRole("button", { name: /conversation model: Auto router · via Hermes · localllm/i })).toBeInTheDocument();
+    });
+
+    it("stores the default profile group as no override", async () => {
+      const user = userEvent.setup();
+      mockApi.listAvailableModels.mockResolvedValue(profileGroups);
+      mockStore = createMockAppStore({
+        authState: auth,
+        currentConversationId: "conv-1",
+        conversations: [{ id: "conv-1", title: "Chat", project_id: null, model: "openrouter/auto", cli_backend: "hermes-cli", conversation_hermes_profile: "localllm", pinned: false, created_at: 0, updated_at: 0 }],
+        availableModelGroups: legacyGroups,
+      });
+      setupStoreMock(useAppStore, mockStore);
+      render(<ChatWindow />);
+
+      expect(await screen.findByRole("button", { name: /conversation model: Auto router · via Hermes · localllm/i })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: /conversation model/i }));
+      await user.click(await screen.findByRole("button", { name: /^Hermes \d+ profiles?/ }));
+      await user.click(await screen.findByRole("button", { name: /^Default/ }));
+      await user.click(await screen.findByRole("button", { name: "Auto router" }));
+      expect(mockApi.setConversationModel).toHaveBeenCalledWith("conv-1", "openrouter/auto", "hermes-cli", null);
+    });
+
+    it("keeps a draft chat's profile selection for the first send", async () => {
+      const user = userEvent.setup();
+      mockApi.listAvailableModels.mockResolvedValue(profileGroups);
+      mockStore = createMockAppStore({
+        authState: auth,
+        currentConversationId: null as string | null,
+        availableModelGroups: legacyGroups,
+      });
+      setupStoreMock(useAppStore, mockStore);
+      render(<ChatWindow />);
+
+      await waitFor(() => expect(mockApi.listAvailableModels).toHaveBeenCalledWith(undefined, { hermesProfileGroups: true }));
+      await pickLocalllmModel(user);
+      expect(mockApi.setConversationModel).not.toHaveBeenCalled();
+
+      await user.type(screen.getByRole("textbox", { name: /message input/i }), "Hello");
+      await user.click(screen.getByRole("button", { name: /^send message$/i }));
+
+      await waitFor(() => expect(mockApi.sendMessage).toHaveBeenCalledTimes(1));
+      expect(mockApi.sendMessage.mock.calls[0][2]).toEqual(expect.objectContaining({
+        model: "openrouter/auto",
+        cliBackend: "hermes-cli",
+        hermesProfile: "localllm",
+      }));
+    });
+
+    it("renders no standalone Hermes profile control in the composer", async () => {
+      mockApi.listAvailableModels.mockResolvedValue(profileGroups);
+      mockStore = createMockAppStore({
+        authState: auth,
+        currentConversationId: "conv-1",
+        conversations: [{ id: "conv-1", title: "Chat", project_id: null, model: "openrouter/auto", cli_backend: "hermes-cli", pinned: false, created_at: 0, updated_at: 0 }],
+        availableModelGroups: legacyGroups,
+      });
+      setupStoreMock(useAppStore, mockStore);
+      render(<ChatWindow />);
+
+      expect(await screen.findByRole("button", { name: /conversation model: Auto router · via Hermes · Default/i })).toBeInTheDocument();
+      expect(screen.queryByLabelText("Conversation Hermes profile")).not.toBeInTheDocument();
+    });
+  });
+
   it("locks a Hermes agent to Hermes models and uses its configured model", async () => {
     const user = userEvent.setup();
     mockStore = createMockAppStore({

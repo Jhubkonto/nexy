@@ -12,6 +12,7 @@ import { PaginationFooter } from '../ui/PaginationFooter'
 import { useConversationPagination } from '../../hooks/useConversationPagination'
 import { useDebouncedSearchQuery } from '../../hooks/useDebouncedSearchQuery'
 import { CompletionFilterTabs } from './CompletionFilterTabs'
+import { BackgroundTaskIndicator } from '../BackgroundTaskIndicator'
 import type { ConversationCompletionFilter } from '../../../shared/types'
 
 export function ChatsPane({ pinnedOnly = false }: { pinnedOnly?: boolean } = {}) {
@@ -25,6 +26,7 @@ export function ChatsPane({ pinnedOnly = false }: { pinnedOnly?: boolean } = {})
   const newChat = useAppStore((s) => s.newChat)
   const unreadConversationIds = useAppStore((s) => s.unreadConversationIds)
   const generatingConversationIds = useAppStore((s) => s.generatingConversationIds)
+  const backgroundActivities = useAppStore((s) => s.backgroundActivities)
   const pendingConversationIds = useAppStore((s) => s.pendingConversationIds)
   const completedConversationIds = useAppStore((s) => s.completedConversationIds)
   const markConversationComplete = useAppStore((s) => s.markConversationComplete)
@@ -57,6 +59,7 @@ export function ChatsPane({ pinnedOnly = false }: { pinnedOnly?: boolean } = {})
     const agent = conv.agent_id ? agents.find((a) => a.id === conv.agent_id) : null
     const isUnread = unreadConversationIds.includes(conv.id)
     const isGenerating = generatingConversationIds.includes(conv.id)
+    const hasBackgroundTask = backgroundActivities.some((activity) => activity.id.startsWith('deferred:') && activity.conversationId === conv.id && activity.label === 'Background task running')
     const isCompleted = conv.completed_at != null || completedConversationIds.includes(conv.id)
     const colors = project ? (PROJECT_COLOR_MAP[project.color] ?? PROJECT_COLOR_MAP.blue) : null
 
@@ -99,6 +102,7 @@ export function ChatsPane({ pinnedOnly = false }: { pinnedOnly?: boolean } = {})
           ) : null}
           <div className="flex-1 min-w-0">
             <p className="text-xs font-medium text-nexy-text truncate">{conv.title}</p>
+            {hasBackgroundTask && <BackgroundTaskIndicator />}
             <p className="text-[10px] text-nexy-muted mt-0.5 truncate">
               {[agent && `${agent.icon} ${agent.name}`, project?.name, formatRelativeTime(conv.updated_at)]
                 .filter(Boolean)

@@ -171,6 +171,9 @@ export function useChatWindowActions({
   // Stores a CLI model and backend chosen before the conversation row exists (new chat), applied on first send.
   const pendingCliModelRef = useRef<string | null>(null)
   const pendingCliBackendRef = useRef<CliBackend | null>(null)
+  // Hermes profile chosen with that draft model. `undefined` = not chosen; `null` = default profile.
+  // Always written together with pendingCliModelRef so a bare model never loses its profile.
+  const pendingHermesProfileRef = useRef<string | null | undefined>(undefined)
   // Model/backend picker writes are asynchronous too. Send and Retry must not overtake them,
   // otherwise an existing conversation can launch with the model/backend from the preceding row.
   const pendingModelWriteRef = useRef<Promise<void>>(Promise.resolve())
@@ -798,6 +801,8 @@ export function useChatWindowActions({
       pendingCliModelRef.current = null
       const effectiveRequestBackend = pendingCliBackendRef.current ?? undefined
       pendingCliBackendRef.current = null
+      const effectiveRequestHermesProfile = pendingHermesProfileRef.current
+      pendingHermesProfileRef.current = undefined
       const effectiveThinkingEffortOverride = pendingThinkingEffortRef.current
       pendingThinkingEffortRef.current = undefined
       const effectiveFullAutoApproveOverride = pendingFullAutoApproveRef.current
@@ -816,6 +821,7 @@ export function useChatWindowActions({
         agentId: chatAgentId ?? undefined,
         model: effectiveRequestModel,
         cliBackend: effectiveRequestBackend,
+        ...(effectiveRequestHermesProfile !== undefined ? { hermesProfile: effectiveRequestHermesProfile } : {}),
         messageId: userMessage.id,
         projectId: chatProjectId ?? undefined,
         contextSnapshot: contextSnapshotJson,
@@ -970,6 +976,7 @@ export function useChatWindowActions({
     async (model: string, hermesProfile?: string | null) => {
       pendingCliModelRef.current = null
       pendingCliBackendRef.current = null
+      pendingHermesProfileRef.current = undefined
       if (!conversationId) return
       const value = model === 'default' ? null : model
       const write = pendingModelWriteRef.current.then(async () => {
@@ -992,6 +999,7 @@ export function useChatWindowActions({
         // Auto-fallback case (no agent): store as conversation model so chat-handlers can read it
         if (!conversationId) {
           pendingCliModelRef.current = model
+          pendingHermesProfileRef.current = undefined
           return
         }
         try {
@@ -1030,6 +1038,7 @@ export function useChatWindowActions({
       }
       pendingCliModelRef.current = modelId
       pendingCliBackendRef.current = backend
+      pendingHermesProfileRef.current = backend === 'hermes-cli' ? (hermesProfile?.trim() || null) : undefined
     },
     [conversationId, loadConversations, addToast],
   )
