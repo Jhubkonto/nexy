@@ -40,7 +40,8 @@ const {
 }))
 
 vi.mock('../safe-handle', () => ({ safeHandle: safeHandleMock }))
-vi.mock('../cli-detection', () => ({ detectCli: detectCliMock, getCliModels: getCliModelsMock }))
+const { getHermesProfileDiscoveryMock } = vi.hoisted(() => ({ getHermesProfileDiscoveryMock: vi.fn() }))
+vi.mock('../cli-detection', () => ({ detectCli: detectCliMock, getCliModels: getCliModelsMock, getHermesProfileDiscovery: getHermesProfileDiscoveryMock }))
 vi.mock('../cli-adapters/claude-model-probe', () => ({ getClaudeCliModelChoices: getClaudeCliModelChoicesMock }))
 vi.mock('../providers', () => ({
   PROVIDERS: [
@@ -212,5 +213,77 @@ describe('registerModelAvailabilityHandlers', () => {
     registerModelAvailabilityHandlers()
 
     expect(fetchAndCacheAnthropicModelsMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('getAvailableModelGroups — Hermes profile groups', () => {
+  const discovery = (profiles: Array<{ name: string; isDefault: boolean; model?: string; description?: string }>) => ({
+    profiles,
+    root: '/home/u/.hermes',
+    rootSource: 'platform-default',
+    profilesDirectory: '/home/u/.hermes/profiles',
+    profilesDirectoryExists: profiles.length > 1,
+    namedProfileCount: profiles.filter((profile) => !profile.isDefault).length,
+    ignoredEntries: [],
+  })
+
+  beforeEach(() => {
+    isProviderConfiguredMock.mockReturnValue(false)
+    detectCliMock.mockImplementation((name: string) => Promise.resolve({ installed: name === 'hermes', path: '/usr/bin/hermes', version: null }))
+    getCliModelsMock.mockImplementation((_backend: string, profile?: string) => [{ id: `${profile ?? 'root'}/model`, label: `${profile ?? 'root'} model` }])
+  })
+  afterEach(() => getHermesProfileDiscoveryMock.mockReset())
+
+  it('emits one group per profile, default first then alphabetical, with bare model IDs', async () => {
+    getHermesProfileDiscoveryMock.mockReturnValue(discovery([
+      { name: 'zeta', isDefault: false },
+      { name: 'default', isDefault: true },
+      { name: 'localllm', isDefault: false, model: 'qwen3', description: 'Local models' },
+    ]))
+    const groups = await getAvailableModelGroups(undefined, { hermesProfileGroups: true })
+    expect(groups.map((group) => group.sourceKey)).toEqual(['hermes-cli:default', 'hermes-cli:localllm', 'hermes-cli:zeta'])
+    expect(groups.map((group) => group.sourceLabel)).toEqual(['Hermes · Default', 'Hermes · localllm', 'Hermes · zeta'])
+    expect(groups.every((group) => group.sourceType === 'cli')).toBe(true)
+    expect(groups[1].models).toEqual([{ id: 'localllm/model', label: 'localllm model' }])
+    expect(groups[1].description).toBe('qwen3 · Local models')
+    // The default profile reads the root config (no profile argument).
+    expect(groups[0].models[0].id).toBe('root/model')
+  })
+
+  it('yields a single default group when there is no profiles directory', async () => {
+    getHermesProfileDiscoveryMock.mockReturnValue(discovery([{ name: 'default', isDefault: true }]))
+    const groups = await getAvailableModelGroups(undefined, { hermesProfileGroups: true })
+    expect(groups.map((group) => group.sourceKey)).toEqual(['hermes-cli:default'])
+  })
+
+  it('still yields the default group when profile discovery fails', async () => {
+    getHermesProfileDiscoveryMock.mockImplementation(() => { throw new Error('EACCES: config.yaml') })
+    const groups = await getAvailableModelGroups(undefined, { hermesProfileGroups: true })
+    expect(groups.map((group) => group.sourceKey)).toEqual(['hermes-cli:default'])
+  })
+
+  it('skips profiles with no models', async () => {
+    getHermesProfileDiscoveryMock.mockReturnValue(discovery([
+      { name: 'default', isDefault: true },
+      { name: 'empty', isDefault: false },
+    ]))
+    getCliModelsMock.mockImplementation((_backend: string, profile?: string) => profile === 'empty' ? [] : [{ id: 'm', label: 'M' }])
+    const groups = await getAvailableModelGroups(undefined, { hermesProfileGroups: true })
+    expect(groups.map((group) => group.sourceKey)).toEqual(['hermes-cli:default'])
+  })
+
+  it('keeps the single legacy hermes-cli group unless profile groups are requested', async () => {
+    const groups = await getAvailableModelGroups()
+    expect(groups.map((group) => group.sourceKey)).toEqual(['hermes-cli'])
+    expect(getHermesProfileDiscoveryMock).not.toHaveBeenCalled()
+  })
+
+  it('passes the profile-group option through the IPC handler', async () => {
+    getHermesProfileDiscoveryMock.mockReturnValue(discovery([{ name: 'default', isDefault: true }]))
+    safeHandleMock.mockClear()
+    registerModelAvailabilityHandlers()
+    const handler = safeHandleMock.mock.calls.find(([channel]) => channel === 'model:list-available')?.[1]
+    const groups = await handler({}, undefined, { hermesProfileGroups: true })
+    expect(groups.map((group: { sourceKey: string }) => group.sourceKey)).toEqual(['hermes-cli:default'])
   })
 })

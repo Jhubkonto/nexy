@@ -13,6 +13,7 @@ const state = vi.hoisted(() => {
     thinkingBlocks: string | null
     textSegments: string | null
   }> = []
+  const providerHistoryUpdates: Array<{ id: unknown; history: string }> = []
   const modelUpdates: Array<{ sql: string; model: unknown; conversationId: unknown }> = []
   const conversationInserts: Array<{ id: unknown; agentId: unknown; projectId: unknown }> = []
   const modeClears: string[] = []
@@ -32,7 +33,7 @@ const state = vi.hoisted(() => {
   const saveFinalizedPlanArtifact = vi.fn()
   const startSkillSaveMcpBridge = vi.fn()
   const getApiKey = vi.fn(() => 'test-key')
-  return { handlers, messages, modelUpdates, conversationInserts, modeClears, events, send, broadcastToMobile, abortActiveStream, getOverrides, allOverrides, recordProjectAuditChange, saveFinalizedPlanArtifact, startSkillSaveMcpBridge, getApiKey }
+  return { handlers, messages, providerHistoryUpdates, modelUpdates, conversationInserts, modeClears, events, send, broadcastToMobile, abortActiveStream, getOverrides, allOverrides, recordProjectAuditChange, saveFinalizedPlanArtifact, startSkillSaveMcpBridge, getApiKey }
 })
 
 vi.mock('../safe-handle', () => ({
@@ -67,6 +68,9 @@ vi.mock('../database', () => ({
         if (sql.includes('INSERT INTO conversations')) {
           // Column order: (id, agent_id, project_id, title, cli_backend, created_at, updated_at)
           state.conversationInserts.push({ id: args[0], agentId: args[1], projectId: args[2] })
+        }
+        if (sql.includes('UPDATE messages SET provider_history = ?')) {
+          state.providerHistoryUpdates.push({ history: String(args[0]), id: args[1] })
         }
         if (sql.includes('UPDATE conversations SET model = ?')) {
           state.modelUpdates.push({ sql, model: args[0], conversationId: args[1] })
@@ -158,7 +162,8 @@ vi.mock('../auth', () => ({ retrieveAuthMode: vi.fn(() => 'byok') }))
 vi.mock('../wiki-context', () => ({ getRelevantWikiEntries: vi.fn(() => []), formatWikiSection: vi.fn(() => '') }))
 vi.mock('../wiki-handlers', () => ({ insertWikiEntry: vi.fn() }))
 vi.mock('../tools', () => ({ requestApproval: vi.fn(), registerApprovalResolver: vi.fn(), denyPendingApprovalsForConversation: vi.fn() }))
-vi.mock('../context-compression', () => ({
+vi.mock('../context-compression', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../context-compression')>(),
   applyRollingContextCompression: vi.fn((_db, _conversationId, messages) => ({ messages, summary: null })),
 }))
 vi.mock('../project-audit', async (importOriginal) => {
@@ -175,7 +180,8 @@ vi.mock('../chat-context-builder', async (importOriginal) => {
   // implementation by default.
   return { ...actual, buildChatContext: vi.fn(actual.buildChatContext) }
 })
-vi.mock('../providers', () => ({
+vi.mock('../providers', async () => ({
+  PROVIDERS: (await import('../provider-registry')).PROVIDERS,
   DEFAULT_PROVIDER_MODEL: 'gpt-5-mini',
   NO_PROVIDER_CONFIGURED_MESSAGE: 'No provider configured. Add an API key in Settings.',
   getProviderForAgent: vi.fn(() => ({ provider: 'openai', model: 'gpt-4o' })),
@@ -220,6 +226,7 @@ describe('chat handlers', () => {
     state.handlers.clear()
     state.messages.length = 0
     state.modelUpdates.length = 0
+    state.providerHistoryUpdates.length = 0
     state.conversationInserts.length = 0
     state.modeClears.length = 0
     state.events.length = 0
@@ -255,6 +262,40 @@ describe('chat handlers', () => {
     vi.mocked(startSkillSaveMcpBridge).mockReset()
     state.recordProjectAuditChange.mockClear()
     registerChatHandlers()
+  })
+
+  it('saves DeepSeek structured history and replays it on the next turn', async () => {
+    vi.mocked(getProviderForAgent).mockReturnValue({ provider: 'deepseek', model: 'deepseek-flash' })
+    const history: import('../provider-core-types').ProviderMessage[] = [
+      { role: 'assistant', content: null, reasoning_content: 'inspect profile code', tool_calls: [{ id: 'read', type: 'function', function: { name: 'read_project_file', arguments: '{}' } }] },
+      { role: 'tool', tool_call_id: 'read', content: 'profile implementation' },
+      { role: 'assistant', content: 'Profiles are supported.', reasoning_content: 'verified source' },
+    ]
+    vi.mocked(runProviderMcpToolLoop).mockImplementationOnce(async (...args) => {
+      args[23]?.onHistory?.(history)
+      args[7]('Profiles are supported.')
+      return 'Profiles are supported.'
+    })
+    const handler = state.handlers.get('chat:send-message') as (...args: unknown[]) => Promise<unknown>
+    try {
+      await handler({ sender: {} }, 'deepseek-history', 'Investigate profiles', { model: 'deepseek-flash' })
+      expect(state.providerHistoryUpdates).toHaveLength(1)
+      const saved = state.providerHistoryUpdates[0].history
+      expect(JSON.parse(saved).messages).toEqual(history)
+      state.allOverrides.set('SELECT role, content, model, provider_history', [
+        { role: 'user', content: 'Investigate profiles' },
+        { role: 'assistant', content: 'Profiles are supported.', provider_history: saved, is_edited: 0 },
+        { role: 'user', content: 'Continue' },
+      ])
+      vi.mocked(runProviderMcpToolLoop).mockImplementationOnce(async (...args) => {
+        expect(args[1]).toEqual(expect.arrayContaining(history))
+        expect(args[1].filter((m) => m.role === 'assistant' && m.content === 'Profiles are supported.')).toHaveLength(1)
+        return 'Continued.'
+      })
+      await handler({ sender: {} }, 'deepseek-history', 'Continue', { model: 'deepseek-flash' })
+    } finally {
+      vi.mocked(getProviderForAgent).mockReturnValue({ provider: 'openai', model: 'gpt-4o' })
+    }
   })
 
   it('streams a BYOK provider response', async () => {
@@ -294,6 +335,25 @@ describe('chat handlers', () => {
     expect(state.events.indexOf('db:assistant-insert')).toBeLessThan(state.events.indexOf('mobile:messages'))
     expect(state.events.indexOf('mobile:messages')).toBeLessThan(state.events.indexOf('mobile:stream-end'))
   })
+
+  it.each([[undefined, 65536], ['auto', 65536], ['4096', 4096], ['100000', 100000]] as const)(
+    'carries the saved chat output setting %s to the selected provider', async (setting, expected) => {
+      vi.mocked(getProviderForAgent).mockReturnValue({ provider: 'deepseek', model: 'deepseek-flash' })
+      state.allOverrides.set('SELECT key, value FROM settings', setting === undefined ? [] : [{ key: 'max_tokens', value: setting }])
+      vi.mocked(runProviderMcpToolLoop).mockImplementationOnce(async (...args) => {
+        expect(args[23]?.maxOutputTokens).toBe(expected)
+        args[7]('Answer.')
+        return 'Answer.'
+      })
+      try {
+        const handler = state.handlers.get('chat:send-message') as (...args: unknown[]) => Promise<unknown>
+        await handler({ sender: {} }, 'output-budget-settings', 'Hello', { model: 'deepseek-flash' })
+        expect(runProviderMcpToolLoop).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.mocked(getProviderForAgent).mockReturnValue({ provider: 'openai', model: 'gpt-4o' })
+      }
+    },
+  )
 
   it('uses the project default thinking effort when the chat has no override', async () => {
     vi.mocked(parseProjectConfig).mockReturnValueOnce({

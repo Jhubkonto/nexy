@@ -149,4 +149,32 @@ describe('http-client', () => {
     await expect(promise).resolves.toBeUndefined()
     expect(onDelta).not.toHaveBeenCalled()
   })
+
+  it('preserves DSML delimiters and Unicode across every byte boundary', async () => {
+    const payload = JSON.stringify({ content: '<｜｜DSML｜｜ calls>日本語 😀' })
+    const encoded = Buffer.from(`data: ${payload}\n\ndata: [DONE]\n\n`)
+    for (let split = 1; split < encoded.length; split++) {
+      const res = createMockResponse()
+      const deltas: string[] = []
+      const done = parseSseStream(res, (delta) => deltas.push(delta))
+      res.emit('data', encoded.subarray(0, split))
+      res.emit('data', encoded.subarray(split))
+      await done
+      expect(deltas).toEqual([payload])
+    }
+  })
+
+  it('preserves Unicode in non-streamed responses split into single bytes', async () => {
+    const payload = '<｜｜DSML｜｜ calls>日本語 😀'
+    mockRequest.mockImplementation((_options: unknown, callback: (res: IncomingMessage) => void) => ({
+      setTimeout: vi.fn(), on: vi.fn(), write: vi.fn(), destroy: vi.fn(),
+      end: () => {
+        const res = createMockResponse()
+        callback(res)
+        for (const byte of Buffer.from(payload)) res.emit('data', Buffer.from([byte]))
+        res.emit('end')
+      },
+    }))
+    expect(await httpsGet('https://example.com', {})).toBe(payload)
+  })
 })

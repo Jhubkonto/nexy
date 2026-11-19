@@ -193,6 +193,25 @@ describe("SectionPane", () => {
     expect(activeChat).toHaveClass("border-nexy-accent", "bg-nexy-accent/10");
     expect(activeChat).not.toHaveClass("border-transparent");
   });
+
+  it("shows a running background task only on its conversation", () => {
+    const conversation = {
+      id: "task-chat", agent_id: null, title: "Task chat", project_id: null,
+      pinned: 0, created_at: Date.now(), updated_at: Date.now(),
+    };
+    mockStore = createMockAppStore({
+      conversations: [conversation, { ...conversation, id: "other-chat", title: "Other chat" }],
+      backgroundActivities: [{ id: "deferred:1", kind: "chat", label: "Background task running", conversationId: "task-chat", startedAt: Date.now() }],
+    });
+    setupStoreMock(useAppStore, mockStore);
+    const { rerender } = render(<SectionPane section="chats" />);
+    expect(screen.getByText("Task chat").parentElement).toHaveTextContent("Background task running");
+    expect(screen.getByText("Other chat").parentElement).not.toHaveTextContent("Background task running");
+
+    mockStore.backgroundActivities = [];
+    rerender(<SectionPane section="chats" />);
+    expect(screen.queryByText("Background task running")).not.toBeInTheDocument();
+  });
 });
 
 // ── Pin/unpin toggle in Chats pane ─────────────────────────────────

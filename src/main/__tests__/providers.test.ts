@@ -333,7 +333,7 @@ describe('Providers — IPC Handlers', () => {
         res.headers = { 'content-type': 'text/event-stream' }
         let body = ''
         req.write = (chunk) => { body += chunk }
-        req.end = () => { bodies.push(body); callback(res); res.emit('data', 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'); res.emit('data', 'data: [DONE]\n\n'); res.emit('end') }
+        req.end = () => { bodies.push(body); callback(res); res.emit('data', 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'); res.emit('data', 'data: [DONE]\n\n'); res.emit('end') }
         return req
       })
       const { sendOpenAIMessage } = await import('../providers')
@@ -346,7 +346,7 @@ describe('Providers — IPC Handlers', () => {
       expect(other.thinking).toBeUndefined()
       expect(other.messages[1].reasoning_content).toBeUndefined()
     })
-    it('round-trips DeepSeek reasoning and reports cached input tokens', async () => {
+    it.each(['auto', 'required'] as const)('round-trips DeepSeek reasoning and reports cached input tokens with %s tool choice', async (choice) => {
       let requestBody = ''
       mockHttpsRequest.mockImplementationOnce((_options: unknown, callback: (res: EventEmitter) => void) => {
         const req = new EventEmitter() as EventEmitter & { write: (chunk: string) => void; end: () => void }
@@ -358,7 +358,7 @@ describe('Providers — IPC Handlers', () => {
           callback(res)
           res.emit('data', 'data: {"choices":[{"delta":{"reasoning_content":"think"}}]}\n\n')
           res.emit('data', 'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"test","arguments":"{}"}}]}}]}\n\n')
-          res.emit('data', 'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3,"prompt_cache_hit_tokens":7}}\n\n')
+          res.emit('data', 'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"prompt_cache_hit_tokens":7}}\n\n')
           res.emit('data', 'data: [DONE]\n\n')
           res.emit('end')
         }
@@ -369,13 +369,42 @@ describe('Providers — IPC Handlers', () => {
       const result = await sendOpenAIWithToolsStream('key', 'deepseek-flash', [
         { role: 'assistant', content: null, reasoning_content: 'previous reasoning', tool_calls: [{ id: 'old', type: 'function', function: { name: 'test', arguments: '{}' } }] },
         { role: 'tool', tool_call_id: 'old', content: 'done' },
-      ], [{ type: 'function', function: { name: 'test', description: 'test', parameters: {} } }], 'required', () => {}, { thinkingEffort: 'low', onUsage: usage }, 'https://api.deepseek.com')
+      ], [{ type: 'function', function: { name: 'test', description: 'test', parameters: {} } }], choice, () => {}, { thinkingEffort: 'low', onUsage: usage }, 'https://api.deepseek.com')
       const body = JSON.parse(requestBody)
-      expect(body).toMatchObject({ thinking: { type: 'enabled' }, reasoning_effort: 'low', tool_choice: 'auto' })
+      expect(body).toMatchObject({ thinking: { type: choice === 'required' ? 'disabled' : 'enabled' }, tool_choice: choice })
       expect(body.messages[0].reasoning_content).toBe('previous reasoning')
-      expect(body.temperature).toBeUndefined()
+      if (choice === 'auto') {
+        expect(body.reasoning_effort).toBe('low')
+        expect(body.temperature).toBeUndefined()
+      } else {
+        expect(body.reasoning_effort).toBeUndefined()
+      }
       expect(result.reasoningContent).toBe('think')
       expect(usage).toHaveBeenCalledWith({ inputTokens: 10, outputTokens: 3, cachedInputTokens: 7 })
+    })
+    it('hides fragmented DSML from DeepSeek responses outside the tool loop and reports the failure', async () => {
+      const markup = '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="read_project_file"></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>'
+      mockHttpsRequest.mockImplementationOnce((_options: unknown, callback: (res: EventEmitter) => void) => {
+        const req = new EventEmitter() as EventEmitter & { write: (chunk: string) => void; end: () => void }
+        const res = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string> }
+        res.statusCode = 200
+        res.headers = { 'content-type': 'text/event-stream' }
+        req.write = () => {}
+        req.end = () => {
+          callback(res)
+          for (const content of ['Checking. ', ...markup]) {
+            res.emit('data', `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`)
+          }
+          res.emit('data', 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+          res.emit('data', 'data: [DONE]\n\n')
+          res.emit('end')
+        }
+        return req
+      })
+      const { sendOpenAIMessage } = await import('../providers')
+      const onChunk = vi.fn()
+      await expect(sendOpenAIMessage('dsml', 'key', 'deepseek-flash', [{ role: 'user', content: 'test' }], onChunk, {}, 'https://api.deepseek.com')).rejects.toThrow('DeepSeek returned tool calls as text')
+      expect(onChunk.mock.calls.flat().join('')).toBe('Checking. ')
     })
     it('streams OpenAI text while buffering fragmented tool-call arguments', async () => {
       let requestBody = ''
