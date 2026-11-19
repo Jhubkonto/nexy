@@ -72,6 +72,26 @@ describe('ToolApproval — Rendering', () => {
     expect(screen.getByText('Cancel')).toBeInTheDocument()
     expect(screen.queryByText('Always')).not.toBeInTheDocument()
   })
+
+  it('renders the full plan without the 120-character argument truncation', async () => {
+    const tail = 'FINAL-STEP-MARKER'
+    const plan = `# Plan\n\n${'Long explanatory sentence for the plan body. '.repeat(10)}${tail}`
+    setupStore({
+      toolApprovalRequests: [{
+        requestId: 'plan-long',
+        tool: 'exit_plan_mode',
+        description: 'Review the completed plan',
+        args: { plan }
+      }]
+    })
+    const user = userEvent.setup()
+    render(<ToolApproval />)
+    expect(plan.length).toBeGreaterThan(120)
+    expect(screen.getByText(new RegExp(tail))).toBeInTheDocument()
+    expect(screen.queryByText(/Codex/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /Expand/ }))
+    expect(screen.getByRole('button', { name: /Collapse/ })).toBeInTheDocument()
+  })
 })
 
 describe('ToolApproval — Actions', () => {

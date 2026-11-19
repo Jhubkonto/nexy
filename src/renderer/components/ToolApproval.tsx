@@ -3,6 +3,7 @@ import type { NexyIconName } from './ui/icons'
 import { NexyIcon } from './ui/icons'
 import { useAppStore } from '../store/app-store'
 import { Button } from './ui/primitives'
+import { MarkdownRenderer } from './MarkdownRenderer'
 
 const TOOL_ICONS: Record<string, NexyIconName> = {
   fileRead: 'artifact',
@@ -21,6 +22,39 @@ function formatArgs(args: Record<string, unknown>): string {
       return `${key}: ${truncated}`
     })
     .join('\n')
+}
+
+/**
+ * Plan bodies are long-form Markdown and must never pass through {@link formatArgs} (which
+ * truncates every string to 120 chars). Rendered scrollable at a bounded height with an
+ * Expand affordance for reading at full size.
+ */
+function PlanCardBody({ plan }: { plan: string }) {
+  const [expanded, setExpanded] = useState(false)
+  if (!plan) {
+    return (
+      <pre className="mb-3 max-h-32 overflow-x-auto overflow-y-auto whitespace-pre-wrap rounded-nexy-sm border border-nexy-border bg-nexy-recessed p-2 text-xs text-nexy-text">
+        (No plan content)
+      </pre>
+    )
+  }
+  return (
+    <div
+      className={`mb-3 overflow-auto rounded-nexy-sm border border-nexy-border bg-nexy-recessed p-3 ${expanded ? 'max-h-[85vh]' : 'max-h-[50vh]'}`}
+    >
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-wide text-nexy-muted">Plan</span>
+        <button
+          type="button"
+          onClick={() => setExpanded((prev) => !prev)}
+          className="text-[11px] text-nexy-accent hover:underline focus:outline-none"
+        >
+          {expanded ? 'Collapse' : 'Expand'}
+        </button>
+      </div>
+      <MarkdownRenderer content={plan} />
+    </div>
+  )
 }
 
 function CountdownBar({
@@ -86,14 +120,15 @@ export function ToolApproval() {
   if (requests.length === 0) return null
 
   return (
-    <div className="fixed bottom-4 right-4 z-40 space-y-2 max-w-sm">
+    <div className="fixed bottom-4 right-4 z-40 space-y-2">
       {requests.map((req) => {
         const isPlanDecision = req.tool === 'exit_plan_mode'
+        const plan = isPlanDecision && typeof req.args?.plan === 'string' ? req.args.plan : ''
         const iconName: NexyIconName = isPlanDecision ? 'milestone' : TOOL_ICONS[req.tool] || 'tool'
         return (
           <div
             key={req.requestId}
-            className="rounded-nexy-sm border-2 border-nexy-border bg-nexy-raised p-4 text-nexy-text shadow-nexy"
+            className={`rounded-nexy-sm border-2 border-nexy-border bg-nexy-raised p-4 text-nexy-text shadow-nexy ${isPlanDecision ? 'w-[42rem] max-w-[calc(100vw-2rem)]' : 'w-96 max-w-[calc(100vw-2rem)]'}`}
           >
             <div className="flex items-center gap-2 mb-2">
               <NexyIcon name={iconName} className="h-4 w-4 text-nexy-accent" />
@@ -103,15 +138,19 @@ export function ToolApproval() {
                 </p>
                 <p className="text-xs text-nexy-muted">
                   {isPlanDecision
-                    ? 'Choose whether Codex should implement this plan or continue planning.'
+                    ? 'Review the plan below, then choose whether to implement it or continue planning.'
                     : req.description}
                 </p>
               </div>
             </div>
 
-            <pre className="mb-3 max-h-32 overflow-x-auto overflow-y-auto whitespace-pre-wrap rounded-nexy-sm border border-nexy-border bg-nexy-recessed p-2 text-xs text-nexy-text">
-              {formatArgs(req.args)}
-            </pre>
+            {isPlanDecision ? (
+              <PlanCardBody plan={plan} />
+            ) : (
+              <pre className="mb-3 max-h-32 overflow-x-auto overflow-y-auto whitespace-pre-wrap rounded-nexy-sm border border-nexy-border bg-nexy-recessed p-2 text-xs text-nexy-text">
+                {formatArgs(req.args)}
+              </pre>
+            )}
 
             {isPlanDecision ? (
               <div className="flex flex-wrap gap-2">
