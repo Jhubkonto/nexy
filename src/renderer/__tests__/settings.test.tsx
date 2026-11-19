@@ -87,6 +87,30 @@ describe('SettingsPanel', () => {
     expect(mockApi.setSetting).toHaveBeenCalledWith('max_tokens', '4096')
   })
 
+  it.each([undefined, 'auto'])('loads and persists Automatic for max_tokens=%s', async (max_tokens) => {
+    mockApi.getSettings = vi.fn().mockResolvedValue({ max_tokens })
+    render(<SettingsPanel />)
+    await waitFor(() => expect(screen.getByLabelText('Max tokens')).toHaveValue('automatic'))
+    expect(screen.queryByLabelText('Manual max tokens')).not.toBeInTheDocument()
+    await user.click(screen.getByText('Save advanced settings'))
+    expect(mockApi.setSetting).toHaveBeenCalledWith('max_tokens', 'auto')
+  })
+
+  it('preserves a saved manual limit above 16384 and lets the user switch to Automatic', async () => {
+    mockApi.getSettings = vi.fn().mockResolvedValue({ max_tokens: '65536' })
+    render(<SettingsPanel />)
+    const input = await screen.findByLabelText('Manual max tokens')
+    expect(input).toHaveValue(65536)
+    expect(screen.getByLabelText('Max tokens')).toHaveValue('manual')
+    await user.click(screen.getByText('Save advanced settings'))
+    expect(mockApi.setSetting).toHaveBeenCalledWith('max_tokens', '65536')
+    await user.selectOptions(screen.getByLabelText('Max tokens'), 'automatic')
+    await user.click(screen.getByText('Save advanced settings'))
+    expect(mockApi.setSetting).toHaveBeenLastCalledWith('max_tokens', 'auto')
+    await user.selectOptions(screen.getByLabelText('Max tokens'), 'manual')
+    expect(screen.getByLabelText('Manual max tokens')).toHaveValue(65536)
+  })
+
   it('persists the tray background execution preference', async () => {
     render(<SettingsPanel />)
 

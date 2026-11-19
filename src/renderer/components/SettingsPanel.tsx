@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { NexyIcon, type NexyIconName } from './ui/icons/NexyIcon'
 import { useAppStore } from '../store/app-store'
 import { getAvailableModelIds } from '../../shared/models'
+import { parseOutputTokenSetting } from '../../shared/output-budget'
 import type { AdbDevice, AndroidBuildCommandName, AndroidFirebaseClientStatus, AndroidSigningConfig, AndroidUpdateManifest, AndroidWorkspaceInfo, BuildCommandName, BuildRecord, BuildStatus, HermesProfileInfo, LocalUpdateFeed, PreflightCheck, PromptLibraryEntry, PromptLibraryInput, PromptLibraryVersion, PublishedEntry, WorkspaceInfo, WsUrlProfile } from '../../shared/types'
 import { extractPromptVariables } from '../../shared/prompt-variables'
 import { isApiError } from '../../shared/types'
@@ -120,6 +121,7 @@ export function SettingsPanel() {
   const defaultModelButtonRef = useRef<HTMLButtonElement | null>(null)
   const [temperature, setTemperature] = useState(0.7)
   const [maxTokens, setMaxTokens] = useState(4096)
+  const [maxTokensMode, setMaxTokensMode] = useState<'automatic' | 'manual'>('automatic')
   const [whisperCppPath, setWhisperCppPath] = useState('')
   const [whisperModelPath, setWhisperModelPath] = useState('')
   const [whisperInstalling, setWhisperInstalling] = useState(false)
@@ -220,7 +222,9 @@ export function SettingsPanel() {
       setDefaultModel(settings['default_model'] || 'gpt-5-mini')
       setGlobalHermesProfile(settings['global_default_hermes_profile'] || '')
       setTemperature(Number.parseFloat(settings['temperature'] || '0.7') || 0.7)
-      setMaxTokens(Number.parseInt(settings['max_tokens'] || '4096', 10) || 4096)
+      const outputSetting = parseOutputTokenSetting(settings['max_tokens'])
+      setMaxTokensMode(outputSetting === 'auto' ? 'automatic' : 'manual')
+      if (typeof outputSetting === 'number') setMaxTokens(outputSetting)
       setWhisperCppPath(settings['whisper_cpp_path'] || '')
       setWhisperModelPath(settings['whisper_model_path'] || '')
       setHermesHome(settings['hermes_home'] || '')
@@ -919,7 +923,8 @@ export function SettingsPanel() {
   const handleSaveAdvanced = async () => {
     try {
       const safeTemp = Math.min(2, Math.max(0, temperature))
-      const safeMaxTokens = Math.min(16384, Math.max(256, maxTokens))
+      const safeMaxTokens = maxTokensMode === 'automatic' ? 'auto' : parseOutputTokenSetting(maxTokens)
+      if (maxTokensMode === 'manual' && safeMaxTokens === 'auto') throw new Error('Enter a positive integer for the manual output limit.')
       await window.api.setSetting('default_model', defaultModel)
       const isHermesModel = availableModelGroups.some((group) => group.sourceKey === 'hermes-cli' && group.models.some((model) => model.id === defaultModel))
       await window.api.setSetting('global_default_hermes_profile', isHermesModel ? globalHermesProfile.trim() : '')
@@ -1020,6 +1025,7 @@ export function SettingsPanel() {
             modelIds={modelIds}
             temperature={temperature}
             maxTokens={maxTokens}
+            maxTokensMode={maxTokensMode}
             catalogModels={catalogModels}
             onToggleAutoStart={() => void handleAutoStartToggle()}
             onToggleRunInBackground={() => void handleRunInBackgroundToggle()}
@@ -1031,6 +1037,7 @@ export function SettingsPanel() {
             onSetDefaultModelMenuRect={setDefaultModelMenuRect}
             onSetTemperature={setTemperature}
             onSetMaxTokens={setMaxTokens}
+            onSetMaxTokensMode={setMaxTokensMode}
             onSaveAdvanced={() => void handleSaveAdvanced()}
             onOpenMcp={onOpenMcp}
             defaultModelMenuRef={defaultModelMenuRef}

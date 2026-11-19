@@ -26,6 +26,7 @@ interface Props {
   modelIds: string[]
   temperature: number
   maxTokens: number
+  maxTokensMode: 'automatic' | 'manual'
   catalogModels: import('@shared/types').CatalogModel[] | undefined
   onToggleAutoStart: () => void
   onToggleRunInBackground: () => void
@@ -37,6 +38,7 @@ interface Props {
   onSetDefaultModelMenuRect: (rect: DOMRect | null) => void
   onSetTemperature: (t: number) => void
   onSetMaxTokens: (n: number) => void
+  onSetMaxTokensMode: (mode: 'automatic' | 'manual') => void
   onSaveAdvanced: () => void
   onOpenMcp: () => void
   defaultModelMenuRef: React.RefObject<HTMLDivElement | null>
@@ -49,11 +51,11 @@ export function GeneralTab({
   autoStart, runInBackground, autoClipboard,
   defaultModel, globalHermesProfile, hermesProfiles, defaultModelSearch, showDefaultModelMenu, defaultModelMenuRect,
   availableModelGroups, modelIds,
-  temperature, maxTokens,
+  temperature, maxTokens, maxTokensMode,
   catalogModels,
   onToggleAutoStart, onToggleRunInBackground, onToggleAutoClipboard,
   onSetDefaultModel, onSetGlobalHermesProfile, onSetDefaultModelSearch, onSetShowDefaultModelMenu, onSetDefaultModelMenuRect,
-  onSetTemperature, onSetMaxTokens, onSaveAdvanced,
+  onSetTemperature, onSetMaxTokens, onSetMaxTokensMode, onSaveAdvanced,
   onOpenMcp,
   defaultModelMenuRef, defaultModelButtonRef,
 }: Props) {
@@ -299,12 +301,21 @@ export function GeneralTab({
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Max tokens</label>
-          <input
-            type="number" min={256} max={16384} step={256} value={maxTokens}
+          <label htmlFor="output-budget-mode" className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Max tokens</label>
+          <select id="output-budget-mode" value={maxTokensMode}
+            onChange={(e) => onSetMaxTokensMode(e.target.value as 'automatic' | 'manual')}
+            className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100">
+            <option value="automatic">Automatic</option>
+            <option value="manual">Manual</option>
+          </select>
+          <p className="mt-1 text-xs text-gray-500">{maxTokensMode === 'automatic'
+            ? 'Uses a budget for the selected model and thinking effort. May increase it once per turn if no answer text has appeared.'
+            : 'Sets a hard output limit, capped by the selected model and its available context.'}</p>
+          {maxTokensMode === 'manual' && <input
+            aria-label="Manual max tokens" type="number" min={1} step={1} value={maxTokens}
             onChange={(e) => onSetMaxTokens(Number.parseInt(e.target.value, 10) || 4096)}
             className="w-full px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
+          />}
         </div>
 
         <Button
