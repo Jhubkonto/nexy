@@ -40,6 +40,7 @@ import { isClaudeCliModelOrCandidate } from './cli-adapters/claude-model-probe'
 import { retrieveAuthMode } from './auth'
 import { resolveEffectiveBackend } from './backend-routing'
 import { applyRollingContextCompression } from './context-compression'
+import { restoreProviderHistory, serializeProviderHistory } from './provider-history'
 import { getAgentConfig } from './agents'
 import { isFullAutoApprove } from './agentic-policy'
 import { buildChatContext, buildStoredAttachments } from './chat-context-builder'
@@ -48,6 +49,7 @@ import { getWorkingDirectory } from './file-handlers'
 import { inferProjectAuditTarget, recordProjectAuditChange } from './project-audit'
 import { computeLineDiff } from './diff-utils'
 import { dispatchToProvider } from './chat-provider-dispatch'
+import { parseOutputTokenSetting } from '../shared/output-budget'
 import type { MobileChatActivity } from './chat-context-builder'
 import { debugLog } from './debug-mode'
 import { ChatTurnEmitter } from './chat-turn-emitter'
@@ -893,7 +895,7 @@ export async function dispatchChatSend(
     globalDefaultHermesProfile = (db.prepare("SELECT value FROM settings WHERE key = 'global_default_hermes_profile'").get() as { value: string } | undefined)?.value || null
   } catch { /* optional setting */ }
   const temperatureSetting = Number.parseFloat(settingsMap.get('temperature') ?? '')
-  const maxTokensSetting = Number.parseInt(settingsMap.get('max_tokens') ?? '', 10)
+  const maxTokensSetting = parseOutputTokenSetting(settingsMap.get('max_tokens'))
   const effectiveAgentId = agentId ?? convRow?.agent_id ?? null
   const agentCfg2 = effectiveAgentId ? getAgentConfig(effectiveAgentId) : null
   const effectiveFullAutoApprove =
@@ -932,7 +934,7 @@ export async function dispatchChatSend(
   let finalizedPlan: string | null = null
   const generationOptions = {
     temperature: Number.isFinite(temperatureSetting) ? Math.min(2, Math.max(0, temperatureSetting)) : 0.7,
-    maxTokens: Number.isFinite(maxTokensSetting) ? Math.min(16384, Math.max(256, maxTokensSetting)) : 4096,
+    maxTokens: typeof maxTokensSetting === 'number' ? maxTokensSetting : 4096,
     thinkingEffort: (convRow?.thinking_effort_override ?? projectConfig?.defaultThinkingEffort ?? agentCfg2?.thinkingEffort) as string | undefined,
   }
   const agenticMode =
@@ -1921,14 +1923,14 @@ export async function dispatchChatSend(
   const credential = credentialForModel
 
   const historyRows = db
-    .prepare('SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY timeline_order ASC, timestamp ASC, id ASC')
-    .all(conversationId) as { role: string; content: string }[]
-  const historyMessages = historyRows.slice(0, -1).map((m) => ({ role: m.role, content: m.content }))
+    .prepare('SELECT role, content, model, provider_history, is_edited FROM messages WHERE conversation_id = ? ORDER BY timeline_order ASC, timestamp ASC, id ASC')
+    .all(conversationId) as { role: string; content: string; model: string | null; provider_history: string | null; is_edited: number }[]
+  const historyMessages = historyRows.slice(0, -1).map((m) => ({ role: m.role, content: m.content, providerHistory: providerName === 'deepseek' && !m.is_edited ? m.provider_history : null }))
   const providerHistoryMessages = historyMessages.filter(
     (m) => m.role !== 'team-activity'
       && m.role !== 'tool-call'
       && !isLegacyPortableOperationalSummary(m.role, m.content),
-  ) as ProviderMessage[]
+  ) as (ProviderMessage & { providerHistory?: string | null })[]
 
   // Cross-turn tool memory: tool-call rows are filtered out of the provider message list above (a
   // bare replay would break OpenAI's assistant/tool pairing contract), so a follow-up like
@@ -1936,7 +1938,7 @@ export async function dispatchChatSend(
   // did and re-investigate from scratch. Fold a compact, bounded digest of recent tool actions into
   // the system prompt instead — enough for real continuity without the message-format pitfalls.
   const toolHistoryDigest = buildToolHistoryDigest(historyMessages)
-  const contextMessages: ProviderMessage[] =
+  const contextMessages =
     regenerate && providerHistoryMessages.length > 0
       ? providerHistoryMessages.slice(0, -1)
       : providerHistoryMessages
@@ -1944,6 +1946,7 @@ export async function dispatchChatSend(
     db,
     conversationId,
     contextMessages.map((m) => ({
+      ...m,
       role: m.role,
       content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
     })),
@@ -1953,10 +1956,7 @@ export async function dispatchChatSend(
     compressedMessageCount: compressedContext.summary.compressedMessageCount,
     retainedMessageCount: compressedContext.summary.retainedMessageCount,
   })
-  const effectiveContextMessages = compressedContext.messages.map((m) => ({
-    role: m.role,
-    content: m.content,
-  })) as ProviderMessage[]
+  const effectiveContextMessages = restoreProviderHistory(compressedContext.messages)
 
   // CCMP.7: inject relevant wiki entries into restored context after compression
   if (compressedContext.summary !== null && wikiProjectId && effectiveContextMessages.length > 0) {
@@ -2202,6 +2202,7 @@ export async function dispatchChatSend(
     })
   }
 
+  let providerTurnHistory: string | null = null
   let responseContent: string
   let completionActivity: MobileChatActivity = { state: 'complete', label: 'Complete' }
 
@@ -2216,6 +2217,7 @@ export async function dispatchChatSend(
     responseContent = await dispatchToProvider({
       providerName,
       providerModel,
+      onProviderHistory: (messages) => { providerTurnHistory = serializeProviderHistory(messages) },
       credential,
       chatMessages,
       toolDefs,
@@ -2224,7 +2226,7 @@ export async function dispatchChatSend(
       agenticMode,
       wikiInlineHandlers: inlineHandlers,
       toolDirective,
-      generationOptions,
+      generationOptions: { ...generationOptions, maxTokens: settingsMap.has('max_tokens') ? maxTokensSetting : undefined },
       conversationId,
       webContents: window?.webContents,
       sendChunk: byokSendChunk,
@@ -2345,6 +2347,9 @@ export async function dispatchChatSend(
     resolvedUserInputs,
     byokCitations,
   )
+  if (providerTurnHistory) {
+    db.prepare('UPDATE messages SET provider_history = ? WHERE id = ?').run(providerTurnHistory, assistantMsgId)
+  }
   if (finalizedPlan) {
     saveFinalizedPlanArtifact({ conversationId, sourceMessageId: assistantMsgId, plan: finalizedPlan })
   }

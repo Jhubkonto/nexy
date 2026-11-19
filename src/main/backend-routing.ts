@@ -14,7 +14,7 @@ import { getProviderCredential, getOpenRouterModels, PROVIDERS } from './provide
 import { ClaudeAdapter } from './cli-adapters/claude'
 import { CodexAdapter } from './cli-adapters/codex'
 import { HermesAdapter } from './cli-adapters/hermes'
-import { getCliModels, isHermesAcpReady } from './cli-detection'
+import { getCliModels, isHermesAcpReady, listHermesProfiles } from './cli-detection'
 import { isClaudeCliModelOrCandidate } from './cli-adapters/claude-model-probe'
 import { retrieveAuthMode } from './auth'
 import { getDatabase } from './database'
@@ -33,15 +33,25 @@ export function resolveEffectiveModelForRouting(explicitModel: string | null | u
 }
 
 /**
+ * True when `model` belongs to a Hermes profile's own model list. When `hermesProfile` is
+ * supplied, only that profile is consulted; otherwise every discovered profile is probed so a
+ * model unique to a non-default profile (e.g. `localllm-iso`) still routes to `hermes-cli`.
+ */
+function hermesModelMatchesProfile(model: string, hermesProfile?: string | null): boolean {
+  if (hermesProfile) return getCliModels('hermes-cli', hermesProfile).some((m) => m.id === model)
+  return listHermesProfiles().some((profile) => getCliModels('hermes-cli', profile.name).some((m) => m.id === model))
+}
+
+/**
  * Classifies a model as belonging to a CLI backend's own model list, if any — the other half of
  * ws-handlers.ts's `inferredCliBackend` computation. A conversation with no explicit backend but
  * whose (possibly default_model-derived) model is a known CLI model routes through that CLI.
  */
-export function inferCliBackendFromModel(model: string | undefined): EffectiveCliBackend {
+export function inferCliBackendFromModel(model: string | undefined, hermesProfile?: string | null): EffectiveCliBackend {
   if (!model) return undefined
   if (CodexAdapter.isAvailable() && getCliModels('codex-cli').some((m) => m.id === model)) return 'codex-cli'
   if (ClaudeAdapter.isAvailable() && isClaudeCliModelOrCandidate(model)) return 'claude-cli'
-  if (HermesAdapter.isAvailable() && isHermesAcpReady() && getCliModels('hermes-cli').some((m) => m.id === model)) return 'hermes-cli'
+  if (HermesAdapter.isAvailable() && isHermesAcpReady() && hermesModelMatchesProfile(model, hermesProfile)) return 'hermes-cli'
   return undefined
 }
 
@@ -86,7 +96,7 @@ export function resolveEffectiveBackend(opts: {
   if (!selectedModelIsOpenRouter && opts.convCliBackend === 'hermes-cli' && HermesAdapter.isAvailable() && isHermesAcpReady()) {
     return 'hermes-cli'
   }
-  if (!selectedModelIsOpenRouter && HermesAdapter.isAvailable() && isHermesAcpReady() && getCliModels('hermes-cli', opts.hermesProfile ?? undefined).some((entry) => entry.id === opts.selectedModel)) {
+  if (!selectedModelIsOpenRouter && HermesAdapter.isAvailable() && isHermesAcpReady() && hermesModelMatchesProfile(opts.selectedModel, opts.hermesProfile)) {
     return 'hermes-cli'
   }
   if (retrieveAuthMode() === 'none' && !credentialForModel) {

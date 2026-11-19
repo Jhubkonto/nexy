@@ -111,6 +111,7 @@ import type { ProjectGeneratorSpec, AgentGeneratorSpec, SkillConfig, SkillGenera
 import { storeApiKey, removeApiKey, getAzureEndpoint, setAzureEndpoint } from './provider-secrets'
 import { testProviderKey } from './providers'
 import { detectAllClis, getHermesProfileDiscovery, listHermesProfiles, hermesAcpReadiness } from './cli-detection'
+import { HERMES_DEFAULT_PROFILE, parseHermesSourceKey } from '../shared/hermes'
 import { ClaudeAdapter } from './cli-adapters/claude'
 import { CodexAdapter } from './cli-adapters/codex'
 import { HermesAdapter } from './cli-adapters/hermes'
@@ -828,13 +829,16 @@ export function registerWsHandlers(): void {
       let backend = typeof data.backend === 'string' ? data.backend : undefined
       let hermesProfile = typeof data.hermesProfile === 'string' ? data.hermesProfile : undefined
       const agentId = typeof data.agentId === 'string' ? data.agentId : undefined
-      if (agentId && (!backend || !hermesProfile)) {
+      // A Hermes-backed agent pins its own profile (same precedence as chat-handlers.ts).
+      let lockedHermesProfile: string | undefined
+      if (agentId) {
         const db = getDatabase()
         const row = db.prepare(
           "SELECT json_extract(config_json, '$.backend') AS backend, json_extract(config_json, '$.hermesProfile') AS hermesProfile FROM agents WHERE id = ?",
         ).get(agentId) as { backend: string | null; hermesProfile: string | null } | undefined
         backend = backend ?? row?.backend ?? undefined
         hermesProfile = hermesProfile ?? row?.hermesProfile ?? undefined
+        if (row?.backend === 'hermes-cli') lockedHermesProfile = row.hermesProfile?.trim() || HERMES_DEFAULT_PROFILE
       }
       const byId = new Map<string, {
         id: string
@@ -849,8 +853,19 @@ export function registerWsHandlers(): void {
       const configuredProviders = PROVIDERS.filter((provider) => isProviderConfigured(provider.name))
       // Older mobile clients consume the flat list. New clients can request the
       // same source-preserving inventory used by the desktop picker.
+      // `hermesProfileGroups` is opt-in: older clients treat a CLI group's sourceKey as the
+      // backend, so only clients that understand `hermes-cli:<profile>` keys receive them.
+      const hermesProfileGroups = data.includeGroups === true && data.hermesProfileGroups === true
       const groups = data.includeGroups === true
-        ? (await getAvailableModelGroups(hermesProfile)).filter((group) => !backend || group.sourceKey === backend || (group.sourceType === 'provider' && !backend.endsWith('-cli')))
+        ? (await getAvailableModelGroups(hermesProfile, { hermesProfileGroups })).filter((group) => {
+            if (!backend) return true
+            const groupProfile = parseHermesSourceKey(group.sourceKey)
+            if (groupProfile) {
+              // A Hermes-locked agent keeps its own profile; other profiles are not offered.
+              return backend === 'hermes-cli' && (!lockedHermesProfile || groupProfile === lockedHermesProfile)
+            }
+            return group.sourceKey === backend || (group.sourceType === 'provider' && !backend.endsWith('-cli'))
+          })
         : undefined
 
       const cliBackendLabels: Record<string, string> = {

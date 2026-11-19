@@ -32,6 +32,11 @@ import type { ProviderCredentialInput } from './credential-vault'
 import type { Citation } from '../shared/citations'
 import { countProviderInputTokens } from './token-counting'
 import type { TokenCount } from '../shared/token-usage'
+import { estimateToolRequestTokens, type ToolLoopOptions } from './tool-loop-context'
+import type { OutputTokenSetting } from '../shared/output-budget'
+import { OutputBudgetRecovery, resolveOutputBudget } from './output-budget'
+import { createProviderCancellationGuard } from './provider-stream-state'
+import { assertConversationStartsAllowed } from './emergency-stop'
 
 function stripImageParts(msgs: ProviderMessage[]): ProviderMessage[] {
   return msgs.map((msg) => {
@@ -55,7 +60,7 @@ export type ProviderDispatchOptions = {
   agenticMode: boolean
   wikiInlineHandlers: Map<string, InlineHandler>
   toolDirective: string
-  generationOptions: { temperature: number; maxTokens: number; thinkingEffort?: string }
+  generationOptions: { temperature: number; maxTokens?: OutputTokenSetting; thinkingEffort?: string }
   conversationId: string
   webContents: WebContents | undefined
   sendChunk: (chunk: string) => void
@@ -73,6 +78,7 @@ export type ProviderDispatchOptions = {
   fullAutoApprove?: boolean
   forceFirstToolChoice?: boolean
   mcpPolicy?: McpExecutionPolicy
+  onProviderHistory?: (messages: ProviderMessage[]) => void
 }
 
 function makeActivityHandler(sendActivity: (a: MobileChatActivity) => void) {
@@ -102,11 +108,11 @@ function makeStreamingToolRoundCaller(
     let emitted = false
     return callWithResilience(
       (effectiveChoice) => request(messages, tools, effectiveChoice, (chunk) => {
-        if (chunk) emitted = true
+        if (chunk.trim()) emitted = true
         onChunk(chunk)
       }).catch((error) => {
         if (emitted) {
-          throw new Error(`Provider stream interrupted after partial tool-round output: ${error instanceof Error ? error.message : String(error)}`)
+          throw Object.assign(new Error(`Provider stream interrupted after partial tool-round output: ${error instanceof Error ? error.message : String(error)}`, { cause: error }), error)
         }
         throw error
       }),
@@ -117,6 +123,15 @@ function makeStreamingToolRoundCaller(
 
 
 export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise<string> {
+  const cancellation = createProviderCancellationGuard(opts.conversationId)
+  try {
+    return await dispatchProviderTurn(opts, cancellation.assertActive)
+  } finally {
+    cancellation.dispose()
+  }
+}
+
+async function dispatchProviderTurn(opts: ProviderDispatchOptions, assertActive: () => void): Promise<string> {
   const {
     providerName,
     providerModel,
@@ -131,7 +146,7 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
     generationOptions,
     conversationId,
     webContents,
-    sendChunk,
+    sendChunk: callerSendChunk,
     sendActivity,
     onModel,
     onUsage,
@@ -147,11 +162,18 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
   const byokKey = credential ?? legacyByokKey
   if (!byokKey) throw new Error('No provider credential reference supplied')
   let { chatMessages, systemPrompt } = opts
+  let visibleText = false
+  let directReasoning = ''
+  let thinkingAttempt = 0
+  const sendChunk = (chunk: string) => {
+    if (chunk.trim()) visibleText = true
+    callerSendChunk(chunk)
+  }
 
   // Strip thinking effort for providers that don't support it (H5).
   // openrouter does not expose Anthropic extended thinking via its OpenAI-compatible endpoint.
   const thinkingSupport = PROVIDER_THINKING_SUPPORT[providerName]
-  const effectiveGenerationOptions = { ...generationOptions }
+  const effectiveGenerationOptions = { ...generationOptions, maxTokens: 4096 }
   if (
     effectiveGenerationOptions.thinkingEffort &&
     effectiveGenerationOptions.thinkingEffort !== 'disabled' &&
@@ -171,15 +193,39 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
   }
 
   const catalog = getCachedCatalog()
-  const catalogEntry = catalog.find((m) => m.id === providerModel)
   const toolsSupported = resolveToolsSupported(providerName, providerModel, catalog)
+  const effectiveToolDefs = toolsSupported ? toolDefs : []
+  const currentTask = [...chatMessages].reverse().find((m) => m.role === 'user')
+  const mandatoryMessages = [...chatMessages.filter((m) => m.role === 'system'), ...(currentTask ? [currentTask] : [])]
+  const budget = resolveOutputBudget({ provider: providerName, model: providerModel, setting: generationOptions.maxTokens,
+    thinkingEffort: effectiveGenerationOptions.thinkingEffort, catalog,
+    minimumInputTokens: estimateToolRequestTokens(mandatoryMessages, effectiveToolDefs) })
+  effectiveGenerationOptions.maxTokens = budget.initialTokens
+  const catalogEntry = catalog.find((m) => m.id === providerModel)
+  const loopOptions: ToolLoopOptions = {
+    contextWindow: budget.contextWindow,
+    maxOutputTokens: effectiveGenerationOptions.maxTokens,
+    onHistory: providerName === 'deepseek' ? opts.onProviderHistory : undefined,
+  }
   const toolSupportSource = providerName !== 'openrouter'
     ? 'catalog-lookup'
     : catalogEntry
       ? `openrouter-catalog caps=[${catalogEntry.capabilities.join(',')}]`
       : `openrouter-heuristic id="${providerModel.toLowerCase().replace(/^~/, '')}"`
-  const effectiveToolDefs = toolsSupported ? toolDefs : []
   const hasToolLoop = effectiveToolDefs.length > 0
+  const outputRecovery = new OutputBudgetRecovery({
+    provider: providerName, model: providerModel, budget,
+    hasVisibleText: () => visibleText,
+    assertActive: () => { assertActive(); assertConversationStartsAllowed() },
+    onRetry: (tokens) => {
+      effectiveGenerationOptions.maxTokens = tokens
+      loopOptions.maxOutputTokens = tokens
+      directReasoning = ''
+      thinkingAttempt++
+      sendActivity({ state: 'thinking', label: `Automatic increased the output budget to ${tokens.toLocaleString('en-US')} tokens; retrying.` })
+    },
+  })
+  loopOptions.outputRecovery = outputRecovery
   if (opts.onPreflightUsage) {
     const count = await countProviderInputTokens({
       providerName,
@@ -218,19 +264,21 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
     systemPrompt = `${systemPrompt}${noToolSupportNotice}`
   }
 
+  const thinkingBlockId = (id: string) => thinkingAttempt ? `${id}-retry-${thinkingAttempt}` : id
   const thinkingCallbacks = {
     onThinkingChunk: (blockId: string, chunk: string) => {
+      directReasoning += chunk
       if (callerOnThinkingChunk) {
-        callerOnThinkingChunk(blockId, chunk)
+        callerOnThinkingChunk(thinkingBlockId(blockId), chunk)
       } else {
-        webContents?.send('chat:thinking-delta', { blockId, chunk })
+        webContents?.send('chat:thinking-delta', { blockId: thinkingBlockId(blockId), chunk })
       }
     },
     onThinkingEnd: (blockId: string) => {
       if (callerOnThinkingEnd) {
-        callerOnThinkingEnd(blockId)
+        callerOnThinkingEnd(thinkingBlockId(blockId))
       } else {
-        webContents?.send('chat:thinking-end', { blockId })
+        webContents?.send('chat:thinking-end', { blockId: thinkingBlockId(blockId) })
       }
     },
     onCitations: (citations: Citation[]) => opts.onCitations?.(citations),
@@ -276,18 +324,19 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
           })
         ),
         mcpPolicy,
+        loopOptions,
       )
     }
     sendActivity({ state: 'thinking', label: 'Generating response' })
-    return sendAnthropicMessage(
+    return outputRecovery.run(chatMessages, [], (msgs) => sendAnthropicMessage(
       conversationId,
       byokKey,
       providerModel,
-      chatMessages.slice(1),
+      msgs.slice(1),
       systemPrompt,
       sendChunk,
       { ...effectiveGenerationOptions, ...thinkingCallbacks },
-    )
+    ))
   }
 
   if (providerName === 'openai') {
@@ -330,14 +379,15 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
           })
         ),
         mcpPolicy,
+        loopOptions,
       )
     }
     sendActivity({ state: 'thinking', label: 'Generating response' })
-    return sendOpenAIMessage(conversationId, byokKey, providerModel, chatMessages, sendChunk, {
+    return outputRecovery.run(chatMessages, [], (msgs) => sendOpenAIMessage(conversationId, byokKey, providerModel, msgs, sendChunk, {
       ...effectiveGenerationOptions,
       ...thinkingCallbacks,
       onUsage,
-    })
+    }))
   }
 
   // OpenAI-compatible providers (OpenRouter, Groq, Mistral, Gemini, xAI)
@@ -366,7 +416,7 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
       const caller = (msgs: ProviderMessage[], tools: ToolDefinition[] | undefined, choice: ToolChoice): Promise<ProviderNonStreamResult> =>
         callWithResilience(async (c) => {
           try {
-            return await sendOpenAIWithToolsResilient(byokKey, providerModel, await prepareImages(msgs), tools ?? [], c, { ...effectiveGenerationOptions, ...thinkingCallbacks, onUsage, conversationId }, baseUrl)
+            return await sendOpenAIWithToolsResilient(byokKey, providerModel, await prepareImages(msgs), tools ?? (providerName === 'deepseek' ? effectiveToolDefs : []), c, { ...effectiveGenerationOptions, ...(providerName === 'deepseek' && c === 'none' ? { thinkingEffort: 'disabled' } : {}), ...thinkingCallbacks, onUsage, conversationId }, baseUrl)
           } catch (err) {
             if (!(err instanceof Error)) throw err
             if (err.message.includes('No endpoints found that support tool use')) {
@@ -424,23 +474,36 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
         forceFirstToolChoice,
         onUsage,
         async (msgs, onChunk) => {
+          if (providerName === 'deepseek') {
+            // Keep schemas available to the API parser while explicitly disabling
+            // new tool calls for the final answer.
+            return await sendOpenAIWithToolsStream(byokKey, providerModel, await prepareImages(msgs), effectiveToolDefs, 'none', onChunk, {
+              ...effectiveGenerationOptions, thinkingEffort: 'disabled', ...thinkingCallbacks, onUsage, conversationId,
+            }, baseUrl)
+          }
           await sendOpenAIMessage(conversationId, byokKey, providerModel, await prepareImages(msgs), onChunk, { ...effectiveGenerationOptions, ...thinkingCallbacks, onUsage }, baseUrl)
         },
         onToolStarted,
         streamingToolCaller,
         mcpPolicy,
+        loopOptions,
       )
     }
     sendActivity({ state: 'thinking', label: 'Generating response' })
+    const recordDirectHistory = (content: string) => {
+      if (providerName === 'deepseek') opts.onProviderHistory?.([{ role: 'assistant', content, reasoning_content: directReasoning }])
+      return content
+    }
     try {
-      return await sendOpenAIMessage(conversationId, byokKey, providerModel, chatMessages, sendChunk, {
+      return recordDirectHistory(await outputRecovery.run(chatMessages, [], (msgs) => sendOpenAIMessage(conversationId, byokKey, providerModel, msgs, sendChunk, {
         ...effectiveGenerationOptions,
         ...thinkingCallbacks,
         onUsage,
-      }, baseUrl)
+      }, baseUrl)))
     } catch (err) {
       if (err instanceof Error && isImageError(err)) {
-        return sendOpenAIMessage(conversationId, byokKey, providerModel, await fallbackImages(chatMessages), sendChunk, { ...effectiveGenerationOptions, ...thinkingCallbacks, onUsage, onCitations: opts.onCitations }, baseUrl)
+        directReasoning = ''
+        return recordDirectHistory(await outputRecovery.run(await fallbackImages(chatMessages), [], (msgs) => sendOpenAIMessage(conversationId, byokKey, providerModel, msgs, sendChunk, { ...effectiveGenerationOptions, ...thinkingCallbacks, onUsage, onCitations: opts.onCitations }, baseUrl)))
       }
       throw err
     }
@@ -491,16 +554,17 @@ export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise
         })
       ),
       mcpPolicy,
+      loopOptions,
     )
   }
   sendActivity({ state: 'thinking', label: 'Generating response' })
-  return sendAzureMessage(
+  return outputRecovery.run(chatMessages, [], (msgs) => sendAzureMessage(
     conversationId,
     byokKey,
     azureEndpoint,
     providerModel,
-    chatMessages,
+    msgs,
     sendChunk,
     { ...effectiveGenerationOptions, onCitations: opts.onCitations },
-  )
+  ))
 }
