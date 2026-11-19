@@ -312,6 +312,29 @@ The full channel surface is typed in `src/shared/types.ts` as the `IpcChannels` 
 
 Nexy supports BYOK API providers and local CLI backends. Provider API keys are stored with Electron `safeStorage` where available. CLI backends authenticate through their own tools, such as Claude CLI or Codex CLI, and Nexy detects their availability before routing chats to them.
 
+BYOK tool loops derive their input budget from the model catalog or a model fallback, with output
+capacity and estimation headroom reserved. Estimates include reasoning, tool schemas, arguments,
+and images. When needed, trimming drops complete exchanges while retaining system instructions
+and the current task. Reaching the iteration limit switches to an explicit answer-only instruction;
+DeepSeek terminal requests retain schemas with `tool_choice: none` and thinking disabled.
+
+Global chat Max tokens supports Automatic (`max_tokens: "auto"`, also the missing-setting default)
+and Manual (saved positive numbers). `output-budget.ts` resolves provider-qualified output and
+context limits after thinking-mode selection. DeepSeek Automatic reserves 8K tokens without
+thinking, 64K with thinking, or 128K at maximum effort. Unknown models retain conservative defaults.
+One `OutputBudgetRecovery` instance owns each chat turn: only a typed `length` failure before any
+answer text can increase Automatic's budget, once, up to twice the initial reserve and within
+model/context limits. Ordinary rounds and both finalisation transports share that allowance.
+Recovery compacts whole exchanges, rechecks cancellation, keeps completed tool results, and
+discards the failed response's reasoning and tool batch. Manual limits never increase. Notices
+use the existing chat activity/text channels; diagnostics contain budgets and counts, not content.
+
+DeepSeek assistant rows keep per-turn provider messages in `messages.provider_history`, separately
+from display text. Retained turns restore exact reasoning and matched assistant/tool exchanges after
+rolling compression. Edited rows and legacy rows use their display text. Other providers do not
+receive this DeepSeek history. HTTP response and SSE parsers retain UTF-8 decoder state across
+network chunks.
+
 ---
 
 ## Provider Abstraction

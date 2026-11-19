@@ -40,12 +40,28 @@ The probe distinguishes a missing executable, unsupported ACP installation, auth
 provider configuration failure, and an undifferentiated runtime error. An installed binary alone
 is not sufficient for selection.
 
-In the Android chat model picker, the Hermes profile control is a dropdown, not a free-text CLI
-input. It is shown only when the active model target is Hermes and lists the profiles discovered
-on the connected desktop, plus **Default profile**. A selection made in a brand-new draft chat is
-held locally and included with the first message, because the desktop conversation row does not
-exist until that message is sent. Selecting **Default profile** explicitly uses Hermes' normal
-profile rather than silently changing the choice back to the global default.
+Both chat model pickers (desktop and connected Android) show one group per discovered Hermes
+profile instead of a separate profile control. Each group's source key is `hermes-cli:<profile>`
+(`default` first, then alphabetically) and its label is `Hermes · Default` or
+`Hermes · <profile>`, with the profile's configured model and description as muted subtext.
+On desktop the profile groups collapse into a single **Hermes** row: it opens a profile menu, and
+each profile opens its own model menu.
+Model IDs inside a group stay bare; the profile is never encoded into the model ID, because
+`getProviderForAgent()` splits on the first `:` and would read the remainder as an OpenRouter ID.
+Choosing a model writes the model, `cli_backend = 'hermes-cli'` and
+`conversations.conversation_hermes_profile` together in one call; choosing from the Default group
+stores no override. A selection made in a brand-new draft chat is held locally and sent with the
+first message, because the conversation row does not exist until then. Searching the picker by
+profile name narrows it to that profile's group. Profile groups are opt-in
+(`model:list-available` option `hermesProfileGroups`, WS `model:list` flag `hermesProfileGroups`);
+generators, settings and older Android clients keep the single `hermes-cli` group.
+
+The effective profile for a turn is resolved as follows: an agent whose backend is Hermes pins its
+own profile (its picker shows only that profile's group), then the conversation's override, then
+the project or global default, then `default`. A profile carries its own memory, skills and
+`SOUL.md`, so switching profile mid-conversation respawns the Hermes session (the session
+fingerprint includes the profile). If a selected profile is later deleted, the adapter warns and
+falls back to `default`.
 
 Permission requests are fail-closed: Nexy's ordinary approval resolves to Hermes's `allow_once`
 option, while deny, timeout, cancellation, stale UI, and disconnected clients select Hermes's
