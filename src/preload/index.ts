@@ -19,6 +19,7 @@ import type {
   PromptLibraryInput,
   PromptLibraryUpdate,
   AvailableModelGroup,
+  AvailableModelGroupOptions,
   PublishedEntry,
   ProjectGeneratorMessage,
   ProjectGeneratorSpec,
@@ -174,6 +175,8 @@ const api = {
       agentId?: string
       model?: string
       cliBackend?: CliBackend
+      /** Hermes profile chosen with the model; `null` selects the default profile. */
+      hermesProfile?: string | null
       messageId?: string
       projectId?: string
       contextSnapshot?: string
@@ -467,7 +470,7 @@ const api = {
 
   // Models
   listModelCatalog: () => typedInvoke('model:list-catalog'),
-  listAvailableModels: (hermesProfile?: string): Promise<AvailableModelGroup[]> => typedInvoke('model:list-available', hermesProfile),
+  listAvailableModels: (hermesProfile?: string, options?: AvailableModelGroupOptions): Promise<AvailableModelGroup[]> => typedInvoke('model:list-available', hermesProfile, options),
   onCatalogUpdated: (
     callback: (data: { models: CatalogModel[]; changeSummary?: string }) => void
   ) => {

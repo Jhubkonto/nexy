@@ -2092,6 +2092,7 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       ALTER TABLE work_history_runs ADD COLUMN artifact_version_id TEXT;
     `,
   },
+  { version: 106, sql: "ALTER TABLE messages ADD COLUMN provider_history TEXT" },
 ];
 
 

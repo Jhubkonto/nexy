@@ -1,4 +1,5 @@
 import https from 'https'
+import { StringDecoder } from 'string_decoder'
 import type { RequestOptions } from 'https'
 import type { IncomingMessage } from 'http'
 import type { ClientRequest } from 'http'
@@ -34,8 +35,9 @@ function requestWithResponse(options: RequestOptions, body?: string, abortKey?: 
     }
     const req = https.request(options, (res) => {
       let data = ''
+      const decoder = new StringDecoder('utf8')
       res.on('data', (chunk) => {
-        data += chunk.toString()
+        data += typeof chunk === 'string' ? chunk : decoder.write(chunk)
       })
       res.on('end', () => {
         if (settled) return
@@ -44,7 +46,7 @@ function requestWithResponse(options: RequestOptions, body?: string, abortKey?: 
         resolve({
           status: res.statusCode || 0,
           headers: res.headers,
-          data
+          data: data + decoder.end()
         })
       })
       res.on('error', (error) => { if (settled) return; settled = true; cleanup(req); reject(error) })
@@ -144,6 +146,7 @@ export function httpsGet(url: string, headers: Record<string, string | number>):
 export function parseSseStream(res: IncomingMessage, onDelta: (delta: string) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     let buffer = ''
+    const decoder = new StringDecoder('utf8')
     let finished = false
 
     const cleanup = () => {
@@ -186,11 +189,12 @@ export function parseSseStream(res: IncomingMessage, onDelta: (delta: string) =>
     }
 
     const handleData = (chunk: Buffer | string) => {
-      buffer += chunk.toString()
+      buffer += typeof chunk === 'string' ? chunk : decoder.write(chunk)
       processBuffer(false)
     }
 
     const handleEnd = () => {
+      buffer += decoder.end()
       processBuffer(true)
       finish()
     }

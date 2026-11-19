@@ -1,4 +1,4 @@
-import { detectCli, getCliModels } from './cli-detection'
+import { detectCli, getCliModels, getHermesProfileDiscovery } from './cli-detection'
 import { getClaudeCliModelChoices } from './cli-adapters/claude-model-probe'
 import {
   PROVIDERS,
@@ -18,14 +18,55 @@ import { fetchAndCacheAnthropicModels, getCachedAnthropicModels } from './anthro
 import { MODEL_LABELS } from '../shared/models'
 import { safeHandle } from './safe-handle'
 import { debugTime, debugTimeEnd } from './debug-mode'
-import type { AvailableModelGroup } from '../shared/types'
+import { HERMES_DEFAULT_PROFILE, hermesProfileLabel, hermesSourceKey } from '../shared/hermes'
+import type { AvailableModelGroup, AvailableModelGroupOptions, HermesProfileInfo } from '../shared/types'
+
+/** `default` first, then named profiles alphabetically. */
+function compareHermesProfiles(a: HermesProfileInfo, b: HermesProfileInfo): number {
+  if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1
+  return a.name.localeCompare(b.name)
+}
+
+/**
+ * One picker group per discovered Hermes profile, keyed `hermes-cli:<profile>`. Model IDs stay
+ * bare; the profile travels in the group key and is persisted beside the model. Each profile's
+ * model list is read once per call.
+ */
+export function getHermesProfileModelGroups(): AvailableModelGroup[] {
+  let profiles: HermesProfileInfo[]
+  try {
+    profiles = getHermesProfileDiscovery().profiles
+  } catch {
+    profiles = []
+  }
+  if (!profiles.some((profile) => profile.name === HERMES_DEFAULT_PROFILE)) {
+    profiles = [{ name: HERMES_DEFAULT_PROFILE, isDefault: true }, ...profiles]
+  }
+  const seen = new Set<string>()
+  const groups: AvailableModelGroup[] = []
+  for (const profile of [...profiles].sort(compareHermesProfiles)) {
+    if (seen.has(profile.name)) continue
+    seen.add(profile.name)
+    const models = getCliModels('hermes-cli', profile.isDefault ? undefined : profile.name)
+    if (models.length === 0) continue
+    const description = [profile.model, profile.description].filter((part): part is string => !!part?.trim()).join(' · ')
+    groups.push({
+      sourceKey: hermesSourceKey(profile.name),
+      sourceLabel: hermesProfileLabel(profile.name, profile.isDefault),
+      sourceType: 'cli',
+      models,
+      ...(description ? { description } : {}),
+    })
+  }
+  return groups
+}
 
 /**
  * @param hermesProfile When the caller is scoped to a specific agent whose backend is Hermes,
  *   its profile name — so the Hermes group reflects that profile's own `config.yaml` model
  *   rather than the default profile's (a localllm-scoped agent otherwise shows the wrong model).
  */
-export async function getAvailableModelGroups(hermesProfile?: string): Promise<AvailableModelGroup[]> {
+export async function getAvailableModelGroups(hermesProfile?: string, options: AvailableModelGroupOptions = {}): Promise<AvailableModelGroup[]> {
   const groups: AvailableModelGroup[] = []
   const [claude, codex, hermes] = await Promise.all([
     detectCli('claude'),
@@ -47,7 +88,9 @@ export async function getAvailableModelGroups(hermesProfile?: string): Promise<A
     }
   }
 
-  if (hermes.installed) {
+  if (hermes.installed && options.hermesProfileGroups) {
+    groups.push(...getHermesProfileModelGroups())
+  } else if (hermes.installed) {
     const models = getCliModels('hermes-cli', hermesProfile)
     if (models.length > 0) {
       groups.push({ sourceKey: 'hermes-cli', sourceLabel: 'Hermes Agent', sourceType: 'cli', models })
@@ -69,9 +112,9 @@ export async function getAvailableModelGroups(hermesProfile?: string): Promise<A
 }
 
 export function registerModelAvailabilityHandlers(): void {
-  safeHandle('model:list-available', async (_event, hermesProfile?: string) => {
+  safeHandle('model:list-available', async (_event, hermesProfile?: string, options?: AvailableModelGroupOptions) => {
     debugTime('model:list-available')
-    const r = await getAvailableModelGroups(hermesProfile)
+    const r = await getAvailableModelGroups(hermesProfile, options && typeof options === 'object' ? { hermesProfileGroups: options.hermesProfileGroups === true } : {})
     debugTimeEnd('model:list-available')
     return r
   })

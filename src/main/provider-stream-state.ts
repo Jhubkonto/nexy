@@ -3,12 +3,26 @@ import http from 'http'
 export const activeStreamingRequests = new Map<string, http.ClientRequest>()
 export const activeCliAbortControllers = new Map<string, AbortController>()
 let fallbackStreamingRequestCounter = 0
+const cancellationGuards = new Set<{ conversationId: string; cancelled: boolean }>()
+
+/** Tracks stops even between two HTTP requests; disposed when dispatch finishes. */
+export function createProviderCancellationGuard(conversationId: string): { assertActive: () => void; dispose: () => void } {
+  const guard = { conversationId, cancelled: false }
+  cancellationGuards.add(guard)
+  return {
+    assertActive: () => { if (guard.cancelled) throw new Error('The provider turn was cancelled.') },
+    dispose: () => { cancellationGuards.delete(guard) },
+  }
+}
 
 export function incrementFallbackCounter(): number {
   return fallbackStreamingRequestCounter++
 }
 
 export function abortActiveStream(conversationId?: string): void {
+  for (const guard of cancellationGuards) {
+    if (!conversationId || guard.conversationId === conversationId || guard.conversationId.startsWith(`${conversationId}:`)) guard.cancelled = true
+  }
   if (conversationId) {
     // Delegated provider turns intentionally use `${conversationId}:${stepId}` so
     // siblings can stream in parallel. A conversation stop must fan out to those

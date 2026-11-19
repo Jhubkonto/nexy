@@ -6,6 +6,7 @@ export type CompressibleMessage = {
   role: string;
   content: string;
   timestamp?: number;
+  providerHistory?: string | null;
 };
 
 export type RollingCompressionResult = {
@@ -49,7 +50,7 @@ function getCatalogSnapshot(db: Database.Database): CatalogModel[] {
   return Array.isArray(parsed) ? parsed as CatalogModel[] : [];
 }
 
-function fallbackContextWindow(model: string): number | null {
+export function fallbackContextWindow(model: string): number | null {
   const lower = model.toLowerCase();
   if (lower.includes("deepseek-flash") || lower.includes("deepseek-v4")) return 1_000_000;
   if (lower.includes("deepseek-chat") || lower.includes("deepseek-reasoner")) return 128_000;
