@@ -11,6 +11,7 @@ import { PaginationFooter } from '../ui/PaginationFooter'
 import { useConversationPagination } from '../../hooks/useConversationPagination'
 import { useDebouncedSearchQuery } from '../../hooks/useDebouncedSearchQuery'
 import { CompletionFilterTabs } from './CompletionFilterTabs'
+import { BackgroundTaskIndicator } from '../BackgroundTaskIndicator'
 import type { ConversationCompletionFilter } from '../../../shared/types'
 
 export function AgentHistoryPane() {
@@ -25,6 +26,7 @@ export function AgentHistoryPane() {
   const newChat = useAppStore((s) => s.newChat)
   const unreadConversationIds = useAppStore((s) => s.unreadConversationIds)
   const generatingConversationIds = useAppStore((s) => s.generatingConversationIds)
+  const backgroundActivities = useAppStore((s) => s.backgroundActivities)
   const completedConversationIds = useAppStore((s) => s.completedConversationIds)
   const markConversationComplete = useAppStore((s) => s.markConversationComplete)
   const markConversationIncomplete = useAppStore((s) => s.markConversationIncomplete)
@@ -63,6 +65,7 @@ export function AgentHistoryPane() {
     const project = conv.project_id ? projects.find((p) => p.id === conv.project_id) : null
     const isUnread = unreadConversationIds.includes(conv.id)
     const isGenerating = generatingConversationIds.includes(conv.id)
+    const hasBackgroundTask = backgroundActivities.some((activity) => activity.id.startsWith('deferred:') && activity.conversationId === conv.id && activity.label === 'Background task running')
     // completedConversationIds is only seeded from the global conversation load, so an agent-scoped
     // conversation that arrived via pagination wouldn't be in it — fall back to the conversation's
     // own completed_at (the source of truth the all-chats list and chat header use).
@@ -99,6 +102,7 @@ export function AgentHistoryPane() {
         ) : null}
         <div className="flex-1 min-w-0">
           <p className="text-xs font-medium text-gray-800 dark:text-gray-100 truncate">{conv.title}</p>
+          {hasBackgroundTask && <BackgroundTaskIndicator />}
           <div className="flex items-center gap-2 mt-0.5 flex-wrap">
             <span className="text-[10px] text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded-full">
               {project ? project.name : 'No project'}

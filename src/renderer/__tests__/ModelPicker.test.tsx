@@ -34,6 +34,29 @@ describe('ModelPicker', () => {
     expect(button).toHaveAttribute('title', `${longLabel} · via global`)
     expect(screen.getByText(longLabel)).toHaveClass('truncate', 'max-w-[140px]')
   })
+  it('renders Hermes profile groups and resolves a bare model through the selected profile', () => {
+    const select = vi.fn()
+    const groups = [
+      { sourceKey: 'hermes-cli:default', sourceLabel: 'Hermes · Default', sourceType: 'cli' as const, models: [{ id: 'openrouter/auto', label: 'Auto router' }] },
+      { sourceKey: 'hermes-cli:localllm', sourceLabel: 'Hermes · localllm', sourceType: 'cli' as const, description: 'qwen3 · Local models', models: [{ id: 'openrouter/auto', label: 'Auto router' }] },
+    ]
+    render(<ModelPicker value="openrouter/auto" selectedSourceKey="hermes-cli:localllm" availableGroups={groups} catalogModels={[]} onSelectAvailableModel={select} />)
+    const button = screen.getByRole('button', { name: 'Conversation model: Auto router · via Hermes · localllm' })
+    fireEvent.click(button)
+    // Profiles sit behind a single Hermes row rather than one top-level row each.
+    expect(screen.queryByRole('button', { name: /^Default/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^Hermes 2 profiles/ }))
+    expect(screen.getByRole('button', { name: /^Default/ })).toBeInTheDocument()
+    expect(screen.getByText('qwen3 · Local models')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByPlaceholderText('Search models...'), { target: { value: 'localllm' } })
+    expect(screen.getByRole('button', { name: /^Hermes 1 profile/ })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.queryByRole('button', { name: /^Default/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^localllm/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Auto router' }))
+    expect(select).toHaveBeenCalledWith(groups[1], groups[1].models[0])
+  })
+
   it('searches providers and selects a model from the adjacent menu', () => {
     const select = vi.fn()
     const group = { sourceKey: 'openai', sourceType: 'provider' as const, sourceLabel: 'OpenAI', models: [{ id: 'model-a', label: 'Model A' }] }

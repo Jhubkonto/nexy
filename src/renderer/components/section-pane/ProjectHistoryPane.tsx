@@ -12,6 +12,7 @@ import { PaginationFooter } from '../ui/PaginationFooter'
 import { useConversationPagination } from '../../hooks/useConversationPagination'
 import { useDebouncedSearchQuery } from '../../hooks/useDebouncedSearchQuery'
 import { CompletionFilterTabs } from './CompletionFilterTabs'
+import { BackgroundTaskIndicator } from '../BackgroundTaskIndicator'
 import type { ConversationCompletionFilter } from '../../../shared/types'
 
 export function ProjectHistoryPane() {
@@ -26,6 +27,7 @@ export function ProjectHistoryPane() {
   const newChat = useAppStore((s) => s.newChat)
   const unreadConversationIds = useAppStore((s) => s.unreadConversationIds)
   const generatingConversationIds = useAppStore((s) => s.generatingConversationIds)
+  const backgroundActivities = useAppStore((s) => s.backgroundActivities)
   const completedConversationIds = useAppStore((s) => s.completedConversationIds)
   const markConversationComplete = useAppStore((s) => s.markConversationComplete)
   const markConversationIncomplete = useAppStore((s) => s.markConversationIncomplete)
@@ -75,6 +77,7 @@ export function ProjectHistoryPane() {
     const agent = conv.agent_id ? agents.find((a) => a.id === conv.agent_id) : null
     const isUnread = unreadConversationIds.includes(conv.id)
     const isGenerating = generatingConversationIds.includes(conv.id)
+    const hasBackgroundTask = backgroundActivities.some((activity) => activity.id.startsWith('deferred:') && activity.conversationId === conv.id && activity.label === 'Background task running')
     // completedConversationIds is only seeded from the global conversation load, so a
     // project-scoped conversation that arrived via pagination wouldn't be in it — fall back to the
     // conversation's own completed_at (the source of truth the all-chats list and chat header use).
@@ -119,6 +122,7 @@ export function ProjectHistoryPane() {
           ) : null}
           <div className="flex-1 min-w-0">
             <p className="text-xs font-medium text-nexy-text truncate">{conv.title}</p>
+            {hasBackgroundTask && <BackgroundTaskIndicator />}
             <p className="text-[10px] text-nexy-muted mt-0.5 truncate">
               {[agent && `${agent.icon} ${agent.name}`, project?.name, formatRelativeTime(conv.updated_at)]
                 .filter(Boolean)
