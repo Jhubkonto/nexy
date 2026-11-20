@@ -9,6 +9,7 @@ interface ResizeHandleProps {
   containerRef: React.RefObject<HTMLElement | null>
   /** Called once on pointerup with the final panel size in pixels. */
   onSetSize: (size: number) => void
+  onResizeStart?: () => void
   /** Which edge the handle sits on. Horizontal: 'start'=left, 'end'=right. Vertical: 'start'=top, 'end'=bottom. Default: 'end'. */
   align?: 'start' | 'end'
   /** Optional clamp bounds applied during drag (same values passed to onSetSize on release). May be a function to evaluate fresh on each move (useful for viewport-relative limits). */
@@ -16,7 +17,7 @@ interface ResizeHandleProps {
   maxSize?: number | (() => number)
 }
 
-export function ResizeHandle({ direction, containerRef, onSetSize, align = 'end', minSize = 0, maxSize }: ResizeHandleProps) {
+export function ResizeHandle({ direction, containerRef, onSetSize, onResizeStart, align = 'end', minSize = 0, maxSize }: ResizeHandleProps) {
   const isHorizontal = direction === 'horizontal'
   const [isOverScrollbar, setIsOverScrollbar] = useState(false)
 
@@ -50,6 +51,7 @@ export function ResizeHandle({ direction, containerRef, onSetSize, align = 'end'
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault()
+      onResizeStart?.()
 
       const rect = containerRef.current?.getBoundingClientRect()
       if (!rect) return
@@ -95,7 +97,7 @@ export function ResizeHandle({ direction, containerRef, onSetSize, align = 'end'
       window.addEventListener('pointermove', onMove)
       window.addEventListener('pointerup', onUp)
     },
-    [isHorizontal, align, containerRef, onSetSize, minSize, maxSize]
+    [isHorizontal, align, containerRef, onSetSize, onResizeStart, minSize, maxSize]
   )
 
   const hCursor = isOverScrollbar ? 'cursor-default' : 'cursor-col-resize'

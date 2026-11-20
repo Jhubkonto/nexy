@@ -8,6 +8,7 @@ import { NexyIcon } from './ui/icons'
 import { ViewportTooltip } from './ui/ViewportTooltip'
 import { useEmergencyStop } from '../hooks/useEmergencyStop'
 import { isApiError, type ProviderInfo } from '../../shared/types'
+import { SIDEBAR_COMPACT_WIDTH, SIDEBAR_MIN_WIDTH, sidebarMaxWidth } from '../lib/sidebar-layout'
 
 type StatusIndicator = {
   id: string
@@ -42,6 +43,7 @@ function NavButton({
   active,
   modal,
   running,
+  collapsed = false,
 }: {
   icon: ReactNode
   label: string
@@ -51,44 +53,68 @@ function NavButton({
   active?: boolean
   modal?: boolean
   running?: boolean
+  collapsed?: boolean
 }) {
+  const accessibleLabel = `${ariaLabel ?? label}${badgeCount && badgeCount > 0 && !ariaLabel?.includes(`(${badgeCount} `) ? ` (${badgeCount} new)` : ''}${running ? ' (working…)' : ''}`
   return (
-    <Button
-      variant="ghost"
-      onClick={onClick}
-      className={`w-full justify-start px-3 py-1.5 ${active ? 'bg-gray-100 dark:bg-gray-800' : ''}`}
-      aria-label={running ? `${ariaLabel ?? label} (working…)` : ariaLabel ?? label}
-    >
-      {icon}
-      <span className="flex-1 text-left">{label}</span>
-      {running && (
-        <span title="Working…"><Loader2 className="w-3 h-3 text-blue-500 animate-spin shrink-0" /></span>
-      )}
-      {!!badgeCount && badgeCount > 0 && (
-        <span className="flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-semibold leading-none">
-          {badgeCount > 9 ? '9+' : badgeCount}
-        </span>
-      )}
-      {modal && (
-        <NexyIcon name="external" size={12} className="text-gray-300 dark:text-gray-600" />
-      )}
-    </Button>
+    <ViewportTooltip label={accessibleLabel} placement="right" interactiveChild enabled={collapsed} className="block">
+      <Button
+        variant="ghost"
+        onClick={onClick}
+        className={`nexy-sidebar-action relative w-full justify-start px-3 py-1.5 ${active ? 'bg-gray-100 dark:bg-gray-800' : ''}`}
+        aria-label={accessibleLabel}
+        aria-current={active ? 'page' : undefined}
+      >
+        {icon}
+        <span className="nexy-sidebar-label flex-1 text-left">{label}</span>
+        {running && (
+          <span className="nexy-sidebar-working" title="Working…"><Loader2 className="w-3 h-3 text-blue-500 animate-spin shrink-0" /></span>
+        )}
+        {!!badgeCount && badgeCount > 0 && (
+          <span className="nexy-sidebar-badge flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-semibold leading-none">
+            {badgeCount > 9 ? '9+' : badgeCount}
+          </span>
+        )}
+        {modal && !collapsed && (
+          <NexyIcon name="external" size={12} className="text-gray-300 dark:text-gray-600" />
+        )}
+      </Button>
+    </ViewportTooltip>
   )
 }
-
-const SIDEBAR_MIN = 160
-const SIDEBAR_MAX = 480
 
 export function Sidebar() {
   const emergencyStop = useEmergencyStop()
   const sidebarRef = useRef<HTMLElement>(null)
-  const [width, setWidth] = useState(256)
+  const collapsed = useAppStore((s) => s.sidebarCollapsed)
+  const expandedWidth = useAppStore((s) => s.sidebarExpandedWidth)
+  const toggleCollapsed = useAppStore((s) => s.toggleSidebarCollapsed)
+  const setExpandedWidth = useAppStore((s) => s.setSidebarExpandedWidth)
+  const [viewportWidth, setViewportWidth] = useState(window.innerWidth)
+  const [animating, setAnimating] = useState(false)
+  const animationTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const getMaxSize = useCallback(() => Math.min(SIDEBAR_MAX, Math.floor(window.innerWidth * 0.32)), [])
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth)
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      if (animationTimer.current) clearTimeout(animationTimer.current)
+    }
+  }, [])
+
+  const handleToggle = () => {
+    if (animationTimer.current) clearTimeout(animationTimer.current)
+    setAnimating(true)
+    toggleCollapsed()
+    animationTimer.current = setTimeout(() => setAnimating(false), 220)
+  }
+
+  const getMaxSize = useCallback(() => sidebarMaxWidth(window.innerWidth), [])
 
   const handleSetSize = useCallback((size: number) => {
-    setWidth(Math.max(SIDEBAR_MIN, Math.min(getMaxSize(), size)))
-  }, [getMaxSize])
+    setExpandedWidth(Math.max(SIDEBAR_MIN_WIDTH, Math.min(getMaxSize(), size)))
+  }, [getMaxSize, setExpandedWidth])
 
   const authState = useAppStore((s) => s.authState)
 
@@ -181,43 +207,56 @@ export function Sidebar() {
   return (
     <aside
       ref={sidebarRef}
-      className="h-full flex flex-col shrink-0 overflow-auto bg-gray-50 dark:bg-gray-900 border-r border-gray-200 dark:border-gray-700/80 relative"
-      style={{ width }}
+      className="nexy-sidebar h-full flex flex-col shrink-0 overflow-auto bg-gray-50 dark:bg-gray-900 border-r border-gray-200 dark:border-gray-700/80 relative"
+      data-collapsed={collapsed}
+      data-animating={animating}
+      style={{ width: collapsed ? SIDEBAR_COMPACT_WIDTH : Math.min(expandedWidth, sidebarMaxWidth(viewportWidth)) }}
       role="complementary"
       aria-label="Sidebar navigation"
     >
-      <ResizeHandle direction="horizontal" containerRef={sidebarRef} onSetSize={handleSetSize} minSize={SIDEBAR_MIN} maxSize={getMaxSize} />
-      <div className="flex items-center px-4 h-9 border-b border-gray-200 dark:border-gray-700/80">
-        <span className="flex items-center justify-center rounded bg-black px-2 h-[22px] text-[13px] font-bold italic leading-none tracking-tight select-none"><span className="text-purple-400">N</span><span className="text-white">exy</span></span>
+      {!collapsed && <ResizeHandle direction="horizontal" containerRef={sidebarRef} onSetSize={handleSetSize} onResizeStart={() => setAnimating(false)} minSize={SIDEBAR_MIN_WIDTH} maxSize={getMaxSize} />}
+      <div className={`flex shrink-0 items-center h-9 border-b border-gray-200 dark:border-gray-700/80 ${collapsed ? 'justify-center' : 'justify-between px-4'}`}>
+        {!collapsed && <span className="flex items-center justify-center rounded bg-black px-2 h-[22px] text-[13px] font-bold italic leading-none tracking-tight select-none"><span className="text-purple-400">N</span><span className="text-white">exy</span></span>}
+        <ViewportTooltip label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} placement="right" interactiveChild>
+          <Button variant="ghost" onClick={handleToggle} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-expanded={!collapsed} className="p-1.5">
+            <NexyIcon name="chevron-right" size={14} className={collapsed ? '' : 'rotate-180'} />
+          </Button>
+        </ViewportTooltip>
       </div>
 
-      <div className="p-3 space-y-2">
+      <div className={`shrink-0 space-y-2 ${collapsed ? 'p-1.5' : 'p-3'}`}>
+        <ViewportTooltip label={emergencyStop.active ? 'New Chat — Conversation starts are frozen' : 'New Chat'} placement="right" interactiveChild enabled={collapsed} className="block">
         <Button
           variant="primary"
           onClick={() => newChat()}
           disabled={emergencyStop.active}
-          className="w-full justify-start px-3 py-2 text-sm"
+          className="nexy-sidebar-action w-full justify-start px-3 py-2 text-sm"
+          aria-label="New Chat"
+          aria-describedby={emergencyStop.active ? 'sidebar-frozen-status' : undefined}
         >
           <NexyIcon name="add" />
-          <span>New Chat</span>
+          <span className="nexy-sidebar-label">New Chat</span>
         </Button>
+        </ViewportTooltip>
         {emergencyStop.active && (
-          <p className="px-2 text-[11px] font-medium text-red-600 dark:text-red-400" role="status">
+          <p id="sidebar-frozen-status" className={collapsed ? 'sr-only' : 'px-2 text-[11px] font-medium text-red-600 dark:text-red-400'} role="status">
             Conversation starts are frozen
           </p>
         )}
         {backgroundActivities.length > 0 && (
           <NavButton
+            collapsed={collapsed}
             icon={<NexyIcon name="spark" size={14} />}
             label="Activity"
             onClick={() => setShowActivityFeed(true)}
             badgeCount={backgroundActivities.length}
             running
             modal
-            ariaLabel="Open activity feed"
+            ariaLabel={`Open activity feed (${backgroundActivities.length} active)`}
           />
         )}
-        {pinnedConvs.length > 0 && (
+        {collapsed && <NavButton collapsed icon={<NexyIcon name="pin" size={14} />} label="Pinned chats" ariaLabel={`Open pinned chats (${pinnedConvs.length} pinned)`} onClick={() => openSectionPane('pinned')} active={activeSectionPane === 'pinned'} />}
+        {!collapsed && pinnedConvs.length > 0 && (
           <section aria-labelledby="pinned-chats-heading" className="pt-1">
             <div className="flex items-center justify-between gap-2 px-1 mb-1">
               <p id="pinned-chats-heading" className="nexy-panel-title text-[10px] text-cyan-700 dark:text-cyan-300 uppercase">
@@ -282,6 +321,7 @@ export function Sidebar() {
         )}
         <hr className="border-gray-200 dark:border-gray-700/80" />
         <NavButton
+          collapsed={collapsed}
           icon={<NexyIcon name="chat" size={14} />}
           label="Chats"
           badgeCount={unreadConversationIds.length}
@@ -290,6 +330,7 @@ export function Sidebar() {
           ariaLabel={`Open chat history${unreadConversationIds.length > 0 ? ` (${unreadConversationIds.length} unread)` : ''}`}
         />
         <NavButton
+          collapsed={collapsed}
           icon={<NexyIcon name="project" size={14} />}
           label="Projects"
           badgeCount={sectionNewCounts.projects}
@@ -298,6 +339,7 @@ export function Sidebar() {
           ariaLabel="Open projects"
         />
         <NavButton
+          collapsed={collapsed}
           icon={<NexyIcon name="agent" size={14} />}
           label="Agents"
           badgeCount={sectionNewCounts.agents}
@@ -306,6 +348,7 @@ export function Sidebar() {
           ariaLabel="Open agents"
         />
         <NavButton
+          collapsed={collapsed}
           icon={<NexyIcon name="skill" size={14} />}
           label="Skills"
           badgeCount={sectionNewCounts.skills}
@@ -314,6 +357,7 @@ export function Sidebar() {
           ariaLabel="Open skills"
         />
         <NavButton
+          collapsed={collapsed}
           icon={<NexyIcon name="scheduled" size={14} />}
           label="Schedules"
           badgeCount={sectionNewCounts.scheduled}
@@ -322,6 +366,7 @@ export function Sidebar() {
           ariaLabel="Open schedules"
         />
         <NavButton
+          collapsed={collapsed}
           icon={<NexyIcon name="workflow" size={14} />}
           label="Workflows"
           badgeCount={sectionNewCounts.workflows}
@@ -331,6 +376,7 @@ export function Sidebar() {
         />
         <hr className="border-gray-200 dark:border-gray-700/80" />
         <NavButton
+          collapsed={collapsed}
           icon={<NexyIcon name="artifact" size={14} />}
           label="Artifacts"
           onClick={() => { artifactLastOpenedRef.current = Date.now(); setNewArtifactCount(0); openSectionPane('artifacts') }}
@@ -339,6 +385,7 @@ export function Sidebar() {
           ariaLabel={`Open Artifacts${newArtifactCount > 0 ? ` (${newArtifactCount} new)` : ''}`}
         />
         <NavButton
+          collapsed={collapsed}
           icon={<NexyIcon name="rating" size={14} />}
           label="Ratings"
           onClick={() => openSectionPane('ratings')}
@@ -346,6 +393,7 @@ export function Sidebar() {
           ariaLabel="Open ratings"
         />
         <NavButton
+          collapsed={collapsed}
           icon={<NexyIcon name="chat" size={14} />}
           label="Work history"
           onClick={() => openSectionPane('work-history')}
@@ -353,7 +401,7 @@ export function Sidebar() {
         />
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto mr-1.5 px-3 pb-2">
+      <div hidden={collapsed} className="flex-1 min-h-0 overflow-y-auto mr-1.5 px-3 pb-2">
         {(recentConvs.length > 0 || pendingNew.length > 0) && (
           <div className="mt-2">
             <p className="nexy-panel-title text-[10px] text-gray-400 dark:text-gray-500 uppercase px-1 mb-1">
@@ -421,15 +469,17 @@ export function Sidebar() {
           </div>
         )}
       </div>
+      {collapsed && <div className="flex-1" />}
 
       {statusIndicators.length > 0 && (
-        <div className="border-t border-gray-200 px-2 py-2 dark:border-gray-700/80">
-          <div className="flex items-center gap-1.5 overflow-x-auto" aria-label="Available CLI tools and configured API providers">
+        <div className="shrink-0 border-t border-gray-200 px-2 py-2 dark:border-gray-700/80">
+          <div className={`flex items-center gap-1.5 ${collapsed ? 'flex-wrap justify-center' : 'overflow-x-auto'}`} aria-label="Available CLI tools and configured API providers">
             {statusIndicators.map((indicator) => (
               <ViewportTooltip
                 key={indicator.id}
                 label={indicator.label}
                 className="flex shrink-0"
+                placement={collapsed ? 'right' : 'top'}
               >
                 <span
                   className="h-3 w-3 rounded-full border border-white shadow-sm ring-1 ring-black/10 dark:border-gray-900 dark:ring-white/20"
