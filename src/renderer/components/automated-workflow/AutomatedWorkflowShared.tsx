@@ -281,7 +281,7 @@ export function StepCard({
         : 'Unassigned'
 
   const header = (
-    <div className="flex items-start justify-between gap-3">
+    <div title={`${step.stepIndex + 1}. ${step.title}`} className="flex items-start justify-between gap-3">
       <div className="min-w-0">
         <p className="text-[11px] font-semibold text-gray-800 dark:text-gray-100">
           {step.stepIndex + 1}. {step.title}
@@ -466,6 +466,7 @@ export function RunListRow({
   const inProgress = running + awaitingConfirmation
   return (
     <div
+      title={run.title}
       onClick={onOpen}
       className="cursor-pointer space-y-1 rounded-nexy-sm border-2 border-nexy-border bg-nexy-raised px-3 py-2.5 transition-colors hover:bg-nexy-recessed"
     >

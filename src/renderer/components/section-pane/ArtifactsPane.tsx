@@ -35,6 +35,7 @@ function ArtifactListItem({ artifact, onDelete, onExport, onClick }: {
 }) {
   return (
     <div
+      title={artifactDisplayTitle(artifact.title, artifact.kind)}
       onClick={() => onClick(artifact.id)}
       className="group flex cursor-pointer items-center gap-2 rounded-nexy-sm border border-transparent px-2 py-2 transition-colors hover:border-nexy-border hover:bg-nexy-recessed"
     >
@@ -224,7 +225,7 @@ export function ArtifactsPane() {
         ) : (
           <>
             {pendingGen && (
-              <div className="flex items-center gap-2 rounded-nexy-sm border-2 border-nexy-activity bg-nexy-recessed px-2 py-2 shadow-nexy">
+              <div title={pendingGen.title} className="flex items-center gap-2 rounded-nexy-sm border-2 border-nexy-activity bg-nexy-recessed px-2 py-2 shadow-nexy">
                 <NexyIcon name="busy" className="h-3.5 w-3.5 shrink-0 text-nexy-activity" />
                 <ArtifactKindBadge kind={pendingGen.kind} />
                 <span className="flex-1 truncate text-xs font-medium text-nexy-text">{pendingGen.title}</span>

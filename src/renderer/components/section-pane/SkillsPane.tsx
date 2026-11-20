@@ -278,6 +278,7 @@ export function SkillsPane() {
               {visibleDiscoveredSkills.map((discovery) => (
                 <div
                   key={discovery.packagePath}
+                  title={discovery.name}
                   className="flex items-center gap-2 rounded-nexy-sm border border-transparent px-2 py-1.5 hover:border-nexy-border"
                 >
                   <span className="text-sm leading-none shrink-0">{discovery.icon}</span>
@@ -352,6 +353,7 @@ export function SkillsPane() {
         ) : filtered.map((skill) => (
           <div
             key={skill.id}
+            title={skill.name}
             onClick={() => openEditSkill(skill.id)}
             aria-current={showSkillPanel && editingSkillId === skill.id ? 'true' : undefined}
             className={`group flex cursor-pointer items-center gap-2 rounded-nexy-sm border px-2 py-2 transition-colors ${showSkillPanel && editingSkillId === skill.id

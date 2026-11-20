@@ -147,9 +147,9 @@ export function AgentsPane() {
                     ? 'border-nexy-accent bg-nexy-recessed'
                     : 'border-transparent hover:border-nexy-border hover:bg-nexy-recessed'
                 }`}
-                title="Drag onto a project to add this agent to its team"
+                title={agent.name}
               >
-                <span className="text-base leading-none shrink-0">{agent.icon}</span>
+                <span title="Drag onto a project to add this agent to its team" className="text-base leading-none shrink-0">{agent.icon}</span>
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-medium text-gray-800 dark:text-gray-100 truncate">{agent.name}</p>
                   <p className="text-[10px] text-gray-400 dark:text-gray-500 truncate">
@@ -200,21 +200,22 @@ export function AgentsPane() {
                   ) : projects.map((project) => {
                     const alreadyMember = (projectAgents[project.id] ?? []).some((m) => m.agentId === agent.id)
                     return (
-                      <button
-                        key={project.id}
-                        type="button"
-                        disabled={alreadyMember}
-                        onClick={() => { if (!alreadyMember) handleAddToProject(project.id, agent) }}
-                        className={`w-full text-left flex items-center gap-2 px-3 py-1.5 text-xs transition-colors ${
-                          alreadyMember
-                            ? 'text-gray-300 dark:text-gray-600 cursor-default'
-                            : 'text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700'
-                        }`}
-                        aria-label={alreadyMember ? `${agent.name} already in ${project.name}` : `Add ${agent.name} to ${project.name}`}
-                      >
-                        {alreadyMember && <NexyIcon name="check" className="w-3 h-3 text-nexy-success shrink-0" />}
-                        <span className="truncate">{project.name}</span>
-                      </button>
+                      <div key={project.id} title={project.name}>
+                        <button
+                          type="button"
+                          disabled={alreadyMember}
+                          onClick={() => { if (!alreadyMember) handleAddToProject(project.id, agent) }}
+                          className={`w-full text-left flex items-center gap-2 px-3 py-1.5 text-xs transition-colors ${
+                            alreadyMember
+                              ? 'text-gray-300 dark:text-gray-600 cursor-default'
+                              : 'text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700'
+                          }`}
+                          aria-label={alreadyMember ? `${agent.name} already in ${project.name}` : `Add ${agent.name} to ${project.name}`}
+                        >
+                          {alreadyMember && <NexyIcon name="check" className="w-3 h-3 text-nexy-success shrink-0" />}
+                          <span className="truncate">{project.name}</span>
+                        </button>
+                      </div>
                     )
                   })}
                 </div>

@@ -236,6 +236,7 @@ export function ScheduledPane() {
           return (
             <div
               key={task.id}
+              title={task.name}
               className="group flex cursor-pointer flex-col gap-1 rounded-nexy-sm border border-transparent px-3 py-2 transition-colors hover:border-nexy-border hover:bg-nexy-recessed"
               onClick={() => setDetailTask(task)}
             >

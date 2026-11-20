@@ -73,6 +73,7 @@ export function AgentHistoryPane() {
     return (
       <div
         key={conv.id}
+        title={conv.title}
         onClick={() => selectConversation(conv.id)}
         aria-current={isActive ? 'page' : undefined}
         className={`group relative flex items-start gap-2 py-2 pl-10 pr-3 rounded-nexy-sm border cursor-pointer transition-colors ${

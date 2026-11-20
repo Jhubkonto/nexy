@@ -111,7 +111,7 @@ function ReportDetail({ run, onBack }: { run: WorkHistoryRun; onBack: () => void
       {run.sources.length > 0 && <div>
         <span className={sectionLabel}>Sources</span>
         <ul className="space-y-0.5">
-          {run.sources.map(source => <li key={source.id}>
+          {run.sources.map(source => <li key={source.id} title={`${cleanWorkHistoryTitle(source.title)}${source.available ? '' : ' (deleted)'}`}>
             <button className="flex w-full items-center gap-1.5 rounded-nexy-sm px-1 py-1 text-left text-xs hover:bg-nexy-recessed disabled:opacity-50 disabled:hover:bg-transparent" disabled={!source.available} onClick={() => selectConversation(source.id)}>
               <NexyIcon name="chat" size={12} className="shrink-0" />
               <span className="truncate">{cleanWorkHistoryTitle(source.title)}{source.available ? '' : ' (deleted)'}</span>
@@ -214,7 +214,7 @@ export function WorkHistoryPane() {
     {tab === 'saved'
       ? <div className="flex-1 overflow-auto">
           {runs.length === 0 && <PaneEmptyState>No reports yet.</PaneEmptyState>}
-          {runs.map(run => <button key={run.id} onClick={() => setActive(run.id)} className="flex w-full items-center gap-2 border-b border-nexy-border-soft px-3 py-2 text-left hover:bg-nexy-recessed">
+          {runs.map(run => <button key={run.id} title={rangeLabel(run.request.start, run.request.end)} onClick={() => setActive(run.id)} className="flex w-full items-center gap-2 border-b border-nexy-border-soft px-3 py-2 text-left hover:bg-nexy-recessed">
             <NexyIcon name="history" size={14} className="shrink-0 text-nexy-muted" />
             <span className="min-w-0 flex-1">
               <span className="block truncate text-xs font-bold">{rangeLabel(run.request.start, run.request.end)}</span>
@@ -281,7 +281,7 @@ export function WorkHistoryPane() {
                 {all.length > 0 && <Button variant="ghost" className="!px-1.5 !py-0.5" onClick={() => setSelected(selected.length === all.length ? [] : all.map(s => s.id))}>{selected.length === all.length ? 'Select none' : 'Select all'}</Button>}
               </div>
               <ul className="space-y-0.5">
-                {all.map(source => <li key={source.id}>
+                {all.map(source => <li key={source.id} title={cleanWorkHistoryTitle(source.title)}>
                   <label className="flex cursor-pointer items-start gap-2 rounded-nexy-sm px-1 py-1 hover:bg-nexy-recessed">
                     <input type="checkbox" className="mt-0.5" checked={selected.includes(source.id)} onChange={e => setSelected(e.target.checked ? [...selected, source.id] : selected.filter(id => id !== source.id))} />
                     <span className="min-w-0 flex-1">

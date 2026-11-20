@@ -66,6 +66,7 @@ export function ChatsPane({ pinnedOnly = false }: { pinnedOnly?: boolean } = {})
     return (
       <div
         key={conv.id}
+        title={conv.title}
         onClick={() => selectConversation(conv.id)}
         aria-current={isActive ? 'page' : undefined}
         className={`group relative flex items-stretch gap-0 rounded-nexy-sm border cursor-pointer transition-colors overflow-hidden ${
@@ -179,6 +180,7 @@ export function ChatsPane({ pinnedOnly = false }: { pinnedOnly?: boolean } = {})
               .map((id) => (
                 <div
                   key={id}
+                  title="New chat"
                   onClick={() => selectConversation(id)}
                   aria-current={currentConversationId === id ? 'page' : undefined}
                   className={`group flex items-start gap-2 px-3 py-2 rounded-nexy-sm border cursor-pointer transition-colors ${

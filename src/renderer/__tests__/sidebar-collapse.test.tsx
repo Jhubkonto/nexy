@@ -20,6 +20,21 @@ afterEach(() => {
 })
 
 describe('collapsible sidebar', () => {
+  it('switches between dots and spinner when toggling during activity', () => {
+    useAppStore.setState({
+      backgroundActivities: [{ id: 'job', label: 'Working', kind: 'build', startedAt: 1 }],
+    })
+    render(<Sidebar />)
+    const activity = screen.getByRole('button', { name: /Open activity feed.*working/ })
+    expect(activity.querySelector('.nexy-sidebar-working .animate-spin')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
+    expect(activity.querySelector('.nexy-sidebar-compact-loading')?.children).toHaveLength(3)
+    expect(activity.querySelector('.animate-spin')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Expand sidebar' }))
+    expect(activity.querySelector('.nexy-sidebar-compact-loading')).toBeNull()
+    expect(activity.querySelector('.nexy-sidebar-working .animate-spin')).toBeInTheDocument()
+  })
+
   it('animates toggles, reverses rapid toggles, and restores resized width', async () => {
     vi.useFakeTimers()
     useAppStore.setState({ sidebarExpandedWidth: 320 })

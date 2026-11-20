@@ -279,21 +279,22 @@ export function AutomatedWorkflowsPane() {
 
           <div className="space-y-2">
             {activeRun.steps.map((step) => (
-              <StepCard
-                key={step.dbId}
-                step={step}
-                confirmationMode={activeRun.confirmationMode}
-                waitingOn={waitingOnTitles(step)}
-                streamingText={stepStreamText[step.dbId]}
-                busy={busyAction === step.dbId}
-                onApprove={(s, editedOutput) => {
-                  const finalOutput = editedOutput !== s.output ? editedOutput : undefined
-                  void runAction(s.dbId, () => window.api.confirmAutomatedWorkflowStep(activeRun.id, s.dbId, finalOutput))
-                }}
-                onRetry={(s) => void runAction(s.dbId, () => window.api.retryAutomatedWorkflowStep(activeRun.id, s.dbId))}
-                onSkip={(s) => void runAction(s.dbId, () => window.api.skipAutomatedWorkflowStep(activeRun.id, s.dbId))}
-                onOpenConversation={handleOpenConversation}
-              />
+              <div key={step.dbId} title={`${step.stepIndex + 1}. ${step.title}`}>
+                <StepCard
+                  step={step}
+                  confirmationMode={activeRun.confirmationMode}
+                  waitingOn={waitingOnTitles(step)}
+                  streamingText={stepStreamText[step.dbId]}
+                  busy={busyAction === step.dbId}
+                  onApprove={(s, editedOutput) => {
+                    const finalOutput = editedOutput !== s.output ? editedOutput : undefined
+                    void runAction(s.dbId, () => window.api.confirmAutomatedWorkflowStep(activeRun.id, s.dbId, finalOutput))
+                  }}
+                  onRetry={(s) => void runAction(s.dbId, () => window.api.retryAutomatedWorkflowStep(activeRun.id, s.dbId))}
+                  onSkip={(s) => void runAction(s.dbId, () => window.api.skipAutomatedWorkflowStep(activeRun.id, s.dbId))}
+                  onOpenConversation={handleOpenConversation}
+                />
+              </div>
             ))}
           </div>
         </div>

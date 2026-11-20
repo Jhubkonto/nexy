@@ -92,6 +92,7 @@ function RatingListItem({ item, onClick }: { item: ConversationRatingListItem; o
   const tags = [...item.toolNames, ...item.skillNames]
   return (
     <div
+      title={item.conversationTitle}
       onClick={() => onClick(item.conversationId)}
       className="group flex cursor-pointer flex-col gap-1 rounded-nexy-sm border border-transparent px-2 py-2 transition-colors hover:border-nexy-border hover:bg-nexy-recessed"
     >

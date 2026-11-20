@@ -86,6 +86,7 @@ export function ProjectHistoryPane() {
     return (
       <div
         key={conv.id}
+        title={conv.title}
         onClick={() => selectConversation(conv.id)}
         aria-current={isActive ? 'page' : undefined}
         className={`group relative flex items-stretch gap-0 rounded-nexy-sm border cursor-pointer transition-colors overflow-hidden ${

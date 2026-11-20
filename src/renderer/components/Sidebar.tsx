@@ -67,9 +67,15 @@ function NavButton({
       >
         {icon}
         <span className="nexy-sidebar-label flex-1 text-left">{label}</span>
-        {running && (
-          <span className="nexy-sidebar-working" title="Working…"><Loader2 className="w-3 h-3 text-blue-500 animate-spin shrink-0" /></span>
-        )}
+        {running && (collapsed ? (
+          <span className="nexy-sidebar-compact-loading text-blue-500 dark:text-blue-400" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </span>
+        ) : (
+          <span className="nexy-sidebar-working" title="Working…" aria-hidden="true"><Loader2 className="w-3 h-3 text-blue-500 animate-spin shrink-0" /></span>
+        ))}
         {!!badgeCount && badgeCount > 0 && (
           <span className="nexy-sidebar-badge flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-semibold leading-none">
             {badgeCount > 9 ? '9+' : badgeCount}
@@ -274,6 +280,7 @@ export function Sidebar() {
                 return (
                   <div
                     key={conv.id}
+                    title={conv.title}
                     aria-current={isActive ? 'page' : undefined}
                     className={`group flex items-stretch rounded-md overflow-hidden transition-colors ${
                       isActive
@@ -411,6 +418,7 @@ export function Sidebar() {
               {pendingNew.map((id) => (
                 <button
                   key={id}
+                  title="New chat"
                   onClick={() => selectConversation(id)}
                   aria-current={currentConversationId === id ? 'page' : undefined}
                   className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md border text-left transition-colors ${
@@ -435,6 +443,7 @@ export function Sidebar() {
                 return (
                   <button
                     key={conv.id}
+                    title={conv.title}
                     onClick={() => selectConversation(conv.id)}
                     aria-current={isActive ? 'page' : undefined}
                     className={`w-full flex items-stretch rounded-md border text-left transition-colors overflow-hidden ${

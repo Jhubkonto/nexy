@@ -125,6 +125,7 @@ export function ProjectsPane() {
           return (
             <div
               key={project.id}
+              title={project.name}
               data-project-id={project.id}
               className={`group relative flex cursor-pointer items-center gap-2 overflow-hidden rounded-nexy-sm border transition-colors ${
                 isActive

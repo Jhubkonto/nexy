@@ -194,7 +194,7 @@ export function SchedulerTaskDetail({ task, onBack, onEdit, onDeleted, onTaskUpd
           ) : (
             <div className="space-y-1">
               {runs.map((run) => (
-                <div key={run.id} className="flex items-center gap-2 px-2 py-1.5 rounded border border-gray-100 dark:border-gray-800">
+                <div key={run.id} title={`${run.status.charAt(0).toUpperCase()}${run.status.slice(1)}${run.triggerSource === 'manual' ? ' (manual)' : ''}`} className="flex items-center gap-2 px-2 py-1.5 rounded border border-gray-100 dark:border-gray-800">
                   {statusIcon(run.status)}
                   <div className="flex-1 min-w-0">
                     <p className="text-[11px] text-gray-700 dark:text-gray-200 capitalize">
