@@ -80,10 +80,12 @@ class Statement {
 class Database {
   private readonly db: SqlJsDatabase
 
-  constructor(_filename: string) {
+  constructor(_filename: string | Buffer) {
     // Always open in-memory; test filenames like ':memory:' are ignored
-    this.db = new (requireSql().Database)()
+    this.db = new (requireSql().Database)(Buffer.isBuffer(_filename) ? _filename : undefined)
   }
+
+  serialize(): Buffer { return Buffer.from(this.db.export()) }
 
   /**
    * Matches better-sqlite3's pragma() behaviour:
