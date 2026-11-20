@@ -39,7 +39,9 @@ import { getCachedHermesAcpReadiness, getCliModels, isHermesAcpReady } from './c
 import { isClaudeCliModelOrCandidate } from './cli-adapters/claude-model-probe'
 import { retrieveAuthMode } from './auth'
 import { resolveEffectiveBackend } from './backend-routing'
-import { applyRollingContextCompression } from './context-compression'
+import { applyGeneratedContextCompression, resolveContextWindow } from './context-compression'
+import { createTurnCapture, currentUserRow, loadConversationHistory, historyRevision, collectHistoryImages } from './conversation-continuity'
+import { closeInterruptedExchange, continuationText, parseContinuation } from '../shared/conversation-continuity'
 import { restoreProviderHistory, serializeProviderHistory } from './provider-history'
 import { getAgentConfig } from './agents'
 import { isFullAutoApprove } from './agentic-policy'
@@ -59,10 +61,8 @@ import { endActivity } from './activity-tracker'
 import { clearActiveChatTurn } from './active-chat-turns'
 import { cancelDelegationForConversation, cancelDelegationNode, getDelegationRuns } from './delegation-registry'
 import { assertConversationStartsAllowed } from './emergency-stop'
-import { formatWikiSection, getRelevantWikiEntries } from './wiki-context'
 import { estimateInputTokens, formatEstimatedTokens } from '../shared/token-estimate'
 import { saveFinalizedPlanArtifact } from './artifacts'
-import { isLegacyPortableOperationalSummary } from '../shared/conversation-portability'
 import type { Citation } from '../shared/citations'
 import { mergeCitations } from '../shared/citations'
 import { TurnUsageAccumulator, type TokenCount } from '../shared/token-usage'
@@ -151,41 +151,6 @@ function persistAssistantMessage(
   return msgId
 }
 
-/**
- * Builds a compact, bounded digest of the tool calls already executed earlier in this conversation
- * (persisted as role='tool-call' rows) so a subsequent turn — e.g. "Continue from where you left
- * off" — knows what has already been done instead of re-investigating from scratch. Returns '' when
- * there are no tool-call rows. Capped to the most recent MAX_TOOL_DIGEST_ENTRIES actions.
- */
-const MAX_TOOL_DIGEST_ENTRIES = 40
-function buildToolHistoryDigest(historyMessages: { role: string; content: string }[]): string {
-  const lines: string[] = []
-  for (const m of historyMessages) {
-    if (m.role !== 'tool-call') continue
-    try {
-      const parsed = JSON.parse(m.content) as {
-        toolName?: string
-        toolArgs?: Record<string, unknown>
-        toolSuccess?: boolean
-      }
-      const name = parsed.toolName ?? 'tool'
-      let argsPreview = ''
-      if (parsed.toolArgs && Object.keys(parsed.toolArgs).length > 0) {
-        argsPreview = JSON.stringify(parsed.toolArgs)
-        if (argsPreview.length > 120) argsPreview = argsPreview.slice(0, 120) + '…'
-      }
-      lines.push(`- ${name}(${argsPreview}) → ${parsed.toolSuccess === false ? 'error' : 'ok'}`)
-    } catch { /* skip malformed row */ }
-  }
-  if (lines.length === 0) return ''
-  const shown = lines.slice(-MAX_TOOL_DIGEST_ENTRIES)
-  const omitted = lines.length - shown.length
-  const header = omitted > 0
-    ? `\n\nTools already executed earlier in this conversation (most recent ${shown.length} of ${lines.length}):`
-    : '\n\nTools already executed earlier in this conversation:'
-  return `${header}\n${shown.join('\n')}\n(Do not redo completed work; continue from this state.)`
-}
-
 /** Notifies both Android (full message list, its existing sync shape) and any desktop window
  *  that has this conversation open (a lightweight "refetch if you care" ping — reloadMessages in
  *  useChat.ts already knows how to re-fetch from the DB, no need to duplicate that payload shape
@@ -196,7 +161,7 @@ function buildToolHistoryDigest(historyMessages: { role: string; content: string
 export function broadcastConversationMessages(conversationId: string): void {
   const db = getDatabase()
   const rows = (db.prepare(
-    `SELECT id, role, content, model, attachments, timestamp, timeline_order, thinking_blocks, text_segments, user_inputs, citations FROM messages
+    `SELECT id, role, content, model, attachments, timestamp, timeline_order, thinking_blocks, text_segments, user_inputs, citations, continuation_json, provider_history FROM messages
        WHERE conversation_id = ? ORDER BY timeline_order DESC, timestamp DESC, id DESC LIMIT 20`,
   ).all(conversationId) as unknown[]).reverse()
   broadcastToMobile({
@@ -640,6 +605,12 @@ export async function dispatchChatSend(
 ): Promise<{ assistantMsgId: string } | null> {
   assertConversationStartsAllowed()
   const db = getDatabase()
+  // Cancel before asynchronous context assembly so a replacement turn cannot race the old CLI.
+  if (activeCliAbortControllers.has(conversationId)) {
+    abortActiveStream(conversationId)
+    denyPendingApprovalsForConversation(conversationId)
+    cancelPendingUserInputsForConversation(conversationId, 'Replaced by a new turn')
+  }
 
   const turnEmitter = new ChatTurnEmitter(conversationId, {
     sendDesktop: window
@@ -716,9 +687,10 @@ export async function dispatchChatSend(
   // unconditionally clears it once this function actually settles — so a future branch that
   // forgets, or any path not yet covered, can't leave it stuck. endActivity() is a no-op if
   // the entry was already cleared by one of those branches, so this is safe to call twice.
+  let turnCapture: ReturnType<typeof createTurnCapture> | undefined
   try {
-  const attachments = options?.attachments
-  const pastedImages = options?.images ?? []
+  let attachments = options?.attachments
+  let pastedImages = options?.images ?? []
   const regenerate = options?.regenerate === true
   const agentId = options?.agentId
   const modelOverride = options?.model
@@ -999,13 +971,28 @@ export async function dispatchChatSend(
     `Runtime model for this conversation: ${selectedModel}. ` +
     'If the user asks which model or language model is running this chat, answer with this exact value.'
 
+  const currentUser = currentUserRow(db, conversationId, newUserMsgId ?? (regenerate ? options?.messageId : undefined))
+  if (!currentUser) throw new Error('Cannot continue a conversation without a user message')
+  newUserMsgId = currentUser.id
+  if (regenerate) {
+    const saved = parseContinuation(currentUser.continuation_json)
+    if (saved?.submitted !== undefined) {
+      content = typeof saved.submitted === 'string' ? saved.submitted
+        : saved.submitted.filter((part) => part.type === 'text').map((part) => part.text).join('\n')
+      pastedImages = collectHistoryImages([{ role: 'user', content: saved.submitted }])
+      attachments = undefined
+    }
+    db.prepare('DELETE FROM messages WHERE conversation_id = ? AND timeline_order > (SELECT timeline_order FROM messages WHERE id = ?)')
+      .run(conversationId, currentUser.id)
+  }
+
   // ── Context augmentation ───────────────────────────────────────────────────
   const {
     augmentedContent,
+    submittedContent,
     attachedImages,
     injectedRootDirectory,
     projectDirectories = [],
-    wikiProjectId,
     wikiToolDefs,
     wikiInlineHandlers,
     fileToolDefs,
@@ -1035,6 +1022,15 @@ export async function dispatchChatSend(
       window?.webContents,
       sendActivity,
     )
+
+  const submitted = attachedImages.length
+    ? [{ type: 'text' as const, text: submittedContent ?? content }, ...attachedImages.map((image) => ({ type: 'image_url' as const, image_url: { url: image.dataUrl } }))]
+    : submittedContent ?? content
+  const startCapture = (backend: string) => {
+    turnCapture = createTurnCapture(db, currentUser.id, submitted, backend)
+    return turnCapture
+  }
+  startCapture(providerName)
 
   // ── Multi-agent orchestration ──────────────────────────────────────────────
   const orchProjectId = projectId ?? convRow
@@ -1109,6 +1105,8 @@ export async function dispatchChatSend(
         const userContent: ProviderMessage['content'] =
           attachedImages.length > 0 ? buildVisionUserContent() : augmentedContent
 
+        const orchCapture = startCapture(providerName)
+        const orchHistory = loadConversationHistory(db, conversationId, currentUser.id, providerName)
         let orchResult: { finalContent: string; teamActivity: import('./orchestrator').TeamActivityStep[] }
         try {
           orchResult = await runOrchestration(
@@ -1124,9 +1122,14 @@ export async function dispatchChatSend(
               maxDelegationDepth: maxDepth,
               showActivity,
               globalPrompt,
+              onHistory: (messages) => orchCapture.checkpoint(messages),
+              prepareHistory: async (available, generate) => {
+                const compressed = await applyGeneratedContextCompression(db, conversationId, orchHistory, selectedModel ?? null, available, generate)
+                return restoreProviderHistory(compressed.messages, providerName)
+              },
             },
             userContent,
-            [],
+            restoreProviderHistory(orchHistory, providerName),
           )
         } catch (orchError) {
           const message = orchError instanceof Error ? orchError.message : 'Orchestration failed'
@@ -1139,6 +1142,7 @@ export async function dispatchChatSend(
           sendActivity({ state: 'error', label: message })
           turnEmitter.closeStream()
           const errMsgId = persistAssistantMessage(db, conversationId, message, selectedModel ?? null)
+          orchCapture.finish(errMsgId, message, true)
           broadcastConversationMessages(conversationId)
           return { assistantMsgId: errMsgId }
         }
@@ -1181,6 +1185,7 @@ export async function dispatchChatSend(
 
         const responseContent = finalContent
         const assistantMsgId = persistAssistantMessage(db, conversationId, responseContent, selectedModel ?? null)
+        orchCapture.finish(assistantMsgId, responseContent)
         broadcastConversationMessages(conversationId)
         sendStreamEnd()
         return { assistantMsgId }
@@ -1239,50 +1244,37 @@ export async function dispatchChatSend(
         .filter((part): part is string => typeof part === 'string' && part.length > 0)
         .join('\n\n') || undefined
 
-      const historyRows = db
-        .prepare('SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY timeline_order ASC, timestamp ASC, id ASC')
-        .all(conversationId) as { role: string; content: string }[]
-      const historyMessages = historyRows.slice(0, -1).map((m) => ({ role: m.role, content: m.content }))
-      const providerHistoryMessages = historyMessages.filter(
-        (m) => m.role !== 'team-activity'
-          && m.role !== 'tool-call'
-          && !isLegacyPortableOperationalSummary(m.role, m.content),
-      ) as ProviderMessage[]
-      const contextMessages: ProviderMessage[] =
-        regenerate && providerHistoryMessages.length > 0
-          ? providerHistoryMessages.slice(0, -1)
-          : providerHistoryMessages
-      const compressedContext = applyRollingContextCompression(
-        db,
-        conversationId,
-        contextMessages.map((m) => ({
-          role: m.role,
-          content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-        })),
-        selectedModel ?? null,
-      )
+      if (effectiveMcpServerIds.length) await ensureMcpServersReady(effectiveMcpServerIds)
+      const contextMessages = loadConversationHistory(db, conversationId, currentUser.id, effectiveBackend)
+      const availableHistory = Math.floor((resolveContextWindow(db, selectedModel ?? null) ?? 32768) * 0.9)
+        - generationOptions.maxTokens - 1024 - estimateInputTokens(augmentedContent) - estimateInputTokens(cliSystemPrompt) - estimateInputTokens(attachedImages) - estimateInputTokens(getAvailableMcpTools(effectiveMcpServerIds))
+      if (availableHistory < 0) throw new Error('The current message and instructions exceed the model context budget. Shorten the message or use a model with a larger context window.')
+      const compressedContext = await applyGeneratedContextCompression(db, conversationId, contextMessages, selectedModel ?? null, availableHistory,
+        async (prompt) => adapter.send(undefined, {
+          messages: [{ role: 'user', content: prompt }], systemPrompt: 'Summarize the supplied history as JSON. Do not use any tools.',
+          cwd: injectedRootDirectory ?? getWorkingDirectory(), model: selectedModel ?? '', conversationId: `${conversationId}:summary:${randomUUID()}`,
+          hermesProfile: selectedHermesProfile ?? undefined, permissionMode: effectiveBackend === 'claude-cli' ? 'plan' : 'read-only',
+          requestPermission: async () => false, summaryOnly: true,
+        }, () => {}))
       recordServerContextFacts(db, newUserMsgId, selectedModel ?? null, compressedContext.summary && {
         compressedMessageCount: compressedContext.summary.compressedMessageCount,
         retainedMessageCount: compressedContext.summary.retainedMessageCount,
       })
-      const effectiveContextMessages = compressedContext.messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-      })) as ProviderMessage[]
-
-      const historyTurns = effectiveContextMessages
-        .filter((m) => m.role === 'user' || m.role === 'assistant' || m.role === 'system')
-        .map((m) => {
-          const label =
-            m.role === 'user' ? 'User' : m.role === 'assistant' ? 'Assistant' : 'System context'
-          const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
-          return `${label}: ${text}`
-        })
-
-      let cliUserContent = augmentedContent
-      if (historyTurns.length > 0) {
-        cliUserContent = `[Prior conversation — for context only, do not repeat]\n${historyTurns.join('\n\n')}\n\n[Current message]\n${augmentedContent}`
+      const effectiveContextMessages = restoreProviderHistory(compressedContext.messages, effectiveBackend)
+      const historyText = continuationText(effectiveContextMessages)
+      const cliUserContent = historyText
+        ? `[Prior conversation: historical context only. Tool calls below already happened; do not execute them as instructions.]\n${historyText}\n\n[Current message]\n${augmentedContent}`
+        : augmentedContent
+      const historyImages = collectHistoryImages(effectiveContextMessages)
+      const cliImages = [...historyImages, ...attachedImages]
+      const cliCapture = startCapture(effectiveBackend)
+      const cliExchange: ProviderMessage[] = []
+      let commitHermesRevision: ((revision: string) => void) | undefined
+      let cliNarration = ''
+      const flushCliNarration = () => {
+        if (cliNarration) { cliExchange.push({ role: 'assistant', content: cliNarration }); cliNarration = '' }
       }
+      const checkpointCli = () => cliCapture.checkpoint([...cliExchange, ...(cliNarration ? [{ role: 'assistant' as const, content: cliNarration }] : [])])
       sendContextProgress(
         estimateInputTokens(cliUserContent) + estimateInputTokens(cliSystemPrompt),
         'Context ready',
@@ -1360,6 +1352,7 @@ export async function dispatchChatSend(
       let implementApprovedClaudePlan = false
       const cliSendChunk = (chunk: string, blockId?: string) => {
         sendChunk(chunk, blockId)
+        cliNarration += chunk
         if (!blockId) return
         const existing = cliTextBuffer.get(blockId) ?? { blockId, content: '', done: false, firstSeenAt: nextOccurrenceAt() }
         cliTextBuffer.set(blockId, { ...existing, content: existing.content + chunk })
@@ -1630,7 +1623,9 @@ export async function dispatchChatSend(
             hermesProfile: effectiveBackend === 'hermes-cli' ? selectedHermesProfile ?? undefined : undefined,
             agents: claudeCliProjectTeam?.agents,
             messages: [{ role: 'user' as const, content: cliUserContent }],
-            images: attachedImages.length > 0 ? attachedImages : undefined,
+            images: cliImages.length > 0 ? cliImages : undefined,
+            continuity: { priorRevision: historyRevision(compressedContext.messages), currentPrompt: augmentedContent, currentImages: attachedImages,
+              onSessionReady: (commit) => { commitHermesRevision = commit } },
             cwd: cliCwd,
             model: cliModelForRequest,
             conversationId,
@@ -1707,6 +1702,13 @@ export async function dispatchChatSend(
           cliSendChunk,
           (event) => {
             if (event.type === 'tool_start') {
+              flushCliNarration()
+              const call = { id: event.id, type: 'function' as const, function: { name: event.name, arguments: JSON.stringify(event.input) } }
+              const pendingBatch = cliExchange.find((message) => message.role === 'assistant' && message.tool_calls?.some((tool) =>
+                !cliExchange.some((result) => result.role === 'tool' && result.tool_call_id === tool.id)))
+              if (pendingBatch?.role === 'assistant') pendingBatch.tool_calls!.push(call)
+              else cliExchange.push({ role: 'assistant', content: null, tool_calls: [call] })
+              checkpointCli()
               if (event.name === 'mcp__nexy_user_input__ask_user' || event.name.endsWith('nexy_user_input.ask_user')) {
                 userInputToolIds.add(event.id)
                 return
@@ -1728,6 +1730,11 @@ export async function dispatchChatSend(
                 serverName: effectiveBackend,
               })
             } else if (event.type === 'tool_end') {
+              const batch = cliExchange.findIndex((message) => message.role === 'assistant' && message.tool_calls?.some((call) => call.id === event.id))
+              if (batch >= 0 && !cliExchange.some((message) => message.role === 'tool' && message.tool_call_id === event.id)) {
+                cliExchange.splice(batch + 1, 0, { role: 'tool', tool_call_id: event.id, content: event.isError ? `Error: ${event.content}` : event.content })
+              }
+              checkpointCli()
               if (userInputToolIds.delete(event.id)) return
               debugLog('chat', `cli-tool-end: id=${event.id} isError=${event.isError} resultLen=${event.content.length}`)
               const pending = pendingTools.get(event.id)
@@ -1780,7 +1787,7 @@ export async function dispatchChatSend(
           },
           cliAbortController.signal,
         )
-        activeCliAbortControllers.delete(conversationId)
+        if (activeCliAbortControllers.get(conversationId) === cliAbortController) activeCliAbortControllers.delete(conversationId)
 
         // A native Codex `plan` item is its ExitPlanMode signal. Pause at that boundary,
         // ask the user to approve the completed plan, and only then clear Nexy's persisted
@@ -1812,6 +1819,8 @@ export async function dispatchChatSend(
           }
         }
 
+        flushCliNarration()
+        checkpointCli()
         debugLog('chat', `cli-adapter: stream done toolCallsPersisted=${completedToolCalls.length} thinkingBlocks=${cliThinkingBuffer.size}`)
         persistCompletedCliToolCalls()
         const assistantMsgId = persistAssistantMessage(
@@ -1823,6 +1832,8 @@ export async function dispatchChatSend(
           resolvedUserInputs,
           cliCitations,
         )
+        cliCapture.finish(assistantMsgId, cliResponseContent)
+        commitHermesRevision?.(historyRevision(loadConversationHistory(db, conversationId, '__after_current_turn__', effectiveBackend)))
         if (finalizedPlan) {
           saveFinalizedPlanArtifact({ conversationId, sourceMessageId: assistantMsgId, plan: finalizedPlan })
         }
@@ -1889,6 +1900,8 @@ export async function dispatchChatSend(
       } catch (err) {
         debugLog('chat', `cli-adapter error: ${effectiveBackend} failed — ${err instanceof Error ? err.message : String(err)}`)
         console.error(`[chat] cli-adapter ${effectiveBackend} failed:`, err)
+        flushCliNarration()
+        checkpointCli()
         persistCompletedCliToolCalls()
         const rawMessage = err instanceof Error ? err.message : 'CLI backend failed'
         const message = clarifyCliAuthError(rawMessage, effectiveBackend)
@@ -1910,6 +1923,7 @@ export async function dispatchChatSend(
         const assistantMsgId = persistAssistantMessage(
           db, conversationId, message, effectiveBackend, cliThinkingBuffer, cliTextBuffer, nextOccurrenceAt(),
         )
+        cliCapture.finish(assistantMsgId, message, true)
         return { assistantMsgId }
       } finally {
         skillSaveBridge?.close()
@@ -1922,54 +1936,9 @@ export async function dispatchChatSend(
   // ── BYOK provider dispatch ─────────────────────────────────────────────────
   const credential = credentialForModel
 
-  const historyRows = db
-    .prepare('SELECT role, content, model, provider_history, is_edited FROM messages WHERE conversation_id = ? ORDER BY timeline_order ASC, timestamp ASC, id ASC')
-    .all(conversationId) as { role: string; content: string; model: string | null; provider_history: string | null; is_edited: number }[]
-  const historyMessages = historyRows.slice(0, -1).map((m) => ({ role: m.role, content: m.content, providerHistory: providerName === 'deepseek' && !m.is_edited ? m.provider_history : null }))
-  const providerHistoryMessages = historyMessages.filter(
-    (m) => m.role !== 'team-activity'
-      && m.role !== 'tool-call'
-      && !isLegacyPortableOperationalSummary(m.role, m.content),
-  ) as (ProviderMessage & { providerHistory?: string | null })[]
-
-  // Cross-turn tool memory: tool-call rows are filtered out of the provider message list above (a
-  // bare replay would break OpenAI's assistant/tool pairing contract), so a follow-up like
-  // "Continue from where you left off" would otherwise have zero record of what the previous turn
-  // did and re-investigate from scratch. Fold a compact, bounded digest of recent tool actions into
-  // the system prompt instead — enough for real continuity without the message-format pitfalls.
-  const toolHistoryDigest = buildToolHistoryDigest(historyMessages)
-  const contextMessages =
-    regenerate && providerHistoryMessages.length > 0
-      ? providerHistoryMessages.slice(0, -1)
-      : providerHistoryMessages
-  const compressedContext = applyRollingContextCompression(
-    db,
-    conversationId,
-    contextMessages.map((m) => ({
-      ...m,
-      role: m.role,
-      content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-    })),
-    selectedModel ?? null,
-  )
-  recordServerContextFacts(db, newUserMsgId, selectedModel ?? null, compressedContext.summary && {
-    compressedMessageCount: compressedContext.summary.compressedMessageCount,
-    retainedMessageCount: compressedContext.summary.retainedMessageCount,
-  })
-  const effectiveContextMessages = restoreProviderHistory(compressedContext.messages)
-
-  // CCMP.7: inject relevant wiki entries into restored context after compression
-  if (compressedContext.summary !== null && wikiProjectId && effectiveContextMessages.length > 0) {
-    const ss = compressedContext.summary.structuredSummary
-    const wikiSearchQuery = [...ss.goals, ...ss.filesTouched, ...ss.decisions].join(' ')
-    const wikiEntries = getRelevantWikiEntries(db, wikiProjectId, wikiSearchQuery, 3)
-    if (wikiEntries.length > 0) {
-      effectiveContextMessages[0] = {
-        ...effectiveContextMessages[0],
-        content: `${effectiveContextMessages[0].content}\n\n${formatWikiSection(wikiEntries)}`,
-      }
-    }
-  }
+  const contextMessages = loadConversationHistory(db, conversationId, currentUser.id, providerName)
+  const effectiveContextMessages = restoreProviderHistory(contextMessages, providerName)
+  const apiCapture = startCapture(providerName)
 
   const buildVisionUserContent = (): MessageContentPart[] => {
     const parts: MessageContentPart[] = [{ type: 'text', text: augmentedContent }]
@@ -1991,7 +1960,7 @@ export async function dispatchChatSend(
   const systemPrompt = (globalPrompt ? `${globalPrompt}\n\n` : '') + (agentSystemPrompt
     ? `${agentSystemPrompt}${contextBoundaryNote}${rootDirNote}\n\n${modelIdentityInstruction}`
     : `You are an AI programming assistant.${contextBoundaryNote}${rootDirNote}\n\n${modelIdentityInstruction}`)
-    + toolHistoryDigest
+
 
   const chatMessages: ProviderMessage[] = [
     { role: 'system' as const, content: systemPrompt },
@@ -2217,7 +2186,19 @@ export async function dispatchChatSend(
     responseContent = await dispatchToProvider({
       providerName,
       providerModel,
-      onProviderHistory: (messages) => { providerTurnHistory = serializeProviderHistory(messages) },
+      imageDescriptionCache: apiCapture.imageDescriptionCache,
+      onInterrupted: () => { completionActivity = { state: 'error', label: 'Response interrupted' } },
+      onProviderHistory: (messages) => {
+        apiCapture.checkpoint(messages)
+        providerTurnHistory = serializeProviderHistory(closeInterruptedExchange(messages), providerName)
+      },
+      prepareHistory: async (available, generate) => {
+        const compressed = await applyGeneratedContextCompression(db, conversationId, contextMessages, selectedModel ?? null, available, generate)
+        recordServerContextFacts(db, newUserMsgId, selectedModel ?? null, compressed.summary && {
+          compressedMessageCount: compressed.summary.compressedMessageCount, retainedMessageCount: compressed.summary.retainedMessageCount,
+        })
+        return restoreProviderHistory(compressed.messages, providerName)
+      },
       credential,
       chatMessages,
       toolDefs,
@@ -2347,6 +2328,7 @@ export async function dispatchChatSend(
     resolvedUserInputs,
     byokCitations,
   )
+  apiCapture.finish(assistantMsgId, responseContent, completionActivity.state === 'error')
   if (providerTurnHistory) {
     db.prepare('UPDATE messages SET provider_history = ? WHERE id = ?').run(providerTurnHistory, assistantMsgId)
   }
@@ -2377,6 +2359,7 @@ export async function dispatchChatSend(
     broadcastConversationMessages(conversationId)
     return { assistantMsgId }
   } finally {
+    turnCapture?.interrupt()
     endActivity(`chat:${conversationId}`)
   }
 }

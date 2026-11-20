@@ -62,6 +62,8 @@ export type ChatContextOptions = {
 
 export type BuiltContext = {
   augmentedContent: string
+  /** Submitted text, expanded references and extracted attachments before refreshed context. */
+  submittedContent?: string
   attachedImages: { id: string; name: string; dataUrl: string }[]
   injectedRootDirectory: string | null
   /** Every enabled project source, refreshed at the beginning of the turn. */
@@ -350,6 +352,7 @@ export async function buildChatContext(
     reportContextProgress('Collecting attachments')
   }
 
+  const submittedContent = augmentedContent
   // ── Baseline product grounding (unconditional — not gated on a custom agent having its own
   // system prompt) ────────────────────────────────────────────────────────────
   // The agent system-prompt block below only fires when the active agent has a configured
@@ -359,20 +362,8 @@ export async function buildChatContext(
   // (Claude Code CLI's own tool names, not anything that exists in this app) and then couldn't
   // answer a basic "does this app have that feature" follow-up at all.
   //
-  // Injected as plain text on the first message only (mirrors the wiki auto-injection below) —
-  // it stays in the conversation's history for every later turn without being resent as fresh
-  // input tokens every single turn. A callable tool was tried first and reverted: making a tool
-  // unconditionally available flips every BYOK conversation's hasToolLoop check on globally
-  // (chat-provider-dispatch.ts), routing even simple chats through the MCP tool-loop path instead
-  // of plain streaming — a much bigger behavior change than intended, and it broke thinking-delta
-  // streaming outright. Plain prepended text has no such side effect.
-  // The current user message is already persisted by the time this runs (see chat-handlers.ts),
-  // so the first-ever message in a conversation reads back as count === 1 — matching the wiki
-  // auto-injection's own check below, not 0.
-  const isFirstMessage = (
-    db.prepare('SELECT COUNT(*) as count FROM messages WHERE conversation_id = ?').get(conversationId) as { count: number }
-  ).count === 1
-  if (isFirstMessage) {
+  // Refreshed every turn; submitted history intentionally excludes runtime context.
+  {
     augmentedContent = `[Nexy app reference — background context, not something to repeat verbatim to the user:\n\n${NEXY_HELP_CONTENT}]\n\n${augmentedContent}`
     reportContextProgress('Adding app context')
   }
@@ -1348,6 +1339,7 @@ export async function buildChatContext(
 
   return {
     augmentedContent,
+    submittedContent,
     attachedImages,
     injectedRootDirectory,
     projectDirectories,

@@ -1,6 +1,7 @@
 import type { WebContents } from 'electron'
 import {
   PROVIDERS,
+  streamProviderMessage,
   sendOpenAIMessage,
   sendOpenAIWithToolsResilient,
   sendOpenAIWithToolsStream,
@@ -21,7 +22,6 @@ import type { McpExecutionPolicy } from './mcp'
 import { callWithResilience } from './provider-resilience'
 import type { ToolDefinition, ToolChoice, ProviderNonStreamResult } from './provider-types'
 import type { InlineHandler, MobileChatActivity } from './chat-context-builder'
-import type { MessageContentPart } from './provider-core-types'
 import { resolveToolsSupported, resolveVisionSupported } from '../shared/models'
 import { OPENAI_COMPATIBLE_PROVIDERS } from './provider-registry'
 import { describeImagesAsText } from './image-fallback'
@@ -32,19 +32,11 @@ import type { ProviderCredentialInput } from './credential-vault'
 import type { Citation } from '../shared/citations'
 import { countProviderInputTokens } from './token-counting'
 import type { TokenCount } from '../shared/token-usage'
-import { estimateToolRequestTokens, type ToolLoopOptions } from './tool-loop-context'
+import { compactToolLoopContext, estimateToolRequestTokens, type ToolLoopOptions } from './tool-loop-context'
 import type { OutputTokenSetting } from '../shared/output-budget'
 import { OutputBudgetRecovery, resolveOutputBudget } from './output-budget'
 import { createProviderCancellationGuard } from './provider-stream-state'
 import { assertConversationStartsAllowed } from './emergency-stop'
-
-function stripImageParts(msgs: ProviderMessage[]): ProviderMessage[] {
-  return msgs.map((msg) => {
-    if (msg.role === 'tool' || !Array.isArray(msg.content)) return msg
-    const textOnly = (msg.content as MessageContentPart[]).filter((p) => p.type !== 'image_url')
-    return { ...msg, content: textOnly.length > 0 ? textOnly : '' } as ProviderMessage
-  })
-}
 
 export type ProviderDispatchOptions = {
   providerName: string
@@ -78,6 +70,9 @@ export type ProviderDispatchOptions = {
   fullAutoApprove?: boolean
   forceFirstToolChoice?: boolean
   mcpPolicy?: McpExecutionPolicy
+  onInterrupted?: () => void
+  imageDescriptionCache?: import('./image-fallback').ImageDescriptionCache
+  prepareHistory?: (availableTokens: number, generate: (prompt: string) => Promise<string>) => Promise<ProviderMessage[]>
   onProviderHistory?: (messages: ProviderMessage[]) => void
 }
 
@@ -125,7 +120,13 @@ function makeStreamingToolRoundCaller(
 export async function dispatchToProvider(opts: ProviderDispatchOptions): Promise<string> {
   const cancellation = createProviderCancellationGuard(opts.conversationId)
   try {
-    return await dispatchProviderTurn(opts, cancellation.assertActive)
+    let captured = false
+    const result = await dispatchProviderTurn({ ...opts, onProviderHistory: (messages) => {
+      captured = messages.length > 0
+      opts.onProviderHistory?.(messages)
+    } }, cancellation.assertActive)
+    if (!captured) opts.onProviderHistory?.([{ role: 'assistant', content: result }])
+    return result
   } finally {
     cancellation.dispose()
   }
@@ -205,7 +206,8 @@ async function dispatchProviderTurn(opts: ProviderDispatchOptions, assertActive:
   const loopOptions: ToolLoopOptions = {
     contextWindow: budget.contextWindow,
     maxOutputTokens: effectiveGenerationOptions.maxTokens,
-    onHistory: providerName === 'deepseek' ? opts.onProviderHistory : undefined,
+    onHistory: opts.onProviderHistory,
+    onInterrupted: opts.onInterrupted,
   }
   const toolSupportSource = providerName !== 'openrouter'
     ? 'catalog-lookup'
@@ -226,6 +228,21 @@ async function dispatchProviderTurn(opts: ProviderDispatchOptions, assertActive:
     },
   })
   loopOptions.outputRecovery = outputRecovery
+  const generateSummary = async (prompt: string) => {
+      let summary = ''
+      await streamProviderMessage(providerName as import('./provider-core-types').ProviderName, byokKey, providerModel,
+        [{ role: 'system', content: 'Produce a concise factual continuation summary in JSON. Do not use tools.' }, { role: 'user', content: prompt }],
+        `${conversationId}:summary`, (chunk) => { summary += chunk }, { temperature: 0, maxTokens: 2048 })
+      return summary
+    }
+  loopOptions.compact = (messages, tools, inputBudget, task) => compactToolLoopContext(messages, tools, inputBudget, task, generateSummary)
+  if (opts.prepareHistory) {
+    const reserved = estimateToolRequestTokens(mandatoryMessages, effectiveToolDefs) + Math.ceil(toolDirective.length / 4) + 512
+    const available = Math.floor(budget.contextWindow * 0.9) - effectiveGenerationOptions.maxTokens - 512 - reserved
+    if (available < 0) throw new Error('The current message, instructions and tools exceed the model context budget. Shorten the message or use a model with a larger context window.')
+    const history = await opts.prepareHistory(available, generateSummary)
+    chatMessages = [...chatMessages.filter((m) => m.role === 'system'), ...history, ...(currentTask ? [currentTask] : [])]
+  }
   if (opts.onPreflightUsage) {
     const count = await countProviderInputTokens({
       providerName,
@@ -262,6 +279,20 @@ async function dispatchProviderTurn(opts: ProviderDispatchOptions, assertActive:
       i === 0 && m.role === 'system' ? { ...m, content: `${m.content as string}${noToolSupportNotice}` } : m,
     )
     systemPrompt = `${systemPrompt}${noToolSupportNotice}`
+  }
+
+  if (!toolsSupported) {
+    chatMessages = chatMessages.map((message): ProviderMessage => message.role === 'tool'
+      ? { role: 'user', content: message.images?.length
+        ? [{ type: 'text', text: `[Historical tool result (${message.tool_call_id})]\n${message.content}` }, ...message.images.map((image) => ({ type: 'image_url' as const, image_url: { url: image.dataUrl } }))]
+        : `[Historical tool result (${message.tool_call_id})]\n${message.content}` }
+      : message.role === 'assistant' && message.tool_calls?.length
+        ? { role: 'assistant', content: `${typeof message.content === 'string' ? message.content : ''}\n${message.tool_calls.map((call) => `Historical tool call: ${call.function.name}(${call.function.arguments})`).join('\n')}` }
+        : message)
+  }
+
+  if (!OPENAI_COMPATIBLE_PROVIDERS.some((provider) => provider === providerName) && !resolveVisionSupported(providerName, providerModel)) {
+    chatMessages = await describeImagesAsText(toOpenAICompatibleMessages(chatMessages), opts.imageDescriptionCache)
   }
 
   const thinkingBlockId = (id: string) => thinkingAttempt ? `${id}-retry-${thinkingAttempt}` : id
@@ -396,16 +427,16 @@ async function dispatchProviderTurn(opts: ProviderDispatchOptions, assertActive:
     const baseUrl = providerCfg?.baseUrl
     let imageNoticeSent = false
     const fallbackImages = async (msgs: ProviderMessage[]): Promise<ProviderMessage[]> => {
-      if (providerName !== 'deepseek') return stripImageParts(msgs)
+      if (providerName !== 'deepseek') return describeImagesAsText(toOpenAICompatibleMessages(msgs), opts.imageDescriptionCache)
       const converted = toOpenAICompatibleMessages(msgs)
       if (!converted.some((m) => m.role !== 'tool' && Array.isArray(m.content) && m.content.some((part) => part.type === 'image_url'))) return converted
       if (!imageNoticeSent) {
         sendActivity({ state: 'thinking', label: `${providerModel} cannot read images; sending OCR text. Switch to deepseek-flash for vision.` })
         imageNoticeSent = true
       }
-      return describeImagesAsText(converted)
+      return describeImagesAsText(converted, opts.imageDescriptionCache)
     }
-    const prepareImages = (msgs: ProviderMessage[]) => providerName === 'deepseek' && !resolveVisionSupported(providerName, providerModel) ? fallbackImages(msgs) : Promise.resolve(msgs)
+    const prepareImages = (msgs: ProviderMessage[]) => !resolveVisionSupported(providerName, providerModel) ? fallbackImages(msgs) : Promise.resolve(msgs)
     const isImageError = (err: Error) => err.message.includes('No endpoints found that support image input') || (providerName === 'deepseek' && /image/i.test(err.message) && /not support|unsupported/i.test(err.message))
     chatMessages = await prepareImages(chatMessages)
     debugLog('provider', `${providerName}: path=${hasToolLoop ? 'tool-loop' : 'streaming'} model=${providerModel} baseUrl=${baseUrl ?? 'default'}`)

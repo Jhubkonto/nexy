@@ -1,3 +1,4 @@
+import { loadConversationHistory, historyRevision } from './conversation-continuity';
 import { randomUUID } from "crypto";
 import type Database from "better-sqlite3";
 import type {
@@ -73,14 +74,7 @@ function normalizeCompressionSections(value: StructuredConversationSummary): Str
 }
 
 function getCompressionSourceMessages(db: Database.Database, conversationId: string): CompressionSourceMessage[] {
-  return db
-    .prepare(
-      `SELECT role, content, timestamp
-       FROM messages
-       WHERE conversation_id = ? AND role != 'system'
-       ORDER BY timeline_order ASC, timestamp ASC, id ASC`,
-    )
-    .all(conversationId) as CompressionSourceMessage[];
+  return loadConversationHistory(db, conversationId, '__all__').map((message) => ({ ...message, timestamp: message.timestamp ?? 0 }));
 }
 
 function getRetainedTailTokens(db: Database.Database, conversationId: string, retainedCount: number): number {
@@ -130,7 +124,7 @@ export function prepareConversationCompressionSummary(
 
   const model = getConversationCompressionModel(db, conversationId);
   const contextWindow = resolveContextWindow(db, model) ?? 32_768;
-  const targetBudget = Math.min(12_000, Math.max(4_000, Math.floor(contextWindow * 0.55)));
+  const targetBudget = Math.max(0, Math.floor(contextWindow * 0.9) - Math.min(8192, Math.floor(contextWindow * 0.25)) - 512);
   const estimatedTokensBefore = messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
   const retainedCount = messages.length <= 4 ? 1 : Math.min(8, Math.max(4, Math.ceil(messages.length * 0.25)));
   const summarizedCount = Math.max(0, messages.length - retainedCount);
@@ -211,6 +205,9 @@ export function saveConversationCompressionSummary(
     now,
     now,
   );
+
+  db.prepare('UPDATE conversation_summaries SET source_revision = ? WHERE conversation_id = ?')
+    .run(historyRevision(loadConversationHistory(db, input.conversationId, '__all__').slice(0, summarizedCount)), input.conversationId);
 
   return getConversationCompressionPreview(db, input.conversationId);
 }
