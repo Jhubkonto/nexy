@@ -390,14 +390,61 @@ body {
   flex: 1 1 auto;
 }
 
-/* Nexy intentionally uses no visual motion. This is unconditional so component-level
- * utility classes and third-party widgets cannot reintroduce animation or smooth scroll. */
+/* Motion is disabled by default; explicit exceptions below cover progress indicators
+ * and the user-triggered sidebar toggle. */
 *,
 *::before,
 *::after {
   animation: none !important;
   transition: none !important;
   scroll-behavior: auto !important;
+}
+
+.nexy-sidebar {
+  overflow-x: hidden;
+}
+
+.nexy-sidebar-label {
+  white-space: nowrap;
+  overflow: hidden;
+  opacity: 1;
+}
+
+.nexy-sidebar[data-collapsed='true'] .nexy-sidebar-action {
+  justify-content: center;
+  gap: 0;
+  padding-left: 0;
+  padding-right: 0;
+  min-height: 30px;
+}
+
+.nexy-sidebar[data-collapsed='true'] .nexy-sidebar-label {
+  flex: 0 0 0;
+  width: 0;
+  opacity: 0;
+}
+
+.nexy-sidebar[data-collapsed='true'] .nexy-sidebar-badge {
+  position: absolute;
+  top: -3px;
+  right: 0;
+}
+
+.nexy-sidebar[data-collapsed='true'] .nexy-sidebar-working {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+}
+
+/* Keep drag resizing immediate and avoid startup/hydration motion in either UI style. */
+@media (prefers-reduced-motion: no-preference) {
+  .nexy-sidebar[data-animating='true'] {
+    transition: width 200ms ease-in-out !important;
+  }
+
+  .nexy-sidebar[data-animating='true'] .nexy-sidebar-label {
+    transition: opacity 100ms ease-in-out !important;
+  }
 }
 
 /* Exception: loading indicators (spinners, bounce dots, pulse dots) are the user's only
