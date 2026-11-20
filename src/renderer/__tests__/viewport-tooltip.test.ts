@@ -15,6 +15,20 @@ const rect = (values: Partial<DOMRect>): DOMRect => ({
 }) as DOMRect
 
 describe('getViewportTooltipPosition', () => {
+  it('centers right-side tooltips vertically beside the button', () => {
+    expect(getViewportTooltipPosition(
+      rect({ top: 40, right: 50, left: 10, width: 40, height: 30 }),
+      rect({ width: 100, height: 20 }), 320, 200, 8, 8, 'right',
+    )).toEqual({ top: 45, left: 58 })
+  })
+
+  it('flips left and clamps right-side tooltips at viewport edges', () => {
+    expect(getViewportTooltipPosition(
+      rect({ top: 190, right: 310, left: 280, width: 30, height: 30 }),
+      rect({ width: 100, height: 30 }), 320, 200, 8, 8, 'right',
+    )).toEqual({ top: 162, left: 172 })
+  })
+
   it('flips below an anchor when there is not enough room above', () => {
     expect(getViewportTooltipPosition(
       rect({ top: 4, bottom: 16, left: 40, width: 12 }),

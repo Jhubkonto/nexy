@@ -1,4 +1,4 @@
-import { useCallback, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { cloneElement, isValidElement, useCallback, useId, useLayoutEffect, useRef, useState, type HTMLAttributes, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
 type RectLike = Pick<DOMRect, 'top' | 'right' | 'bottom' | 'left' | 'width' | 'height'>
@@ -15,7 +15,17 @@ export function getViewportTooltipPosition(
   viewportHeight: number,
   gap = 8,
   padding = 8,
+  placement: 'top' | 'right' = 'top',
 ): TooltipPosition {
+  if (placement === 'right') {
+    const rightLeft = anchorRect.right + gap
+    const preferredLeft = rightLeft + tooltipRect.width <= viewportWidth - padding
+      ? rightLeft : anchorRect.left - tooltipRect.width - gap
+    return {
+      left: Math.max(padding, Math.min(preferredLeft, viewportWidth - tooltipRect.width - padding)),
+      top: Math.max(padding, Math.min(anchorRect.top + (anchorRect.height - tooltipRect.height) / 2, viewportHeight - tooltipRect.height - padding)),
+    }
+  }
   const centeredLeft = anchorRect.left + (anchorRect.width - tooltipRect.width) / 2
   const maxLeft = Math.max(padding, viewportWidth - tooltipRect.width - padding)
   const left = Math.min(Math.max(centeredLeft, padding), maxLeft)
@@ -36,17 +46,20 @@ type ViewportTooltipProps = {
   children: ReactNode
   className?: string
   dotStyle?: React.CSSProperties
+  placement?: 'top' | 'right'
+  interactiveChild?: boolean
+  enabled?: boolean
 }
 
-export function ViewportTooltip({ label, children, className = '', dotStyle }: ViewportTooltipProps) {
+export function ViewportTooltip({ label, children, className = '', dotStyle, placement = 'top', interactiveChild = false, enabled = true }: ViewportTooltipProps) {
   const anchorRef = useRef<HTMLSpanElement>(null)
   const tooltipRef = useRef<HTMLSpanElement>(null)
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState<TooltipPosition | null>(null)
   const tooltipId = useId()
+  const visible = open && enabled
 
   const show = useCallback(() => {
-    setPosition(null)
     setOpen(true)
   }, [])
 
@@ -56,7 +69,7 @@ export function ViewportTooltip({ label, children, className = '', dotStyle }: V
   }, [])
 
   useLayoutEffect(() => {
-    if (!open) return
+    if (!visible) return
 
     const updatePosition = () => {
       const anchor = anchorRef.current
@@ -68,36 +81,60 @@ export function ViewportTooltip({ label, children, className = '', dotStyle }: V
         tooltip.getBoundingClientRect(),
         window.innerWidth,
         window.innerHeight,
+        8,
+        8,
+        placement,
       ))
     }
 
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation()
+        hide()
+      }
+    }
     updatePosition()
     window.addEventListener('resize', updatePosition)
     window.addEventListener('scroll', updatePosition, true)
+    document.addEventListener('keydown', onKeyDown, true)
     return () => {
       window.removeEventListener('resize', updatePosition)
       window.removeEventListener('scroll', updatePosition, true)
+      document.removeEventListener('keydown', onKeyDown, true)
     }
-  }, [open])
+  }, [visible, placement, label, hide])
+
+  const mouseLeave = () => {
+    if (!anchorRef.current?.contains(document.activeElement)) hide()
+  }
+  const child = interactiveChild && isValidElement<HTMLAttributes<HTMLElement>>(children)
+    ? cloneElement(children, {
+      'aria-describedby': [children.props['aria-describedby'], visible && position ? tooltipId : null].filter(Boolean).join(' ') || undefined,
+      onMouseEnter: (event) => { children.props.onMouseEnter?.(event); show() },
+      onMouseLeave: (event) => { children.props.onMouseLeave?.(event); mouseLeave() },
+      onFocus: (event) => { children.props.onFocus?.(event); show() },
+      onBlur: (event) => { children.props.onBlur?.(event); hide() },
+      onClick: (event) => { children.props.onClick?.(event); hide() },
+    }) : children
 
   return (
     <>
       <span
         ref={anchorRef}
         className={className}
-        role="img"
-        aria-label={label}
-        aria-describedby={position ? tooltipId : undefined}
-        tabIndex={0}
-        onMouseEnter={show}
-        onMouseLeave={hide}
-        onFocus={show}
-        onBlur={hide}
+        role={interactiveChild ? undefined : 'img'}
+        aria-label={interactiveChild ? undefined : label}
+        aria-describedby={!interactiveChild && visible && position ? tooltipId : undefined}
+        tabIndex={interactiveChild ? undefined : 0}
+        onMouseEnter={interactiveChild ? undefined : show}
+        onMouseLeave={interactiveChild ? undefined : mouseLeave}
+        onFocus={interactiveChild ? undefined : show}
+        onBlur={interactiveChild ? undefined : hide}
         style={dotStyle}
       >
-        {children}
+        {child}
       </span>
-      {open && createPortal(
+      {visible && createPortal(
         <span
           ref={tooltipRef}
           id={tooltipId}
