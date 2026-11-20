@@ -1,3 +1,5 @@
+import { historyFromRows } from './conversation-continuity';
+import { parseContinuation } from '../shared/conversation-continuity';
 import { randomUUID } from "crypto";
 import type Database from "better-sqlite3";
 import type {
@@ -204,6 +206,8 @@ function rewriteMessageForTarget(row: MessageExportRow, now: number, sourceConve
     timestamp: row.timestamp,
     rewritten: rewrites.length > 0,
     citationsJson: row.citations,
+    continuationJson: row.continuation_json,
+    providerHistory: row.provider_history,
   };
 }
 
@@ -239,7 +243,7 @@ export function forkConversation(
   const rows = db
     .prepare(
       `SELECT id, conversation_id, role, content, model, is_edited, previous_content,
-              timestamp, attachments, context_snapshot, citations
+              timestamp, attachments, context_snapshot, citations, continuation_json, provider_history
        FROM messages
        WHERE conversation_id = ?${cutoff !== null ? " AND timestamp <= ?" : ""}
        ORDER BY timeline_order ASC, timestamp ASC, id ASC`,
@@ -247,8 +251,36 @@ export function forkConversation(
     .all(...(cutoff !== null ? [conversationId, cutoff] : [conversationId])) as MessageExportRow[];
   const retainedRows = rows.filter((row) => !shouldOmitFromFork(row));
   const omittedMessageCount = rows.length - retainedRows.length;
-  const rewrittenForkMessages = retainedRows.map((row) => rewriteMessageForTarget(row, now, conversationId));
-  const compressionPlan = maybeCompressForkMessages(db, rewrittenForkMessages, conversationId, targetModel, now);
+  const historical = historyFromRows(rows);
+  const rewrittenForkMessages = retainedRows.map((row) => {
+    const rewritten = rewriteMessageForTarget(row, now, conversationId);
+    if (row.role === 'assistant' && !parseContinuation(row.continuation_json)) {
+      const rowIndex = rows.findIndex((candidate) => candidate.id === row.id);
+      let start = rowIndex - 1;
+      while (start >= 0 && rows[start].role !== 'user' && rows[start].role !== 'assistant') start--;
+      const ids = new Set(rows.slice(start + 1, rowIndex + 1).map((candidate) => candidate.id));
+      const exchange = historical.filter((entry) => entry.id && ids.has(entry.id)).flatMap((entry) => entry.replay ?? []);
+      if (exchange.length) rewritten.continuationJson = JSON.stringify({ version: 1, backend: row.provider_history ? parseJson<{ provider?: string }>(row.provider_history, {}).provider ?? 'legacy' : 'legacy', status: 'complete', exchange });
+    }
+    return rewritten;
+  });
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    if (row.role !== 'tool-call') continue;
+    const recovered = historical.find((entry) => entry.id === row.id)?.replay;
+    if (!recovered?.length) continue;
+    let end = index + 1;
+    while (end < rows.length && rows[end].role !== 'user' && rows[end].role !== 'assistant') end++;
+    if (rows[end]?.role === 'assistant') continue;
+    const prior = retainedRows.filter((candidate) => rows.indexOf(candidate) < index).at(-1);
+    if (!prior) continue;
+    const target = rewrittenForkMessages[retainedRows.indexOf(prior)];
+    const saved = parseContinuation(target.continuationJson) ?? { version: 1 as const, backend: 'legacy', status: 'complete' as const,
+      ...(prior.role === 'user' ? { submitted: prior.content } : {}), exchange: prior.role === 'assistant' ? [{ role: 'assistant' as const, content: prior.content }] : [] };
+    target.continuationJson = JSON.stringify({ ...saved, exchange: [...saved.exchange, ...recovered] });
+  }
+  // Keep durable source material; the target request assembler handles context limits.
+  const compressionPlan = { messages: rewrittenForkMessages, compressedCount: 0 };
   const forkMessages = compressionPlan.messages;
 
   const transaction = db.transaction(() => {
@@ -258,14 +290,14 @@ export function forkConversation(
 
     const insertMessage = db.prepare(
       `INSERT INTO messages
-        (id, conversation_id, role, content, model, is_edited, previous_content, attachments, context_snapshot, timestamp, citations)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, conversation_id, role, content, model, is_edited, previous_content, attachments, context_snapshot, timestamp, citations, continuation_json, provider_history)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const message of forkMessages) {
       insertMessage.run(
         randomUUID(), forkId, message.role, message.content, message.model,
         message.isEdited, message.previousContent, message.attachmentsJson,
-        message.contextSnapshotJson, message.timestamp, message.citationsJson,
+        message.contextSnapshotJson, message.timestamp, message.citationsJson, message.continuationJson ?? null, message.providerHistory ?? null,
       );
     }
   });

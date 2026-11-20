@@ -1,3 +1,4 @@
+import { parseContinuation } from '../shared/conversation-continuity';
 import type Database from "better-sqlite3";
 import type {
   ConversationExportAgent,
@@ -85,6 +86,8 @@ function getAgentExport(db: Database.Database, agentId: string | null): Conversa
 function mapExportMessage(row: MessageExportRow): ConversationExportMessage {
   const contextSnapshot = parseJson<unknown>(row.context_snapshot, null);
   return {
+    continuation: parseContinuation(row.continuation_json),
+    provider_history: row.provider_history ?? null,
     id: row.id,
     role: row.role,
     content: row.content,
@@ -111,7 +114,7 @@ export function buildConversationExport(db: Database.Database, conversationId: s
   const messages = db
     .prepare(
       `SELECT id, conversation_id, role, content, model, is_edited, previous_content,
-              timestamp, attachments, context_snapshot, citations
+              timestamp, attachments, context_snapshot, citations, continuation_json, provider_history
        FROM messages
        WHERE conversation_id = ?
        ORDER BY timeline_order ASC, timestamp ASC, id ASC`,

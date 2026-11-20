@@ -1,3 +1,5 @@
+import { parseContinuation } from '../shared/conversation-continuity';
+import { parseProviderHistory } from './provider-history';
 import { randomUUID } from "crypto";
 import type Database from "better-sqlite3";
 import type {
@@ -46,6 +48,8 @@ function normalizeImportedMessages(
     contextSnapshotJson: serializeContextSnapshot(message, importedIntoExisting),
     timestamp: baseTimestamp == null ? message.timestamp : baseTimestamp + index + 1,
     citationsJson: message.citations?.length ? JSON.stringify(message.citations) : null,
+    continuationJson: parseContinuation(JSON.stringify(message.continuation)) ? JSON.stringify(message.continuation) : null,
+    providerHistory: parseProviderHistory(message.provider_history) ? message.provider_history : null,
   }));
 }
 
@@ -98,8 +102,8 @@ export function importConversationExport(
 
     const insertMessage = db.prepare(
       `INSERT INTO messages
-        (id, conversation_id, role, content, model, is_edited, previous_content, attachments, context_snapshot, timestamp, citations)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, conversation_id, role, content, model, is_edited, previous_content, attachments, context_snapshot, timestamp, citations, continuation_json, provider_history)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const message of messages) {
       insertMessage.run(
@@ -114,6 +118,8 @@ export function importConversationExport(
         message.contextSnapshotJson,
         message.timestamp,
         message.citationsJson,
+        message.continuationJson,
+        message.providerHistory,
       );
     }
 

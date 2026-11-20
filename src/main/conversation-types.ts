@@ -13,6 +13,8 @@ export type MessageExportRow = {
   attachments: string | null;
   context_snapshot: string | null;
   citations: string | null;
+  continuation_json?: string | null;
+  provider_history?: string | null;
 };
 
 export type ImportedMessageInput = {
@@ -25,6 +27,8 @@ export type ImportedMessageInput = {
   contextSnapshotJson: string | null;
   timestamp: number;
   citationsJson?: string | null;
+  continuationJson?: string | null;
+  providerHistory?: string | null;
 };
 
 export type ForkMessageInput = {
@@ -38,6 +42,8 @@ export type ForkMessageInput = {
   timestamp: number;
   rewritten: boolean;
   citationsJson?: string | null;
+  continuationJson?: string | null;
+  providerHistory?: string | null;
 };
 
 export type CompressionPlan = {
