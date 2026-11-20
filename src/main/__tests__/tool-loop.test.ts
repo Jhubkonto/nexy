@@ -86,6 +86,26 @@ describe('runProviderMcpToolLoop', () => {
     mockCallMcpTool.mockResolvedValue({ success: true, result: 'clicked' })
   })
 
+  it('keeps durable tool results even after the active request must trim them', async () => {
+    const history = vi.fn()
+    mockCallMcpTool.mockResolvedValue({ success: true, result: 'saved file contents '.repeat(2000) })
+    const requests: ProviderMessage[][] = []
+    const caller: ModelToolCaller = vi.fn(async (messages) => {
+      requests.push(structuredClone(messages))
+      return requests.length === 1
+        ? { content: 'Reading.', toolCalls: [{ id: 'saved-read', name: 'server-1__click', arguments: {} }] }
+        : { content: 'Finished.', toolCalls: [] }
+    })
+    await runProviderMcpToolLoop(caller, [{ role: 'user', content: 'Read the file' }], toolDefs, toolMap, 'agent', null, undefined, vi.fn(),
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, { contextWindow: 6000, maxOutputTokens: 1000, onHistory: history })
+    expect(requests[1].some((message) => message.role === 'tool')).toBe(false)
+    const captured = history.mock.calls.at(-1)![0] as ProviderMessage[]
+    expect(captured.find((message) => message.role === 'tool')?.content).toContain('saved file contents')
+    expect(captured.at(-1)?.content).toBe('Finished.')
+    expect(history.mock.calls.length).toBeGreaterThan(2)
+  })
+
   it('continues the large Flash investigation and records exact per-turn provider history', async () => {
     const history = vi.fn()
     const messages: ProviderMessage[] = [{ role: 'user', content: 'Investigate profiles ' + 'x'.repeat(119_742) }]

@@ -92,7 +92,7 @@ describe('context compression', () => {
     expect(row.source_message_count).toBe(result.summary?.compressedMessageCount)
     expect(row.retained_message_count).toBe(result.summary?.retainedMessageCount)
     expect(row.estimated_tokens_before).toBeGreaterThan(estimateTokens('short'))
-    expect(row.target_budget).toBe(4505)
+    expect(row.target_budget).toBe(Math.floor(8192 * 0.9) - 2048 - 512)
     expect(row.strategy).toBe('rolling-deterministic-summary-plus-recent-turns')
   })
 

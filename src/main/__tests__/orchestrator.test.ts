@@ -62,6 +62,7 @@ describe('orchestrator', () => {
   })
 
   it('broadcasts team activity to mobile when delegating', async () => {
+    const history = vi.fn()
     mocks.streamProviderMessage.mockResolvedValueOnce('Specialist result')
     mocks.sendProviderWithTools
       .mockResolvedValueOnce({
@@ -72,13 +73,14 @@ describe('orchestrator', () => {
 
     await runOrchestration(
       makeOpts({
+        onHistory: history,
         teamAgents: [
           { agentId: 'leader-id', agentName: 'Leader', agentIcon: 'L', isPrimary: true, sortOrder: 0 },
           { agentId: 'builder-id', agentName: 'Builder', agentIcon: 'B', isPrimary: false, sortOrder: 1 },
         ],
       }),
       'Hi',
-      [],
+      [{ role: 'user', content: 'Prior decision: preserve the API.' }, { role: 'assistant', content: 'Agreed.' }],
     )
 
     expect(mocks.broadcastToMobile).toHaveBeenCalledWith({
@@ -90,6 +92,13 @@ describe('orchestrator', () => {
         status: 'delegating',
       }),
     })
+    expect(mocks.sendProviderWithTools.mock.calls[0][3]).toEqual(expect.arrayContaining([
+      { role: 'user', content: 'Prior decision: preserve the API.' },
+    ]))
+    expect(history.mock.calls.at(-1)?.[0]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'tool', tool_call_id: 'call-1', content: 'Specialist result' }),
+      { role: 'assistant', content: 'Final answer' },
+    ]))
     expect(mocks.broadcastToMobile).toHaveBeenCalledWith({
       event: 'chat:team-activity',
       data: expect.objectContaining({

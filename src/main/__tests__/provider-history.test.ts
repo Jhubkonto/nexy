@@ -22,7 +22,7 @@ describe('provider history', () => {
       db.prepare('INSERT INTO messages (id, conversation_id, role, content, provider_history) VALUES (?, ?, ?, ?, ?)').run('answer', 'c', 'assistant', 'Profiles can be added.', encoded)
       const row = db.prepare('SELECT role, content, provider_history AS providerHistory FROM messages WHERE id = ?').get('answer') as { role: string; content: string; providerHistory: string }
       const prior = Array.from({ length: 18 }, (_, index) => ({ role: index % 2 ? 'assistant' : 'user', content: 'older context '.repeat(800) }))
-      const compressed = applyRollingContextCompression(db, 'c', [...prior, { role: 'user', content: 'Investigate profiles' }, row], 'deepseek-flash')
+      const compressed = applyRollingContextCompression(db, 'c', [...prior, { role: 'user', content: 'Investigate profiles' }, row], 'deepseek-flash', 12000)
       expect(compressed.summary).not.toBeNull()
       expect(restoreProviderHistory(compressed.messages).slice(-turn.length)).toEqual(turn)
       expect(parseProviderHistory(encoded)).toEqual(turn)

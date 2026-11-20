@@ -1,3 +1,5 @@
+import { createTurnCapture, loadConversationHistory } from '../conversation-continuity'
+import { restoreProviderHistory } from '../provider-history'
 import Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -556,7 +558,31 @@ describe('conversation export', () => {
     expect(exported.messages.some((message) => message.content.includes('[Portable tool-call summary]'))).toBe(false)
   })
 
-  it('compresses fork context when the target model context window is smaller than the conversation', () => {
+  it('preserves submitted images and tool results through JSON import and forks', () => {
+    const db = state.db!
+    seedConversation(db)
+    const capture = createTurnCapture(db, 'msg-1', [{ type: 'text', text: 'saved attachment contents' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,c2F2ZWQ=' } }], 'openai')
+    capture.checkpoint([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'saved-read', type: 'function', function: { name: 'read', arguments: '{}' } }] },
+      { role: 'tool', tool_call_id: 'saved-read', content: 'saved result contents' },
+      { role: 'assistant', content: 'Done' },
+    ])
+    db.prepare('INSERT INTO messages (id, conversation_id, role, content, timestamp) VALUES (?, ?, ?, ?, ?)')
+      .run('continuation-answer', 'conv-1', 'assistant', 'Done', 1700000000009)
+    capture.finish('continuation-answer', 'Done')
+    const exported = buildConversationExport(db, 'conv-1')
+    const imported = importConversationExport(db, JSON.parse(JSON.stringify(exported)))
+    const forked = forkConversation(db, 'conv-1', { model: 'gpt-5.5', agentId: null })
+    for (const id of [imported.conversation.id, forked.conversation.id]) {
+      const replay = restoreProviderHistory(loadConversationHistory(db, id, '__all__', 'anthropic'))
+      expect(JSON.stringify(replay)).toContain('saved attachment contents')
+      expect(JSON.stringify(replay)).toContain('data:image/png;base64,c2F2ZWQ=')
+      expect(replay.filter((message) => message.role === 'tool')).toEqual([{ role: 'tool', tool_call_id: 'saved-read', content: 'saved result contents' }])
+    }
+  })
+
+  it('retains source context in forks and leaves target request compaction to the assembler', () => {
     if (!state.db) throw new Error('Database not initialized')
     const db = state.db
     seedConversation(db)
@@ -584,25 +610,10 @@ describe('conversation export', () => {
       .prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY timestamp ASC')
       .all(result.conversation.id) as MessageRow[]
 
-    expect(result.compressed_message_count).toBeGreaterThan(0)
-    expect(result.message_count).toBeLessThan(12)
-    expect(messages[0]).toEqual(expect.objectContaining({
-      role: 'system',
-      model: 'tiny-local',
-    }))
-    expect(messages[0].content).toContain('[Compressed continuation context]')
-    expect(messages[0].content).toContain('Target context window: 200 tokens')
-    const summarySnapshot = JSON.parse(messages[0].context_snapshot ?? '{}')
-    expect(summarySnapshot.nexyCompression).toEqual(expect.objectContaining({
-      sourceConversationId: 'conv-1',
-      targetModel: 'tiny-local',
-      targetContextWindow: 200,
-      compressedMessageCount: result.compressed_message_count,
-      strategy: 'deterministic-summary-plus-recent-turns',
-    }))
-    const retainedSnapshot = JSON.parse(messages[1].context_snapshot ?? '{}')
-    expect(retainedSnapshot.nexyCompression).toEqual(expect.objectContaining({
-      retainedFromCompression: true,
-    }))
+    expect(result.compressed_message_count).toBe(0)
+    expect(result.message_count).toBe(11)
+    expect(messages[0].role).toBe('user')
+    expect(messages.at(-1)?.content).toContain('context')
+    expect(messages.every((message) => !message.content.includes('[Compressed continuation context]'))).toBe(true)
   })
 })

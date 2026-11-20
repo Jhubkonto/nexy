@@ -50,6 +50,30 @@ describe('standalone peer synchronization', () => {
     return reply.mock.calls[0][0] as { event: string; data: Record<string, any> }
   }
 
+  it('preserves continuation snapshots and immutable image content in both sync directions', () => {
+    const db = state.db!
+    db.prepare("INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('continuity', 'test', 1, 1)").run()
+    const continuation = { version: 1, backend: 'openai', status: 'complete', exchange: [], submitted: [
+      { type: 'text', text: 'saved attachment and expanded reference' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,c2F2ZWQ=' } },
+    ] }
+    db.prepare('INSERT INTO messages (id, conversation_id, role, content, timestamp, continuation_json) VALUES (?, ?, ?, ?, ?, ?)')
+      .run('desktop-user', 'continuity', 'user', 'display text', 1, JSON.stringify(continuation))
+    const hello = command('sync:hello', { deviceId: 'continuity-device', datasetId: 'continuity-data', protocolVersion: 1 })
+    const snapshot = hello.data.snapshot.messages.find((row: { id: string }) => row.id === 'desktop-user')
+    expect(JSON.parse(snapshot.continuation_json)).toEqual(continuation)
+    const result = command('sync:push', {
+      deviceId: 'continuity-device', datasetId: 'continuity-data', operations: [{
+        operationId: 'continuity-upload', deviceId: 'continuity-device', deviceSequence: 1,
+        entityType: 'message', entityId: 'android-user', operation: 'upsert', baseRemoteVersion: 0,
+        payloadJson: JSON.stringify({ conversationId: 'continuity', role: 'user', content: 'android display', timestamp: 2, continuation }),
+      }],
+    })
+    expect(result.data.conflicts).toEqual([])
+    const uploaded = db.prepare("SELECT continuation_json FROM messages WHERE id = 'android-user'").get() as { continuation_json: string }
+    expect(JSON.parse(uploaded.continuation_json)).toEqual(continuation)
+  })
+
   it('loads the shared canonical fixture without field loss', () => {
     const fixture = JSON.parse(
       readFileSync(resolve(process.cwd(), 'fixtures/standalone-sync-v1.json'), 'utf8'),

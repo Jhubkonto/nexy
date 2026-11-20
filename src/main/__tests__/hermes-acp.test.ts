@@ -35,6 +35,47 @@ function sendResponse(proc: ReturnType<typeof makeProc>, id: number, result: unk
 describe('Hermes ACP adapter', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
+  it('bootstraps history once, sends only the new turn after synchronization, and rebuilds after edits', async () => {
+    const first = makeProc()
+    const rebuilt = makeProc()
+    mockSpawn.mockReturnValueOnce(first).mockReturnValueOnce(rebuilt)
+    const adapter = new HermesAcpAdapter()
+    const req = { messages: [{ role: 'user' as const, content: 'full historical transcript and current task' }],
+      cwd: 'C:\\workspace', model: 'default', conversationId: 'revision-test', systemPrompt: 'instructions',
+      continuity: { priorRevision: 'empty', currentPrompt: 'first task', currentImages: [],
+        onSessionReady: (commit: (revision: string) => void) => commit('saved-first-turn') } }
+    const initial = adapter.send(undefined, req, () => {})
+    await vi.waitFor(() => expect(first.stdin.write).toHaveBeenCalledTimes(1))
+    sendResponse(first, 1, { protocolVersion: 1 })
+    await vi.waitFor(() => expect(first.stdin.write).toHaveBeenCalledTimes(2))
+    sendResponse(first, 2, { sessionId: 'initial' })
+    await vi.waitFor(() => expect(first.stdin.write).toHaveBeenCalledTimes(3))
+    expect(JSON.parse(first.stdin.write.mock.calls[2][0]).params.prompt[0].text).toContain('full historical transcript')
+    sendResponse(first, 3, { stopReason: 'end_turn' })
+    await initial
+
+    const next = adapter.send(undefined, { ...req, continuity: { ...req.continuity, priorRevision: 'saved-first-turn', currentPrompt: 'new task' } }, () => {})
+    await vi.waitFor(() => expect(first.stdin.write).toHaveBeenCalledTimes(4))
+    const incremental = JSON.parse(first.stdin.write.mock.calls[3][0]).params.prompt[0].text
+    expect(incremental).toContain('new task')
+    expect(incremental).not.toContain('full historical transcript')
+    expect(mockSpawn).toHaveBeenCalledTimes(1)
+    sendResponse(first, 4, { stopReason: 'end_turn' })
+    await next
+
+    const edited = adapter.send(undefined, { ...req, continuity: { ...req.continuity, priorRevision: 'edited-history' } }, () => {})
+    await vi.waitFor(() => expect(rebuilt.stdin.write).toHaveBeenCalledTimes(1))
+    expect(first.stdin.end).toHaveBeenCalled()
+    sendResponse(rebuilt, 1, { protocolVersion: 1 })
+    await vi.waitFor(() => expect(rebuilt.stdin.write).toHaveBeenCalledTimes(2))
+    sendResponse(rebuilt, 2, { sessionId: 'rebuilt' })
+    await vi.waitFor(() => expect(rebuilt.stdin.write).toHaveBeenCalledTimes(3))
+    expect(JSON.parse(rebuilt.stdin.write.mock.calls[2][0]).params.prompt[0].text).toContain('full historical transcript')
+    sendResponse(rebuilt, 3, { stopReason: 'end_turn' })
+    await edited
+    adapter.closeAll()
+  })
+
   it('allows an active agent turn to continue beyond ten minutes', async () => {
     const proc = makeProc()
     mockSpawn.mockReturnValue(proc)

@@ -5,6 +5,9 @@ import path from 'path'
 const state = vi.hoisted(() => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>()
   const messages: Array<{
+    id?: string
+    continuation_json?: string | null
+    provider_history?: string | null
     role: string
     content: string
     attachments: string | null
@@ -44,6 +47,7 @@ vi.mock('../safe-handle', () => ({
 
 vi.mock('../database', () => ({
   getDatabase: () => ({
+    transaction: (fn: () => unknown) => fn,
     prepare: (sql: string) => ({
       run: (...args: unknown[]) => {
         if (sql.includes('INSERT INTO messages')) {
@@ -55,6 +59,7 @@ vi.mock('../database', () => ({
             ? (typeof args[6] === 'string' ? args[6] : null)
             : (typeof args[7] === 'string' ? args[7] : null)
           state.messages.push({
+            id: String(args[0]),
             role,
             content: String(args[3]),
             attachments: typeof args[4] === 'string' ? args[4] : null,
@@ -68,6 +73,10 @@ vi.mock('../database', () => ({
         if (sql.includes('INSERT INTO conversations')) {
           // Column order: (id, agent_id, project_id, title, cli_backend, created_at, updated_at)
           state.conversationInserts.push({ id: args[0], agentId: args[1], projectId: args[2] })
+        }
+        if (sql.includes('UPDATE messages SET continuation_json = ?')) {
+          const row = state.messages.find((message) => message.id === args[1])
+          if (row) row.continuation_json = String(args[0])
         }
         if (sql.includes('UPDATE messages SET provider_history = ?')) {
           state.providerHistoryUpdates.push({ history: String(args[0]), id: args[1] })
@@ -83,16 +92,20 @@ vi.mock('../database', () => ({
         }
         return { changes: 1 }
       },
-      get: () => {
+      get: (...args: unknown[]) => {
         for (const [pattern, value] of state.getOverrides) {
           if (sql.includes(pattern)) return value
         }
+        if (sql.includes('SELECT * FROM messages WHERE id = ?')) return state.messages.find((message) => message.id === args[0])
+        if (sql.includes("role = 'user' ORDER BY")) return [...state.messages].reverse().find((message) => message.role === 'user')
         return { agent_id: null, model: null, cli_backend: null }
       },
       all: () => {
         for (const [pattern, value] of state.allOverrides) {
           if (sql.includes(pattern)) return value
         }
+        if (sql.includes('SELECT * FROM messages WHERE conversation_id')) return state.messages
+        if (sql.includes('SELECT continuation_json FROM messages')) return state.messages
         if (sql.includes('SELECT id, role, content')) {
           return state.messages.map((message, index) => ({
             id: `m-${index}`,
@@ -282,10 +295,10 @@ describe('chat handlers', () => {
       expect(state.providerHistoryUpdates).toHaveLength(1)
       const saved = state.providerHistoryUpdates[0].history
       expect(JSON.parse(saved).messages).toEqual(history)
-      state.allOverrides.set('SELECT role, content, model, provider_history', [
-        { role: 'user', content: 'Investigate profiles' },
-        { role: 'assistant', content: 'Profiles are supported.', provider_history: saved, is_edited: 0 },
-        { role: 'user', content: 'Continue' },
+      state.allOverrides.set('SELECT * FROM messages WHERE conversation_id', [
+        { id: 'prior-user', role: 'user', content: 'Investigate profiles' },
+        { id: 'prior-assistant', role: 'assistant', content: 'Profiles are supported.', provider_history: saved, is_edited: 0 },
+        { id: 'placeholder-current', role: 'user', content: 'Continue' },
       ])
       vi.mocked(runProviderMcpToolLoop).mockImplementationOnce(async (...args) => {
         expect(args[1]).toEqual(expect.arrayContaining(history))
@@ -588,8 +601,7 @@ describe('chat handlers', () => {
 
     const firstTurn = handler({ sender: {} }, 'conv-concurrent', 'Hello there')
     // Let the first turn register its CLI abort controller before the second send arrives.
-    await Promise.resolve()
-    await Promise.resolve()
+    await vi.waitFor(() => expect(mockAdapter.send).toHaveBeenCalledTimes(1))
 
     const secondTurn = handler({ sender: {} }, 'conv-concurrent', 'try again')
     releaseFirstSend?.()
