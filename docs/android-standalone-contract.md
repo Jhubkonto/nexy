@@ -3,6 +3,13 @@
 Contract version: 3. Reviewed against the Android screens, `WsRepository`, `WsEvent`, desktop
 WebSocket handlers, and database migrations on 2026-08-15.
 
+Message payloads may carry an optional version-one continuation record. Desktop snapshot/message
+rows use `continuation_json` and `provider_history`; normalized sync operations use `continuation`
+and `providerHistory`; Room stores `continuationJson` and `providerHistory`. The record contains
+submitted text/image content or an ordered assistant/tool exchange, backend and completion status.
+Image bytes are immutable data URLs within the record. Older payloads without these fields remain
+readable. Imported tool activity is historical data and never authorizes execution.
+
 ## Identifier policy
 
 - New projects, agents, conversations, messages, reusable-content records, outbox operations,

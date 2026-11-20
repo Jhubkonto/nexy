@@ -16,6 +16,13 @@ Nexy launches one `hermes acp` process per active conversation and reuses that p
 the conversation's profile, model, working directory, system prompt, MCP set, and permission
 boundary are unchanged. A changed boundary closes the old process before creating the new one.
 
+New sessions receive the assembled historical transcript and retained images once. After the
+response is persisted, Nexy commits the synchronized history revision to the session. Reused
+sessions receive only the new user turn, its images and refreshed runtime context. A revision
+mismatch after edits, deletion, regeneration or compaction recreates the session. Failed or
+uncertain delivery invalidates it; restart and idle expiry bootstrap from durable continuation
+records, including saved tool results. Backend session state is an optimization over those records.
+
 Hermes remains the owner of authentication, provider credentials, profile configuration, memory,
 skills, hooks, and its internal state. Nexy never imports or displays those credentials. The
 operator changes them in a terminal with Hermes commands such as `hermes setup` or `hermes auth`,

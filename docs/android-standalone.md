@@ -4,6 +4,18 @@ Nexy Android stores its working dataset locally and can open without a paired de
 adds synchronization and desktop-only tools; it is not required for local browsing, editing, or
 direct cloud chat.
 
+Room stores the same version-one `continuationJson` records used by desktop. Submitted attachment
+text and images survive later turns, retries and restart without reopening original source files.
+Desktop tool exchanges are rendered as historical context for standalone providers; they are never
+executed during replay. Interrupted responses retain received text. Peer snapshots, incremental
+changes and message hydration preserve the records and legacy provider history.
+
+Standalone context selection counts instructions, complete turns, saved results, images and output
+reserve. It uses context limits discovered from model metadata, falling back to 32,768 tokens,
+with 10% headroom and a 512-token reserve. Older turns are summarized in chronological chunks with
+a deterministic fallback. Coverage includes message IDs and content revisions so edits invalidate
+cached summaries. The current input is retained intact or rejected with an actionable size error.
+
 ## Capability matrix
 
 | Capability | No network | Internet only | Paired desktop |

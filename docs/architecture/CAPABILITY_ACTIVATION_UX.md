@@ -70,17 +70,24 @@ replace semantics:
 
 | Scope | Authoritative editor | Semantics |
 | --- | --- | --- |
-| This chat | Chat composer capability popover | Replace — the submitted selection is the profile |
+| This chat | Chat composer capabilities modal | Replace — the submitted selection is the profile |
 | This project | **Project Settings → Capabilities** | Replace — removal and trust loosening happen here |
 | This agent | Agent panel → Skills/MCP | Replace, backed by the agent attachment and trust tables |
 
-The popover's "Add to project" / "Attach to agent" buttons are **additive shortcuts**, not editors.
+The modal's "Add to project" / "Attach to agent" buttons are **additive shortcuts**, not editors.
 They union the selection into the target scope and, through `mergeTrust`, can only ever tighten an
 approval level. That asymmetry is deliberate: a chat must not be able to silently loosen a
 restriction that a project or agent imposed. The consequence is that a grant can only be *removed*,
 and an approval level only *loosened*, from the scope's authoritative editor — so every scope needs
 one. Project scope had no such editor before `project:get-capabilities` /
 `project:set-capabilities`, which made project grants permanent once written.
+
+The composer opens **Chat capabilities**, using the shared modal shell with Skills, MCP tools,
+Credentials, and Readiness tabs. Scope and save controls remain visible while tab content scrolls.
+Skill and MCP edits are saved explicitly and survive status refreshes and tab changes. Closing,
+changing scope, or following a management link asks to discard unsaved edits. Saving keeps the
+modal open and refreshes readiness, which reflects saved capabilities and their provenance.
+Credential Grant and Remove actions apply immediately to the active chat, regardless of scope.
 
 ## Guided activation flow
 

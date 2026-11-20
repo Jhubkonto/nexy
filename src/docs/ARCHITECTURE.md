@@ -4,6 +4,37 @@
 
 Nexy is a cross-platform desktop application built with Electron, React 19, and TypeScript. It follows Electron's standard multi-process model with a hard security boundary between the renderer (UI) and the main process (system access, network, database).
 
+## Conversation continuity
+
+`messages.continuation_json` stores a versioned model-facing record independently of display
+text. User records contain submitted text, expanded references, extracted attachments and immutable
+image data URLs. Runtime instructions, app reference, project listings, memory and wiki context are
+refreshed for the current request. Assistant records contain ordered narration, structured tool
+calls and results, source backend and completion status. Existing DeepSeek `provider_history`
+remains readable. Legacy tool rows fall back to historical text containing recorded results.
+
+`conversation-continuity.ts` selects history before the current user message ID in timeline order.
+API backends replay structured exchanges and remove incompatible reasoning. CLI backends receive
+an explicit historical transcript and retained images. Orchestration receives the same prior
+history and captures delegation results. Hermes synchronizes its session against a history revision.
+
+Completed tool results are checkpointed on the user record during execution. An atomic handoff
+copies the exchange to the assistant record and clears the checkpoint. After interruption or a
+restart, unmatched calls receive an explicit interrupted result; replay never executes calls.
+The durable transcript is independent of the trimmed request buffer.
+
+Initial request budgeting includes instructions, current input, schemas, saved results, images and
+reserved output, with 10% headroom and a 512-token terminal reserve. Model metadata supplies context
+limits, with a 32,768-token fallback. Complete older turns are summarized only when needed; summary
+generation uses the selected backend without tools, bounded chronological chunks and a deterministic
+fallback. Tool-loop continuation applies the same budget and preserves complete call/result batches.
+Summary coverage hashes message IDs and model-facing content, so edits cannot reuse stale summaries.
+
+Content edits and deletions invalidate affected records and summaries. JSON exports, imports, forks
+and peer sync carry continuation records, including image bytes and cached OCR descriptions. Forks
+retain source material and compact when assembling a target request. Inline assets have the lifetime
+of their owning database records and require no source files or separate asset cleanup process.
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Renderer process  (sandboxed, no Node access)                  │
