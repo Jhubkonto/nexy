@@ -42,6 +42,7 @@ type Session = {
   trackers: Map<string, ReturnType<typeof createOpenBlockTracker>>
   busy: boolean
   lastUsedAt: number
+  synchronizedRevision?: string
 }
 type ContentBlock = { type?: string; text?: string; data?: string; mimeType?: string }
 
@@ -109,6 +110,12 @@ export class HermesAcpAdapter implements CliAgentAdapter {
       if (previous) this.invalidateSession(previousKey, previous)
     }
     let session = this.sessions.get(key)
+    if (session?.busy) throw new Error('Hermes is already processing a message in this conversation')
+    if (session && req.continuity && session.synchronizedRevision !== req.continuity.priorRevision) {
+      this.invalidateSession(key, session)
+      session = undefined
+    }
+    const reused = Boolean(session)
     if (!session) {
       const args = useProfileFlag ? ['--profile', profile, 'acp'] : ['acp']
       // Do not put project paths into the durable diagnostic log. Profile and argument details
@@ -184,9 +191,12 @@ export class HermesAcpAdapter implements CliAgentAdapter {
     session.lastTextBlockId = undefined
     session.lastThinkingBlockId = undefined
     session.trackers.clear()
-    const text = this.promptText(req)
+    const text = reused && req.continuity
+      ? this.promptText({ ...req, messages: [{ role: 'user', content: req.continuity.currentPrompt }] })
+      : this.promptText(req)
     const prompt: ContentBlock[] = [{ type: 'text', text }]
-    if (req.images) for (const image of req.images) {
+    const images = reused && req.continuity ? req.continuity.currentImages : req.images
+    if (images) for (const image of images) {
       const content = imageContent(image.dataUrl)
       if (content) prompt.push(content)
     }
@@ -203,13 +213,18 @@ export class HermesAcpAdapter implements CliAgentAdapter {
       cancelTimer = setTimeout(() => sessionConnection.close(), HERMES_CANCEL_GRACE_MS)
       if (typeof cancelTimer.unref === 'function') cancelTimer.unref()
     }
-    if (signal?.aborted) throw new Error('Hermes ACP turn cancelled')
+    if (signal?.aborted) {
+      this.invalidateSession(key, session)
+      session.busy = false
+      throw new Error('Hermes ACP turn cancelled')
+    }
     signal?.addEventListener('abort', abort, { once: true })
     try {
       await sessionConnection.request('session/prompt', { sessionId: session.id, prompt }, null)
       if (signal?.aborted) throw new Error('Hermes ACP turn cancelled')
       if (session.lastTextBlockId) session.onEvent?.({ type: 'text_end', blockId: session.lastTextBlockId })
       if (session.lastThinkingBlockId) session.onEvent?.({ type: 'thinking_end', blockId: session.lastThinkingBlockId })
+      req.continuity?.onSessionReady((revision) => { session!.synchronizedRevision = revision })
       return session.chunks.join('')
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
@@ -224,6 +239,7 @@ export class HermesAcpAdapter implements CliAgentAdapter {
       session.onEvent = undefined
       session.busy = false
       session.lastUsedAt = Date.now()
+      if (req.summaryOnly) this.invalidateSession(key, session)
     }
   }
 

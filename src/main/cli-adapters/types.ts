@@ -4,6 +4,13 @@ import type { UserInputAnswer, UserInputQuestion } from '../../shared/chat-turn-
 import type { Citation } from '../../shared/citations'
 
 export interface CliAdapterRequest {
+  summaryOnly?: boolean
+  continuity?: {
+    priorRevision: string
+    currentPrompt: string
+    currentImages: { id: string; name: string; dataUrl: string }[]
+    onSessionReady: (commit: (revision: string) => void) => void
+  }
   systemPrompt?: string
   /** Per-invocation custom subagents. Claude CLI receives these through --agents so callers can
    * refresh an app-owned project team without relying on Claude's persistent teammate state. */

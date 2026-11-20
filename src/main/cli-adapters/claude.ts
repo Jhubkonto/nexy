@@ -219,6 +219,7 @@ export const ClaudeAdapter: CliAgentAdapter = {
       // in the user's global ~/.claude.json. We control exactly which servers are
       // available via --mcp-config (or none at all when no servers are permitted).
       const args = ['--output-format', 'stream-json', '--print', '--verbose', '--strict-mcp-config']
+      if (req.summaryOnly) args.push('--tools', '')
       if (req.systemPrompt || userInputBridge || deferBridge || planBridge) {
         const userInputInstruction = userInputBridge
           ? '\n\nWhen essential information is missing, call nexy_user_input.ask_user and wait for the answer. Do not use AskUserQuestion because Nexy cannot render that native tool in --print mode.'

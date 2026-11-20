@@ -959,6 +959,7 @@ export const CodexAdapter: CliAgentAdapter = {
         req.cwd,
         ...imageArgs,
       ]
+      if (req.summaryOnly) execArgs.push('--config', 'tools.shell=false', '--config', 'web_search="disabled"')
       if (req.model && req.model !== 'default') {
         execArgs.push('--model', req.model)
       }
