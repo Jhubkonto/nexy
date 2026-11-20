@@ -33,6 +33,33 @@ beforeEach(() => {
 })
 
 describe('uiSlice', () => {
+  it('persists compact mode and resized width independently of hide/show', () => {
+    const store = createUiStore()
+    expect(store.getState().sidebarCollapsed).toBe(false)
+    expect(store.getState().sidebarExpandedWidth).toBe(256)
+    store.getState().setSidebarExpandedWidth(310)
+    store.getState().toggleSidebarCollapsed()
+    store.getState().toggleSidebar()
+    store.getState().toggleSidebar()
+    expect(store.getState().showSidebar).toBe(true)
+    expect(store.getState().sidebarCollapsed).toBe(true)
+    expect(store.getState().sidebarExpandedWidth).toBe(310)
+    expect(mockApi.setSetting).toHaveBeenCalledWith('sidebar_expanded_width', '310')
+    expect(mockApi.setSetting).toHaveBeenCalledWith('sidebar_collapsed', 'true')
+    store.getState().toggleSidebarCollapsed()
+    expect(mockApi.setSetting).toHaveBeenCalledWith('sidebar_collapsed', 'false')
+  })
+
+  it('bounds resized widths and ignores non-finite sizes', () => {
+    const store = createUiStore()
+    store.getState().setSidebarExpandedWidth(10)
+    expect(store.getState().sidebarExpandedWidth).toBe(160)
+    store.getState().setSidebarExpandedWidth(900)
+    expect(store.getState().sidebarExpandedWidth).toBe(480)
+    store.getState().setSidebarExpandedWidth(NaN)
+    expect(store.getState().sidebarExpandedWidth).toBe(480)
+  })
+
   it('manages the toast queue', () => {
     const store = createUiStore()
 

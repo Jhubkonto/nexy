@@ -12,11 +12,16 @@ import type {
   ToolApprovalRequest
 } from '../types'
 import type { AvailableModelGroup, CatalogModel } from '../../../shared/types'
+import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH } from '../../lib/sidebar-layout'
 
 export interface UiSlice {
   theme: Theme
   uiStyle: UiStyle
   showSidebar: boolean
+  sidebarCollapsed: boolean
+  sidebarExpandedWidth: number
+  toggleSidebarCollapsed: () => void
+  setSidebarExpandedWidth: (width: number) => void
   showMcpPanel: boolean
   showSettings: boolean
   showActivityFeed: boolean
@@ -111,6 +116,18 @@ export const createUiSlice: StateCreator<
   theme: 'dark',
   uiStyle: 'classic',
   showSidebar: true,
+  sidebarCollapsed: false,
+  sidebarExpandedWidth: SIDEBAR_DEFAULT_WIDTH,
+  toggleSidebarCollapsed: () => {
+    set((s) => { s.sidebarCollapsed = !s.sidebarCollapsed })
+    void window.api.setSetting('sidebar_collapsed', String(get().sidebarCollapsed)).catch(() => {})
+  },
+  setSidebarExpandedWidth: (width) => {
+    if (!Number.isFinite(width)) return
+    const next = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, width))
+    set((s) => { s.sidebarExpandedWidth = next })
+    void window.api.setSetting('sidebar_expanded_width', String(next)).catch(() => {})
+  },
   showMcpPanel: false,
   showSettings: false,
   showActivityFeed: false,

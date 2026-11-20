@@ -33,6 +33,7 @@ import {
   type SchedulerSlice
 } from './slices/schedulerSlice'
 import { isApiError } from '../../shared/types'
+import { restoreSidebarWidth } from '../lib/sidebar-layout'
 
 export type {
   ActiveSectionPane,
@@ -85,12 +86,18 @@ export const useAppStore = create<AppState>()(
 
     hydrate: async () => {
       try {
-        const [savedTheme, savedUiStyle, savedMarkdownViewMode, savedComposerMarkdownViewMode] = await Promise.all([
+        const [savedTheme, savedUiStyle, savedMarkdownViewMode, savedComposerMarkdownViewMode, savedSidebarCollapsed, savedSidebarWidth] = await Promise.all([
           window.api.getTheme(),
           window.api.getSetting('ui_style').catch(() => null),
           window.api.getSetting('markdown_view_mode').catch(() => null),
           window.api.getSetting('composer_markdown_view_mode').catch(() => null),
+          window.api.getSetting('sidebar_collapsed').catch(() => null),
+          window.api.getSetting('sidebar_expanded_width').catch(() => null),
         ])
+        set((s) => {
+          s.sidebarCollapsed = savedSidebarCollapsed === 'true'
+          s.sidebarExpandedWidth = restoreSidebarWidth(savedSidebarWidth)
+        })
         const t = savedTheme === 'light' ? 'light' : 'dark'
         get().setTheme(t)
         get().setUiStyle(savedUiStyle === '8bit' ? '8bit' : 'classic', false)

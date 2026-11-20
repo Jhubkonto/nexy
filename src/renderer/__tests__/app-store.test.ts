@@ -96,6 +96,29 @@ describe('app store', () => {
   })
 
   describe('hydrate()', () => {
+    it('restores compact mode and the expanded width without rewriting settings', async () => {
+      mockApi.getSetting.mockImplementation(async (key: string) => ({ sidebar_collapsed: 'true', sidebar_expanded_width: '315' }[key] ?? null))
+      await useAppStore.getState().hydrate()
+      expect(useAppStore.getState().sidebarCollapsed).toBe(true)
+      expect(useAppStore.getState().sidebarExpandedWidth).toBe(315)
+      expect(mockApi.setSetting).not.toHaveBeenCalledWith('sidebar_collapsed', expect.anything())
+      expect(mockApi.setSetting).not.toHaveBeenCalledWith('sidebar_expanded_width', expect.anything())
+    })
+
+    it.each([null, '', 'bad', 'Infinity', '0', '159', '481'])('uses sidebar defaults for invalid settings: %s', async (width) => {
+      mockApi.getSetting.mockImplementation(async (key: string) => key === 'sidebar_expanded_width' ? width : 'bad')
+      await useAppStore.getState().hydrate()
+      expect(useAppStore.getState().sidebarCollapsed).toBe(false)
+      expect(useAppStore.getState().sidebarExpandedWidth).toBe(256)
+    })
+
+    it('keeps sidebar defaults when reading settings fails', async () => {
+      mockApi.getSetting.mockRejectedValue(new Error('Unavailable'))
+      await useAppStore.getState().hydrate()
+      expect(useAppStore.getState().sidebarCollapsed).toBe(false)
+      expect(useAppStore.getState().sidebarExpandedWidth).toBe(256)
+    })
+
     beforeEach(() => {
       mockApi.listConversations.mockResolvedValue([])
       mockApi.listAgents.mockResolvedValue([])
