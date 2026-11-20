@@ -27,6 +27,10 @@ export function createMockAppStore(overrides: Record<string, unknown> = {}) {
     // UI
     theme: 'dark' as const,
     showSidebar: true,
+    sidebarCollapsed: false,
+    sidebarExpandedWidth: 256,
+    toggleSidebarCollapsed: vi.fn(),
+    setSidebarExpandedWidth: vi.fn(),
     catalogModels: [],
     availableModelGroups: [],
     availableModelsLoaded: false,

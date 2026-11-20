@@ -46,20 +46,22 @@ describe('theme-aware visual motion policy', () => {
     }
   })
 
-  it('keeps desktop motion disabled globally except for busy/loading indicators, and chat streaming frame-free', () => {
+  it('keeps desktop motion limited to progress indicators and sidebar toggles, and chat streaming frame-free', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/renderer/styles/global.css'), 'utf8')
     expect(css).toContain('animation: none !important')
     expect(css).toContain('transition: none !important')
     expect(css).toContain('scroll-behavior: auto !important')
     expect(css).not.toMatch(/@keyframes/)
 
-    // Loading spinners/bounce/pulse records are the sole carved-out exception: they signal
-    // in-progress work rather than decorative motion, so they must keep animating.
+    // Progress indicators remain animated; user-triggered sidebar motion is separately
+    // gated by reduced-motion preference and never applies to resizing or startup.
     expect(css).toContain('.animate-spin')
     expect(css).toContain('.animate-bounce')
     expect(css).toContain('.animate-pulse')
     expect(css).toContain("[data-ui-style='8bit'] :is(.animate-pulse, .nexy-retro-loading-pulse)")
     expect(css).toContain('@media (prefers-reduced-motion: reduce)')
+    expect(css).toMatch(/@media \(prefers-reduced-motion: no-preference\)\s*\{\s*\.nexy-sidebar\[data-animating='true'\]\s*\{\s*transition: width 200ms ease-in-out !important;/)
+    expect(css).toContain(".nexy-sidebar[data-animating='true'] .nexy-sidebar-label")
 
     const icon = readFileSync(resolve(process.cwd(), 'src/renderer/components/ui/icons/NexyIcon.tsx'), 'utf8')
     expect(icon).toContain("name === 'busy' && motion !== 'none'")
