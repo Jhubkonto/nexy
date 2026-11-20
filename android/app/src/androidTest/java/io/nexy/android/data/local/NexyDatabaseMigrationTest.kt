@@ -86,6 +86,22 @@ class NexyDatabaseMigrationTest {
         ).close()
     }
 
+    @Test
+    fun migratesVersionElevenToVersionTwelveWithoutLosingMessages() {
+        helper.createDatabase(DATABASE_NAME, 11).apply {
+            execSQL("INSERT INTO local_messages (id, conversationId, role, content, timestamp, attachmentsJson, thinkingBlocksJson, textSegmentsJson, inputTokens, outputTokens, partial, sendFailed, deleted, localVersion, remoteVersion, syncStatus) VALUES ('message', 'conversation', 'user', 'preserved', 1, '[]', '[]', '[]', 0, 0, 0, 0, 0, 0, 0, 'SYNCED')")
+            close()
+        }
+        helper.runMigrationsAndValidate(DATABASE_NAME, 12, true, NexyDatabase.MIGRATION_11_12).apply {
+            query("SELECT content, continuationJson, providerHistory FROM local_messages WHERE id = 'message'").use { cursor ->
+                check(cursor.moveToFirst())
+                check(cursor.getString(0) == "preserved")
+                check(cursor.isNull(1) && cursor.isNull(2))
+            }
+            close()
+        }
+    }
+
     companion object {
         private const val DATABASE_NAME = "migration-test"
     }
