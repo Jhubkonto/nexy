@@ -2093,6 +2093,34 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
     `,
   },
   { version: 106, sql: "ALTER TABLE messages ADD COLUMN provider_history TEXT" },
+  { version: 107, run: (db) => {
+    db.exec(`
+      ALTER TABLE messages ADD COLUMN continuation_json TEXT;
+      ALTER TABLE conversation_summaries ADD COLUMN source_revision TEXT;
+      CREATE TRIGGER messages_invalidate_continuation_edit AFTER UPDATE OF content ON messages
+      WHEN OLD.content != NEW.content AND OLD.role IN ('user', 'assistant')
+      BEGIN
+        UPDATE messages SET continuation_json = NULL, provider_history = NULL
+          WHERE id = NEW.id OR (conversation_id = NEW.conversation_id AND role = 'assistant'
+            AND timeline_order >= NEW.timeline_order);
+        UPDATE messages SET continuation_json = json_set(continuation_json, '$.exchange', json('[]'), '$.status', 'interrupted')
+          WHERE conversation_id = NEW.conversation_id AND role = 'user' AND timeline_order > NEW.timeline_order
+            AND continuation_json IS NOT NULL;
+        DELETE FROM conversation_summaries WHERE conversation_id = NEW.conversation_id;
+      END;
+      CREATE TRIGGER messages_invalidate_continuation_delete AFTER DELETE ON messages
+      WHEN OLD.role IN ('user', 'assistant')
+      BEGIN
+        UPDATE messages SET continuation_json = NULL, provider_history = NULL
+          WHERE conversation_id = OLD.conversation_id AND role = 'assistant'
+            AND timeline_order >= OLD.timeline_order;
+        UPDATE messages SET continuation_json = json_set(continuation_json, '$.exchange', json('[]'), '$.status', 'interrupted')
+          WHERE conversation_id = OLD.conversation_id AND role = 'user' AND timeline_order > OLD.timeline_order
+            AND continuation_json IS NOT NULL;
+        DELETE FROM conversation_summaries WHERE conversation_id = OLD.conversation_id;
+      END;
+    `)
+  } },
 ];
 
 
