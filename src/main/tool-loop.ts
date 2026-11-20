@@ -116,6 +116,19 @@ export async function runProviderMcpToolLoop(
     : [{ role: 'system' as const, content: directive }, ...messages]
 
   let loopMessages = [...baseMessages]
+  const capturedMessages: ProviderMessage[] = []
+  let uncapturedText = ''
+  const capture = (message: ProviderMessage) => {
+    const existing = message.role === 'tool' ? capturedMessages.findIndex((candidate) => candidate.role === 'tool' && candidate.tool_call_id === message.tool_call_id) : -1
+    if (existing < 0) capturedMessages.push(structuredClone(message))
+    else capturedMessages[existing] = structuredClone(message)
+    if (message.role === 'assistant' && typeof message.content === 'string' && message.content.includes(uncapturedText)) uncapturedText = ''
+    options.onHistory?.(capturedMessages)
+  }
+  const append = (message: ProviderMessage) => {
+    loopMessages.push(message)
+    capture(message)
+  }
   const currentTask = [...messages].reverse().find((message) => message.role === 'user')
   const inputBudget = () => toolLoopInputBudget(options)
   const request = <T>(msgs: ProviderMessage[], tools: ToolDefinition[], send: (msgs: ProviderMessage[]) => Promise<T>, onMessages?: (msgs: ProviderMessage[]) => void): Promise<T> =>
@@ -125,9 +138,12 @@ export async function runProviderMcpToolLoop(
   let executedTool = false
 
   const reportInterruptedResponse = (error: unknown): string => {
+    options.onInterrupted?.()
+    if (uncapturedText) append({ role: 'assistant', content: uncapturedText })
     const detail = error instanceof Error && error.message ? error.message : 'Unexpected provider error'
     const notice = `The provider stopped before completing its response: ${detail}`
     const suffix = fullResponse ? `\n\n${notice}` : notice
+    append({ role: 'assistant', content: suffix })
     onChunk(suffix)
     return fullResponse + suffix
   }
@@ -146,6 +162,11 @@ export async function runProviderMcpToolLoop(
   }
   const sendToolFinished = (event: ToolLoopToolFinishedEvent) => {
     options.outputRecovery?.recordToolCompletion()
+    // Persist completed actions before display/audit callbacks can interrupt the turn.
+    if (event.id) capture({ role: 'tool', tool_call_id: event.id,
+      content: event.result.length > MAX_TOOL_RESULT_CHARS ? event.result.slice(0, MAX_TOOL_RESULT_CHARS) + '\n...[output truncated — proceed with the task using the above information]' : event.result,
+      ...(event.resultImages?.length ? { images: event.resultImages } : {}),
+    })
     if (event.conversationId) {
       getDatabase()
         .prepare(
@@ -168,7 +189,7 @@ export async function runProviderMcpToolLoop(
     for (let i = 0; i < MCP_MAX_ITERATIONS; i++) {
       if (estimateToolRequestTokens(loopMessages, toolDefs) > inputBudget()) {
         const before = estimateToolRequestTokens(loopMessages, toolDefs)
-        loopMessages = trimToolLoopContext(loopMessages, toolDefs, inputBudget(), currentTask)
+        loopMessages = options.compact ? await options.compact(loopMessages, toolDefs, inputBudget(), currentTask) : trimToolLoopContext(loopMessages, toolDefs, inputBudget(), currentTask)
         debugLog('tool-loop', `compacted context: estimatedTokens=${before} retainedTokens=${estimateToolRequestTokens(loopMessages, toolDefs)} budget=${inputBudget()}`)
       }
 
@@ -186,6 +207,7 @@ export async function runProviderMcpToolLoop(
       let streamedRoundText = false
       const emitRoundText = (chunk: string) => {
         if (chunk) streamedRoundText = true
+        uncapturedText += chunk
         fullResponse += chunk
         onChunk(chunk)
       }
@@ -202,8 +224,8 @@ export async function runProviderMcpToolLoop(
           hasRecoveredEmpty = true
           debugLog('tool-loop', `retrying empty response: round=${i + 1} executedTool=${executedTool}`)
           const reasoning = (error as Error & { reasoningContent?: string }).reasoningContent
-          if (reasoning !== undefined) loopMessages.push({ role: 'assistant', content: null, reasoning_content: reasoning })
-          loopMessages.push({ role: 'user', content: 'Your last response was empty. Continue from the existing tool results and provide a complete answer. Use tools only if more information or action is needed.' })
+          if (reasoning !== undefined) append({ role: 'assistant', content: null, reasoning_content: reasoning })
+          append({ role: 'user', content: 'Your last response was empty. Continue from the existing tool results and provide a complete answer. Use tools only if more information or action is needed.' })
           continue
         }
         if (fullResponse || executedTool) {
@@ -221,8 +243,8 @@ export async function runProviderMcpToolLoop(
         if (!hasRecoveredMarkup) {
           hasRecoveredMarkup = true
           forcedToolChoice = 'required'
-          if (result.reasoningContent !== undefined) loopMessages.push({ role: 'assistant', content: null, reasoning_content: result.reasoningContent })
-          loopMessages.push({ role: 'user', content: 'Your previous response contained tool-call markup as text, so no tool call was executed. Call the appropriate tool using the structured tool calling interface, then complete the task.' })
+          if (result.reasoningContent !== undefined) append({ role: 'assistant', content: null, reasoning_content: result.reasoningContent })
+          append({ role: 'user', content: 'Your previous response contained tool-call markup as text, so no tool call was executed. Call the appropriate tool using the structured tool calling interface, then complete the task.' })
           continue
         }
         const notice = 'The provider repeatedly returned tool calls as text. Those calls were not executed; please retry or use another model.'
@@ -253,8 +275,8 @@ export async function runProviderMcpToolLoop(
           forcedToolChoice = 'required'
           // Thinking-mode tool requests must replay reasoning even for a round
           // without calls. Keep the completed assistant message before the nudge.
-          loopMessages.push({ role: 'assistant', content: result.content, ...(result.reasoningContent !== undefined ? { reasoning_content: result.reasoningContent } : {}) })
-          loopMessages.push({
+          append({ role: 'assistant', content: result.content, ...(result.reasoningContent !== undefined ? { reasoning_content: result.reasoningContent } : {}) })
+          append({
             role: 'user' as const,
             content: 'Please proceed with the actions now — call the appropriate tools directly instead of narrating what you will do.'
           })
@@ -264,8 +286,8 @@ export async function runProviderMcpToolLoop(
         if (!planningText) {
           if (!hasRecoveredEmpty) {
             hasRecoveredEmpty = true
-            loopMessages.push({ role: 'assistant', content: result.content, ...(result.reasoningContent !== undefined ? { reasoning_content: result.reasoningContent } : {}) })
-            loopMessages.push({ role: 'user', content: 'Your last response was empty. Provide a complete answer using the existing results, calling tools only if necessary.' })
+            append({ role: 'assistant', content: result.content, ...(result.reasoningContent !== undefined ? { reasoning_content: result.reasoningContent } : {}) })
+            append({ role: 'user', content: 'Your last response was empty. Provide a complete answer using the existing results, calling tools only if necessary.' })
             continue
           }
           return reportInterruptedResponse(new Error('The provider repeatedly returned an empty answer.'))
@@ -279,7 +301,7 @@ export async function runProviderMcpToolLoop(
           onChunk(text)
           fullResponse += text
         }
-        loopMessages.push({ role: 'assistant', content: text, ...(result.reasoningContent !== undefined ? { reasoning_content: result.reasoningContent } : {}) })
+        append({ role: 'assistant', content: text, ...(result.reasoningContent !== undefined ? { reasoning_content: result.reasoningContent } : {}) })
         return fullResponse
       }
 
@@ -293,7 +315,7 @@ export async function runProviderMcpToolLoop(
         fullResponse += result.content as string
       }
 
-      loopMessages.push({
+      append({
         role: 'assistant' as const,
         ...(result.reasoningContent !== undefined ? { reasoning_content: result.reasoningContent } : {}),
         content: interstitialText ? (result.content as string) : null,
@@ -341,7 +363,7 @@ export async function runProviderMcpToolLoop(
             success: false,
             conversationId,
           })
-          loopMessages.push({ role: 'tool' as const, tool_call_id: call.id, content: toolResultContent })
+          append({ role: 'tool' as const, tool_call_id: call.id, content: toolResultContent })
           continue
         }
 
@@ -365,7 +387,7 @@ export async function runProviderMcpToolLoop(
               conversationId,
             }
             sendToolFinished(neverAllowPayload)
-            loopMessages.push({ role: 'tool' as const, tool_call_id: call.id, content: toolResultContent })
+            append({ role: 'tool' as const, tool_call_id: call.id, content: toolResultContent })
             continue
           }
           if (!isPreApproved) {
@@ -381,7 +403,7 @@ export async function runProviderMcpToolLoop(
               conversationId,
             }
             sendToolFinished(notApprovedPayload)
-            loopMessages.push({ role: 'tool' as const, tool_call_id: call.id, content: toolResultContent })
+            append({ role: 'tool' as const, tool_call_id: call.id, content: toolResultContent })
             continue
           }
         }
@@ -488,7 +510,7 @@ export async function runProviderMcpToolLoop(
         if (toolImages?.length) {
           (toolMsg as { role: 'tool'; tool_call_id: string; content: string; images?: { dataUrl: string }[] }).images = toolImages
         }
-        loopMessages.push(toolMsg)
+        append(toolMsg)
       }
     }
 
@@ -497,14 +519,17 @@ export async function runProviderMcpToolLoop(
     const terminalBase = loopMessages.map((message, index) => message.role === 'system'
       ? { ...message, content: `${index === 0 ? originalSystem : message.content ?? ''}\n\n${FINAL_ANSWER_INSTRUCTION}` } as ProviderMessage
       : message)
-    let finalMessages = trimToolLoopContext(terminalBase, toolDefs, inputBudget(), currentTask)
+    let finalMessages = options.compact ? await options.compact(terminalBase, toolDefs, inputBudget(), currentTask) : trimToolLoopContext(terminalBase, toolDefs, inputBudget(), currentTask)
 
     // Stream the terminal answer when a streaming caller is available (parity with the CLI token
     // stream). A long final answer arriving as one blob reads as a stall; streaming avoids that.
     if (finalStreamCaller) {
       let streamedAny = false
+      let terminalText = ''
       const trackedChunk = (chunk: string) => {
         if (chunk.trim()) streamedAny = true
+        terminalText += chunk
+        uncapturedText += chunk
         fullResponse += chunk
         onChunk(chunk)
       }
@@ -514,14 +539,14 @@ export async function runProviderMcpToolLoop(
         if (final?.toolCalls?.length) throw markupError()
         if (!markupBuffer.flush()) throw markupError()
         if (!streamedAny) throw new Error('The provider returned an empty final answer.')
-        loopMessages.push({ role: 'assistant', content: final?.content ?? fullResponse, ...(final?.reasoningContent !== undefined ? { reasoning_content: final.reasoningContent } : {}) })
+        append({ role: 'assistant', content: final?.content ?? terminalText, ...(final?.reasoningContent !== undefined ? { reasoning_content: final.reasoningContent } : {}) })
         return fullResponse
       } catch (error) {
         markupBuffer.flush()
         // If text already streamed, surface the error rather than re-running the non-streaming
         // caller (which would duplicate the streamed text). If nothing streamed (e.g. the endpoint
         // rejected the request outright), fall through to the resilient non-streaming path.
-        if (streamedAny) return reportInterruptedResponse(error)
+        if (streamedAny) { append({ role: 'assistant', content: terminalText }); return reportInterruptedResponse(error) }
         // Token recovery is shared with all earlier rounds. A terminal length
         // failure must not acquire another attempt via the fallback transport.
         if (providerFinishReason(error) === 'length') throw error
@@ -546,7 +571,7 @@ export async function runProviderMcpToolLoop(
     }
     const text = finalResult.content ?? ''
     if (!text.trim()) return reportInterruptedResponse(new Error('The provider returned an empty final answer.'))
-    loopMessages.push({ role: 'assistant', content: text, ...(finalResult.reasoningContent !== undefined ? { reasoning_content: finalResult.reasoningContent } : {}) })
+    append({ role: 'assistant', content: text, ...(finalResult.reasoningContent !== undefined ? { reasoning_content: finalResult.reasoningContent } : {}) })
     onChunk(text)
     fullResponse += text
     return fullResponse || (executedTool
@@ -556,8 +581,7 @@ export async function runProviderMcpToolLoop(
     if (fullResponse || executedTool) return reportInterruptedResponse(error)
     throw error
   } finally {
-    const taskIndex = currentTask ? loopMessages.indexOf(currentTask) : -1
-    if (taskIndex >= 0) options.onHistory?.(loopMessages.slice(taskIndex + 1))
+    options.onHistory?.(capturedMessages)
   }
 }
 

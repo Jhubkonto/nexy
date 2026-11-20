@@ -1,4 +1,7 @@
 import { BrowserWindow } from 'electron'
+import { resolveOutputBudget } from './output-budget'
+import { getCachedCatalog } from './model-catalog'
+import { estimateToolRequestTokens, toolLoopInputBudget, compactToolLoopContext } from './tool-loop-context'
 import { randomUUID } from 'crypto'
 import { getAgentConfig } from './agents'
 import type { ToolDefinition } from './provider-types'
@@ -53,6 +56,8 @@ export interface OrchestratorOptions {
   maxDelegationDepth?: number
   showActivity?: boolean
   globalPrompt?: string
+  onHistory?: (messages: ProviderMessage[]) => void
+  prepareHistory?: (available: number, generate: (prompt: string) => Promise<string>) => Promise<ProviderMessage[]>
 }
 
 const DELEGATE_TOOL: ToolDefinition = {
@@ -209,7 +214,7 @@ export async function runOrchestration(
     onCancel: () => abortActiveStream(opts.conversationId),
   })
 
-  const loopMessages: ProviderMessage[] = [
+  let loopMessages: ProviderMessage[] = [
     {
       role: 'system' as const,
       content: (opts.globalPrompt ? `${opts.globalPrompt}\n\n` : '') + (leaderSystemPrompt
@@ -219,6 +224,30 @@ export async function runOrchestration(
     ...historyMessages,
     { role: 'user' as const, content: userContent }
   ]
+
+  const currentTask = loopMessages.at(-1)!
+  const outputBudget = resolveOutputBudget({ provider: leaderProvider, model: resolvedLeaderModel,
+    setting: generationOptions.maxTokens, catalog: getCachedCatalog(),
+    minimumInputTokens: estimateToolRequestTokens([loopMessages[0], currentTask], [DELEGATE_TOOL]) })
+  const requestBudget = toolLoopInputBudget({ contextWindow: outputBudget.contextWindow, maxOutputTokens: outputBudget.initialTokens })
+  const leaderGeneration = { ...generationOptions, maxTokens: outputBudget.initialTokens }
+  const generateSummary = async (prompt: string) => {
+      if (!leaderCredential) throw new Error(NO_PROVIDER_CONFIGURED_MESSAGE)
+      return streamProviderMessage(leaderProvider, leaderCredential, resolvedLeaderModel,
+        [{ role: 'user', content: prompt }], `${opts.conversationId}:summary`, () => {}, { temperature: 0, maxTokens: 2048 })
+    }
+  if (opts.prepareHistory) {
+    const available = requestBudget - estimateToolRequestTokens([loopMessages[0], currentTask], [DELEGATE_TOOL]) - 256
+    if (available < 0) throw new Error('The current message and coordinator instructions exceed the model context budget. Shorten the message or select a larger model.')
+    const history = await opts.prepareHistory(available, generateSummary)
+    loopMessages = [loopMessages[0], ...history, currentTask]
+  }
+  const captured: ProviderMessage[] = []
+  const append = (message: ProviderMessage) => {
+    loopMessages.push(message)
+    captured.push(structuredClone(message))
+    opts.onHistory?.(captured)
+  }
 
   const memberIds = new Set(teamAgents.filter((a) => !a.isPrimary).map((a) => a.agentId))
 
@@ -230,19 +259,21 @@ export async function runOrchestration(
     // On the first pass, nudge the model to call the delegate tool if specialists exist.
     // Subsequent passes use 'auto' so the model can finalise without forcing another delegation.
     const toolChoice = (depth === 0 && memberIds.size > 0 && supportsRequiredToolChoice) ? 'required' : 'auto'
+    loopMessages = await compactToolLoopContext(loopMessages, [DELEGATE_TOOL], requestBudget, currentTask, generateSummary)
     const result = await sendProviderWithTools(
       leaderProvider,
       leaderCredential,
       resolvedLeaderModel,
-      loopMessages,
+      loopMessages.slice(),
       memberIds.size > 0 ? [DELEGATE_TOOL] : [],
       toolChoice,
-      generationOptions
+      leaderGeneration
     )
 
     // No tool calls — leader produced final answer; stream it character by character
     if (result.toolCalls.length === 0) {
       const finalContent = result.content ?? ''
+      append({ role: 'assistant', content: finalContent, ...(result.reasoningContent !== undefined ? { reasoning_content: result.reasoningContent } : {}) })
       for (const char of finalContent) {
         window?.webContents.send('chat:stream-response', char)
       }
@@ -277,8 +308,21 @@ export async function runOrchestration(
       validCalls.push(call)
     }
 
+    // Append ONE assistant message with ALL tool calls (preserving original order),
+    // then one tool result per call in the same order
+    append({
+      role: 'assistant' as const,
+      content: result.content ?? null,
+      ...(result.reasoningContent !== undefined ? { reasoning_content: result.reasoningContent } : {}),
+      tool_calls: result.toolCalls.map((call) => ({
+        id: call.id,
+        type: 'function' as const,
+        function: { name: call.name, arguments: JSON.stringify(call.arguments) }
+      }))
+    })
+    for (const failure of errorResults) append({ role: 'tool', tool_call_id: failure.id, content: failure.error })
     // Run all valid specialist calls concurrently
-    const parallelResults = await Promise.all(validCalls.map(async (call) => {
+    await Promise.all(validCalls.map(async (call) => {
       const { agent_id: targetAgentId, task, context } = call.arguments as {
         agent_id: string; task: string; context?: string
       }
@@ -340,29 +384,10 @@ export async function runOrchestration(
         window?.webContents.send('chat:team-activity', { ...step })
         broadcastToMobile({ event: 'chat:team-activity', data: { conversationId: opts.conversationId, ...step } })
       }
+      append({ role: 'tool', tool_call_id: call.id, content: specialistResult })
       return { call, result: specialistResult }
     }))
 
-    // Append ONE assistant message with ALL tool calls (preserving original order),
-    // then one tool result per call in the same order
-    loopMessages.push({
-      role: 'assistant' as const,
-      content: null,
-      tool_calls: result.toolCalls.map((call) => ({
-        id: call.id,
-        type: 'function' as const,
-        function: { name: call.name, arguments: JSON.stringify(call.arguments) }
-      }))
-    })
-    for (const call of result.toolCalls) {
-      const pr = parallelResults.find((r) => r.call.id === call.id)
-      const er = errorResults.find((e) => e.id === call.id)
-      loopMessages.push({
-        role: 'tool' as const,
-        tool_call_id: call.id,
-        content: pr ? pr.result : (er ? er.error : '')
-      })
-    }
   }
 
   // Depth cap reached — stream a final answer from the leader using its configured provider
@@ -371,16 +396,17 @@ export async function runOrchestration(
     leaderCredential,
     resolvedLeaderModel,
     window,
-    [
+    await compactToolLoopContext([
       ...loopMessages,
       {
         role: 'user' as const,
         content: 'You have reached the maximum delegation depth. Please provide your final answer now based on all gathered information.'
       }
-    ],
+    ], [DELEGATE_TOOL], requestBudget, currentTask, generateSummary),
     opts.conversationId,
-    generationOptions
+    leaderGeneration
   )
+  append({ role: 'assistant', content: finalResult })
   window?.webContents.send('chat:stream-response', null)
   updateDelegationNode(runId, rootId, { status: 'done' })
   return { finalContent: finalResult, teamActivity: teamActivitySteps }
