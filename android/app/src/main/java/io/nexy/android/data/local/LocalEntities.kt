@@ -71,6 +71,8 @@ data class MessageEntity(
     // Ordered response-text bursts when the reply was interrupted by a tool call — mirrors
     // thinkingBlocksJson's shape/purpose but for response text (see HistoryMessage.textSegments).
     val textSegmentsJson: String = "[]",
+    val continuationJson: String? = null,
+    val providerHistory: String? = null,
     val inputTokens: Int = 0,
     val outputTokens: Int = 0,
     val partial: Boolean = false,
@@ -153,6 +155,7 @@ data class ConversationSummaryEntity(
     val sourceMessageCount: Int,
     val createdAt: Long,
     val updatedAt: Long,
+    val sourceRevision: String? = null,
 )
 
 @Entity(

@@ -799,6 +799,9 @@ data class HistoryMessage(
     val textSegments: List<ThinkingBlock> = emptyList(),
     val userInputs: List<io.nexy.android.ui.chat.ChatTurnUserInput> = emptyList(),
     val model: String? = null,
+    val continuationJson: String? = null,
+    val providerHistory: String? = null,
+    val requestImages: List<Map<*, *>> = emptyList(),
 )
 
 data class ThinkingBlock(

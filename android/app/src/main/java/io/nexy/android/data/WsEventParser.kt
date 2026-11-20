@@ -831,6 +831,8 @@ fun parseWsEvent(
                         attachments = attachmentsFromJson(m.nullableString("attachments")),
                         thinkingBlocks = parseThinkingBlocks(m.nullableString("thinking_blocks")),
                         textSegments = parseThinkingBlocks(m.nullableString("text_segments")),
+                        continuationJson = m.nullableString("continuation_json"),
+                        providerHistory = m.nullableString("provider_history"),
                         userInputs = parseResolvedUserInputs(m.nullableString("user_inputs")),
                         model = m.nullableString("model"),
                     )
@@ -869,6 +871,8 @@ fun parseWsEvent(
                         attachments = attachmentsFromJson(m.nullableString("attachments")),
                         thinkingBlocks = parseThinkingBlocks(m.nullableString("thinking_blocks")),
                         textSegments = parseThinkingBlocks(m.nullableString("text_segments")),
+                        continuationJson = m.nullableString("continuation_json"),
+                        providerHistory = m.nullableString("provider_history"),
                         userInputs = parseResolvedUserInputs(m.nullableString("user_inputs")),
                         model = m.nullableString("model"),
                     )

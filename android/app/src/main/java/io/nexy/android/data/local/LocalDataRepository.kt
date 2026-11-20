@@ -243,6 +243,10 @@ class LocalDataRepository private constructor(
 
     suspend fun listForProvider(conversationId: String, retryMessageId: String?): List<HistoryMessage> =
         database.messages().getForConversation(conversationId)
+            .let { rows ->
+                val current = rows.indexOfFirst { it.id == retryMessageId }
+                if (current < 0) rows else rows.take(current + 1)
+            }
             .filter { !it.sendFailed || it.id == retryMessageId }
             .map(MessageEntity::toModel)
 
@@ -459,6 +463,23 @@ class LocalDataRepository private constructor(
         return entity.toModel()
     }
 
+    suspend fun persistContinuation(messageId: String, json: String) {
+        val current = database.messages().get(messageId) ?: return
+        val updated = current.copy(continuationJson = json, localVersion = current.localVersion + 1, syncStatus = SyncStatus.PENDING)
+        database.withTransaction {
+            database.messages().upsert(updated)
+            enqueue("message", messageId, "upsert", updated.toSyncJson(), current.remoteVersion)
+        }
+    }
+
+    suspend fun storedAttachmentData(messageId: String): List<Map<*, *>> =
+        database.attachments().forMessage(messageId).mapNotNull { attachment ->
+            val file = attachment.localPath?.let(::File)?.takeIf { it.isFile } ?: return@mapNotNull null
+            mapOf("id" to attachment.id, "name" to attachment.displayName,
+                "mimeType" to attachment.mimeType,
+                "dataUrl" to "data:${attachment.mimeType};base64,${Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)}")
+        }
+
     suspend fun persistImageAttachments(messageId: String, images: List<Map<*, *>>) {
         images.forEach { image ->
             val dataUrl = image["dataUrl"] as? String ?: return@forEach
@@ -577,10 +598,22 @@ class LocalDataRepository private constructor(
         return if (done) null else AttachmentDownload(hash, file.length())
     }
 
+    private suspend fun invalidateContinuationAfter(conversationId: String, timestamp: Long) {
+        database.summaries().delete(conversationId)
+        database.messages().getForConversation(conversationId).filter { it.timestamp >= timestamp && it.role == "assistant" }.forEach { row ->
+            val updated = row.copy(continuationJson = null, providerHistory = null, localVersion = row.localVersion + 1, syncStatus = SyncStatus.PENDING)
+            database.messages().upsert(updated)
+            enqueue("message", row.id, "upsert", updated.toSyncJson(), row.remoteVersion)
+        }
+    }
+
     override suspend fun updateMessageContent(id: String, content: String, partial: Boolean, sendFailed: Boolean) {
         val current = database.messages().get(id) ?: return
+        if (!current.partial && current.content != content) invalidateContinuationAfter(current.conversationId, current.timestamp)
         val updated = current.copy(
             content = content,
+            continuationJson = if (current.content != content) null else current.continuationJson,
+            providerHistory = if (current.content != content) null else current.providerHistory,
             partial = partial,
             sendFailed = sendFailed,
             localVersion = current.localVersion + 1,
@@ -625,6 +658,7 @@ class LocalDataRepository private constructor(
     override suspend fun deleteMessage(id: String) {
         val current = database.messages().get(id) ?: return
         database.withTransaction {
+            invalidateContinuationAfter(current.conversationId, current.timestamp)
             database.messages().tombstone(id)
             enqueue("message", id, "delete", JSONObject().put("id", id).toString(), current.remoteVersion)
         }
@@ -633,6 +667,7 @@ class LocalDataRepository private constructor(
     override suspend fun deleteMessagesAfter(conversationId: String, timestamp: Long) {
         val affected = database.messages().getForConversation(conversationId).filter { it.timestamp >= timestamp }
         database.withTransaction {
+            invalidateContinuationAfter(conversationId, timestamp)
             database.messages().tombstoneAfter(conversationId, timestamp)
             affected.forEach {
                 enqueue("message", it.id, "delete", JSONObject().put("id", it.id).toString(), it.remoteVersion)
@@ -862,7 +897,7 @@ class LocalDataRepository private constructor(
     suspend fun getConversationSummary(conversationId: String): ConversationSummaryEntity? =
         database.summaries().get(conversationId)
 
-    suspend fun saveConversationSummary(conversationId: String, summary: String, sourceMessageCount: Int) {
+    suspend fun saveConversationSummary(conversationId: String, summary: String, sourceMessageCount: Int, sourceRevision: String? = null) {
         val current = database.summaries().get(conversationId)
         val now = System.currentTimeMillis()
         database.summaries().upsert(
@@ -870,6 +905,7 @@ class LocalDataRepository private constructor(
                 conversationId = conversationId,
                 summary = summary,
                 sourceMessageCount = sourceMessageCount,
+                sourceRevision = sourceRevision,
                 createdAt = current?.createdAt ?: now,
                 updatedAt = now,
             ),
@@ -1130,6 +1166,8 @@ class LocalDataRepository private constructor(
             attachmentsJson = row.jsonArrayOrString("attachments")?.toString() ?: "[]",
             thinkingBlocksJson = row.jsonArrayOrString("thinking_blocks")?.toString() ?: "[]",
             textSegmentsJson = row.jsonArrayOrString("text_segments")?.toString() ?: "[]",
+            continuationJson = row.nullableString("continuation_json") ?: row.optJSONObject("continuation")?.toString(),
+            providerHistory = row.nullableString("provider_history") ?: row.nullableString("providerHistory"),
             inputTokens = row.optInt("input_tokens", 0),
             outputTokens = row.optInt("output_tokens", 0),
             remoteVersion = remoteVersion,
@@ -1835,6 +1873,8 @@ private fun MessageEntity.toModel() = HistoryMessage(
     attachments = attachmentsJson.toAttachments(),
     thinkingBlocks = thinkingBlocksJson.toThinkingBlocks(),
     textSegments = textSegmentsJson.toThinkingBlocks(),
+    continuationJson = continuationJson,
+    providerHistory = providerHistory,
 )
 
 private fun HistoryMessage.toEntity(conversationId: String) = MessageEntity(
@@ -1847,6 +1887,8 @@ private fun HistoryMessage.toEntity(conversationId: String) = MessageEntity(
     attachmentsJson = attachments.toAttachmentsJson(),
     thinkingBlocksJson = thinkingBlocks.toThinkingBlocksJson(),
     textSegmentsJson = textSegments.toThinkingBlocksJson(),
+    continuationJson = continuationJson,
+    providerHistory = providerHistory,
     remoteVersion = 1,
 )
 
@@ -1901,6 +1943,8 @@ private fun MessageEntity.toSyncJson(): String = JSONObject()
     .put("timestamp", timestamp)
     .put("attachments", JSONArray(attachmentsJson))
     .put("thinkingBlocks", JSONArray(thinkingBlocksJson))
+    .put("continuation", continuationJson?.let { runCatching { JSONObject(it) }.getOrNull() })
+    .put("providerHistory", providerHistory)
     .put("inputTokens", inputTokens)
     .put("outputTokens", outputTokens)
     .put("partial", partial)

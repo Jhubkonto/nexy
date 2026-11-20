@@ -35,7 +35,7 @@ class LocalConverters {
         LocalSettingsEntity::class,
         DiagnosticLogEntity::class,
     ],
-    version = 11,
+    version = 12,
     exportSchema = true,
 )
 @TypeConverters(LocalConverters::class)
@@ -63,7 +63,7 @@ abstract class NexyDatabase : RoomDatabase() {
                     NexyDatabase::class.java,
                     "nexy-local.db",
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
                     .enableMultiInstanceInvalidation()
                     .build()
                     .also { instance = it }
@@ -156,6 +156,13 @@ abstract class NexyDatabase : RoomDatabase() {
         val MIGRATION_10_11 = object : Migration(10, 11) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE local_conversations ADD COLUMN conversationHermesProfile TEXT")
+            }
+        }
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE local_messages ADD COLUMN continuationJson TEXT")
+                db.execSQL("ALTER TABLE local_messages ADD COLUMN providerHistory TEXT")
+                db.execSQL("ALTER TABLE conversation_summaries ADD COLUMN sourceRevision TEXT")
             }
         }
     }

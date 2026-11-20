@@ -35,6 +35,13 @@ class StandaloneProviderStore private constructor(context: Context) {
     private val _providers = MutableStateFlow(providerInfos())
     val providers: StateFlow<List<ProviderInfo>> = _providers
 
+    fun rememberContextWindow(provider: String, model: String, tokens: Int) {
+        if (tokens > 0) preferences.edit().putInt("context_window_${provider}_$model", tokens).apply()
+    }
+
+    fun contextWindow(provider: String, model: String): Int =
+        preferences.getInt("context_window_${provider}_$model", 32768).coerceAtLeast(1)
+
     fun setKey(provider: String, key: String) {
         require(provider in SUPPORTED_PROVIDERS) { "Unsupported standalone provider: $provider" }
         vault.upsertApiKey(provider, key)

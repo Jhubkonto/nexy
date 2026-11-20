@@ -70,6 +70,7 @@ class StandaloneChatService(
             .filter { (it["dataUrl"] as? String).orEmpty().isNotBlank() }
         val turn = TurnEmitter(conversationId, emit)
         var assistantMessageId: String? = null
+        var activeAccumulator: ResponseAccumulator? = null
         try {
             val conversation = localData.ensureConversation(
                 id = conversationId,
@@ -117,22 +118,26 @@ class StandaloneChatService(
             emit(WsEvent.ChatActivity(conversationId, "thinking", "Assistant is thinking", null, null))
             emitHistory(conversationId)
 
-            val fullHistory = localData.listForProvider(conversationId, user.id).map { message ->
-                if (message.id == user.id && files.isNotEmpty()) {
-                    message.copy(content = inlineFileContext(files) + message.content)
-                } else message
+            val stored = localData.storedAttachmentData(user.id)
+            val turnImages = images.ifEmpty { stored.filter { (it["mimeType"] as? String)?.startsWith("image/") == true } }
+            val turnFiles = files.ifEmpty { stored.filter { (it["mimeType"] as? String)?.startsWith("image/") != true } }
+            if (retryMessageId == null || user.continuationJson == null) {
+                localData.persistContinuation(user.id, ConversationContinuity.submitted(inlineFileContext(turnFiles) + user.content, turnImages, provider.provider))
             }
+            val rawHistory = localData.listForProvider(conversationId, user.id)
+            val fullHistory = ConversationContinuity.restore(rawHistory)
             val agentConfig = agentId?.let { localData.getAgentFull(it) }
-            val context = prepareContext(conversationId, fullHistory, provider)
+            val context = prepareContext(conversationId, fullHistory, provider, agentConfig)
             val history = context.messages
             val assistant = localData.insertMessage(conversationId, "assistant", "", partial = true)
             assistantMessageId = assistant.id
             val accumulator = ResponseAccumulator(conversationId, assistant.id, turn)
+            activeAccumulator = accumulator
             val protocol = protocols.getValue(
                 if (provider.provider == "anthropic") "anthropic" else "openai-compatible",
             )
             val request = protocol.createStreamingRequest(
-                LlmRequestContext(provider, history, images, agentConfig, context.summary, conversation.thinking_effort_override),
+                LlmRequestContext(provider, history, turnImages, agentConfig, context.summary, conversation.thinking_effort_override),
             )
             val call = client.newCall(request)
             activeCalls[conversationId] = call
@@ -166,6 +171,7 @@ class StandaloneChatService(
                 model = provider.defaultModel,
                 finishReason = accumulator.finishReason,
             )
+            localData.persistContinuation(assistant.id, ConversationContinuity.assistant(accumulator.text, provider.provider))
             val totalCost = estimateCostUsd(
                 provider = provider.provider,
                 model = provider.defaultModel,
@@ -187,7 +193,9 @@ class StandaloneChatService(
         } catch (cancelled: IOException) {
             val cancelledByUser = activeCalls[conversationId]?.isCanceled() == true
             assistantMessageId?.let {
-                localData.updateMessageContent(it, "", partial = false, sendFailed = !cancelledByUser)
+                val text = activeAccumulator?.text.orEmpty()
+                localData.updateMessageContent(it, text, partial = false, sendFailed = !cancelledByUser)
+                localData.persistContinuation(it, ConversationContinuity.assistant(text, "standalone", interrupted = true))
             }
             if (cancelledByUser) {
                 turn.event("turn_completed")
@@ -197,7 +205,11 @@ class StandaloneChatService(
             }
             emitHistory(conversationId)
         } catch (error: Exception) {
-            assistantMessageId?.let { localData.markMessageFailed(it, true) }
+            assistantMessageId?.let {
+                val text = activeAccumulator?.text.orEmpty()
+                localData.updateMessageContent(it, text, partial = false, sendFailed = true)
+                localData.persistContinuation(it, ConversationContinuity.assistant(text, "standalone", interrupted = true))
+            }
             failTurn(conversationId, turn, error.message ?: "Standalone chat failed.")
             emitHistory(conversationId)
         } finally {
@@ -206,7 +218,7 @@ class StandaloneChatService(
     }
 
     fun stop(conversationId: String) {
-        activeCalls.remove(conversationId)?.cancel()
+        activeCalls[conversationId]?.cancel()
     }
 
     fun activateEmergencyStop() {
@@ -271,6 +283,8 @@ class StandaloneChatService(
                         val item = data.optJSONObject(index) ?: return@mapNotNull null
                         val id = item.optString("id")
                         if (id.isBlank()) return@mapNotNull null
+                        val contextWindow = item.optInt("context_length", item.optInt("context_window", 0))
+                        if (contextWindow > 0) providerStore.rememberContextWindow(config.provider, id.removePrefix("${config.provider}:"), contextWindow)
                         ModelOption(
                             id = if (id.startsWith("${config.provider}:")) id else "${config.provider}:$id",
                             label = item.optString("display_name").takeIf(String::isNotBlank) ?: id,
@@ -308,11 +322,12 @@ class StandaloneChatService(
             ?: throw IOException("Standalone provider credential is unavailable")
         val messages = JSONArray()
         history.filter { it.role == "user" || it.role == "assistant" }.forEachIndexed { index, message ->
-            val body = JSONObject().put("role", message.role)
+            val body = JSONObject().put("role", if (message.role == "assistant" && message.requestImages.isNotEmpty()) "user" else message.role)
             val isLastUser = index == history.lastIndex && message.role == "user"
-            if (isLastUser && images.isNotEmpty()) {
+            val messageImages = message.requestImages.ifEmpty { if (isLastUser) images else emptyList() }
+            if (messageImages.isNotEmpty()) {
                 val blocks = JSONArray()
-                images.forEach { image ->
+                messageImages.forEach { image ->
                     parseDataUrl(image["dataUrl"] as? String)?.let { parsed ->
                         blocks.put(
                             JSONObject()
@@ -426,25 +441,26 @@ class StandaloneChatService(
     ): Request {
         val apiKey = providerStore.resolveCredential(config)
             ?: throw IOException("Standalone provider credential is unavailable")
-        if (config.provider == "deepseek" && images.isNotEmpty() && !deepSeekSupportsImages(config.defaultModel)) {
-            throw IOException("${config.defaultModel} cannot receive images in standalone mode. Switch to deepseek-flash to send images.")
-        }
+        val textOnlyImages = config.provider == "deepseek" && !deepSeekSupportsImages(config.defaultModel)
         val messages = JSONArray()
         combineSystemPrompt(globalPrompt(), agentConfig?.systemPrompt, conversationSummary)?.let {
             messages.put(JSONObject().put("role", "system").put("content", it))
         }
         history.filter { it.role == "user" || it.role == "assistant" }.forEachIndexed { index, message ->
-            val body = JSONObject().put("role", message.role)
+            val body = JSONObject().put("role", if (message.role == "assistant" && message.requestImages.isNotEmpty()) "user" else message.role)
             val isLastUser = index == history.lastIndex && message.role == "user"
-            if (isLastUser && images.isNotEmpty()) {
+            val messageImages = message.requestImages.ifEmpty { if (isLastUser) images else emptyList() }
+            if (messageImages.isNotEmpty()) {
                 val parts = JSONArray()
                 if (message.content.isNotBlank()) {
                     parts.put(JSONObject().put("type", "text").put("text", message.content))
                 }
-                images.forEach { image ->
+                messageImages.forEach { image ->
                     val dataUrl = image["dataUrl"] as? String
                     if (!dataUrl.isNullOrBlank()) {
-                        parts.put(
+                        if (textOnlyImages) parts.put(JSONObject().put("type", "text")
+                            .put("text", ConversationContinuity.imageDescription(dataUrl, history)))
+                        else parts.put(
                             JSONObject()
                                 .put("type", "image_url")
                                 .put("image_url", JSONObject().put("url", dataUrl)),
@@ -460,6 +476,7 @@ class StandaloneChatService(
         val payload = JSONObject()
             .put("model", config.defaultModel)
             .put("stream", true)
+            .put("max_tokens", agentConfig?.maxTokens ?: 8192)
             .put("stream_options", JSONObject().put("include_usage", true))
             .put("messages", messages)
         if (config.provider == "deepseek") applyDeepSeekThinking(payload, thinkingEffort ?: agentConfig?.thinkingEffort)
@@ -481,20 +498,51 @@ class StandaloneChatService(
         conversationId: String,
         history: List<HistoryMessage>,
         provider: StandaloneProviderConfig,
+        agentConfig: AgentFullConfig?,
     ): ContextSelection {
-        if (history.sumOf { it.content.length } <= 120_000) return ContextSelection(null, history)
-        val recent = truncateHistory(history, maximumCharacters = 80_000)
-        val sourceCount = (history.size - recent.size).coerceAtLeast(0)
-        val existing = localData.getConversationSummary(conversationId)
-        val summary = if (existing != null && existing.sourceMessageCount >= sourceCount) {
-            existing.summary
-        } else {
-            val source = history.take(sourceCount)
-            runCatching { summarizeHistory(provider, source, existing?.summary) }
-                .getOrElse { deterministicSummary(source) }
-                .also { localData.saveConversationSummary(conversationId, it, sourceCount) }
+        val contextWindow = providerStore.contextWindow(provider.provider, provider.defaultModel)
+        val output = maxOf(agentConfig?.maxTokens ?: 8192, when (agentConfig?.thinkingEffort) {
+            "max" -> 18048
+            "high" -> 10240
+            else -> 8192
+        })
+        val instructions = combineSystemPrompt(globalPrompt(), agentConfig?.systemPrompt, null).orEmpty()
+        val budget = (contextWindow * 0.9).toInt() - output - 512 - (instructions.length + 3) / 4
+        val current = history.lastOrNull()
+        require(current == null || ConversationContinuity.estimatedTokens(current) <= budget) {
+            "The current message and instructions exceed the model context budget. Shorten the message or choose a larger-context model."
         }
-        return ContextSelection(summary, recent)
+        if (history.sumOf(ConversationContinuity::estimatedTokens) <= budget) return ContextSelection(null, history)
+        val retained = ArrayDeque<HistoryMessage>()
+        var tokens = 0
+        for (message in history.asReversed()) {
+            val cost = ConversationContinuity.estimatedTokens(message)
+            if (tokens + cost > budget - 1800) break
+            retained.addFirst(message)
+            tokens += cost
+        }
+        while (retained.isNotEmpty() && retained.first().role != "user") retained.removeFirst()
+        // The current user must survive even when it leaves little room for a summary.
+        if (retained.isEmpty() && current != null) retained.add(current)
+        val sourceCount = history.size - retained.size
+        val source = history.take(sourceCount)
+        val revision = ConversationContinuity.revision(source)
+        val existing = localData.getConversationSummary(conversationId)
+        val summaryBudget = minOf(1500, budget - retained.sumOf(ConversationContinuity::estimatedTokens) - 32).coerceAtLeast(0)
+        val summary = if (existing?.sourceRevision == revision) existing.summary.take(summaryBudget * 4) else {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    // Chronological chunks ensure no source prefix is silently discarded.
+                    val transcript = source.joinToString("\n\n") { "${it.role}: ${it.content}" }
+                    var rolling: String? = null
+                    for (chunk in transcript.chunked(24000)) {
+                        rolling = summarizeHistory(provider, listOf(HistoryMessage("summary", "user", chunk, 0)), rolling).take(summaryBudget * 4)
+                    }
+                    rolling ?: deterministicSummary(source)
+                }.getOrElse { deterministicSummary(source) }.take(summaryBudget * 4)
+            }.also { localData.saveConversationSummary(conversationId, it, sourceCount, revision) }
+        }
+        return ContextSelection(summary, retained.toList())
     }
 
     private fun summarizeHistory(
@@ -505,7 +553,7 @@ class StandaloneChatService(
         val apiKey = providerStore.resolveCredential(provider)
             ?: throw IOException("Standalone provider credential is unavailable")
         val transcript = history.joinToString("\n\n") { "${it.role.uppercase()}:\n${it.content}" }
-            .takeLast(90_000)
+
         val instruction = """
             Summarize this older conversation context for continuation. Preserve decisions,
             requirements, names, identifiers, unresolved questions, and factual results. Do not
@@ -533,6 +581,7 @@ class StandaloneChatService(
         } else {
             val body = JSONObject()
                 .put("model", provider.defaultModel)
+                .put("max_tokens", 1500)
                 .put(
                     "messages",
                     JSONArray()

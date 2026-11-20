@@ -198,6 +198,9 @@ interface DraftDao {
 
 @Dao
 interface ConversationSummaryDao {
+    @Query("DELETE FROM conversation_summaries WHERE conversationId = :conversationId")
+    suspend fun delete(conversationId: String)
+
     @Query("SELECT * FROM conversation_summaries WHERE conversationId = :conversationId LIMIT 1")
     suspend fun get(conversationId: String): ConversationSummaryEntity?
 
