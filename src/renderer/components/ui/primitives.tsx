@@ -15,7 +15,9 @@ import { X } from 'lucide-react'
 const FOCUSABLE_SELECTOR =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
-export function useFocusTrap(ref: RefObject<HTMLElement | null>) {
+export function useFocusTrap(ref: RefObject<HTMLElement | null>, enabled = true) {
+  const enabledRef = useRef(enabled)
+  enabledRef.current = enabled
   useEffect(() => {
     const container = ref.current
     if (!container) return
@@ -23,10 +25,11 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>) {
     const previouslyFocused = document.activeElement as HTMLElement | null
 
     const focusable = () => Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+      .filter((element) => !element.matches(':disabled') && !element.closest('fieldset[disabled]'))
     focusable()[0]?.focus()
 
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key !== 'Tab') return
+      if (!enabledRef.current || event.key !== 'Tab') return
       const items = focusable()
       if (items.length === 0) return
       const first = items[0]
@@ -69,6 +72,11 @@ interface ModalShellProps {
   /** Uses an unobtrusive floating close button instead of the standard title bar. */
   compactHeader?: boolean
   headerActions?: ReactNode
+  /** Suspend interaction while a child dialog owns focus. */
+  suspended?: boolean
+  /** Block dismissal while a write is pending. */
+  busy?: boolean
+  closeOnEscape?: boolean
   children: ReactNode
   footer?: ReactNode
   onClose: () => void
@@ -86,12 +94,27 @@ export function ModalShell({
   footerClassName,
   compactHeader = false,
   headerActions,
+  suspended = false,
+  busy = false,
+  closeOnEscape = false,
   children,
   footer,
   onClose,
 }: ModalShellProps) {
   const panelRef = useRef<HTMLDivElement>(null)
-  useFocusTrap(panelRef)
+  useFocusTrap(panelRef, !suspended)
+
+  useEffect(() => {
+    if (!closeOnEscape || suspended || busy) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onClose()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [closeOnEscape, suspended, busy, onClose])
 
   // Portal to document.body so `fixed inset-0` always escapes the viewport regardless of
   // whether an ancestor (e.g. a message-enter animation with a lingering transform from
@@ -101,12 +124,14 @@ export function ModalShell({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
       data-testid="modal-backdrop"
-      onClick={onClose}
+      onClick={busy || suspended ? undefined : onClose}
     >
       <div
         ref={panelRef}
         role="dialog"
         aria-modal="true"
+        aria-hidden={suspended || undefined}
+        inert={suspended || undefined}
         aria-label={ariaLabel ?? title}
         className={cx(
           'relative flex w-full flex-col overflow-hidden rounded-nexy-lg border-2 border-nexy-border bg-nexy-raised shadow-nexy',
@@ -120,6 +145,7 @@ export function ModalShell({
           <button
             type="button"
             onClick={onClose}
+            disabled={busy}
             className="absolute right-3 top-3 z-10 rounded-nexy-sm border border-transparent p-2 text-nexy-muted hover:border-nexy-border hover:bg-nexy-recessed hover:text-nexy-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-nexy-accent"
             aria-label={`Close ${ariaLabel ?? title}`}
           >
@@ -139,6 +165,7 @@ export function ModalShell({
               <button
                 type="button"
                 onClick={onClose}
+                disabled={busy}
                 className="rounded-nexy-sm border border-transparent p-1 text-nexy-muted hover:border-nexy-border hover:bg-nexy-recessed hover:text-nexy-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-nexy-accent"
                 aria-label={`Close ${ariaLabel ?? title}`}
               >

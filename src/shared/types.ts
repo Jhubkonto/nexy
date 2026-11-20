@@ -1376,6 +1376,8 @@ export interface MessageRow {
   text_segments: string | null
   user_inputs: string | null
   citations: string | null
+  continuation_json?: string | null
+  provider_history?: string | null
 }
 
 export interface ConversationExportAttachment {
@@ -1440,6 +1442,8 @@ export interface ConversationExportMessage {
   context_snapshot: unknown
   tool_call: ConversationExportToolCall | null
   citations?: import('./citations').Citation[]
+  continuation?: import('./conversation-continuity').ConversationContinuation | null
+  provider_history?: string | null
 }
 
 export interface ConversationExportV1 {

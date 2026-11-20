@@ -15,7 +15,7 @@ import { useAppStore } from '../../store/app-store'
 import { ResizableChatInput } from './ResizableChatInput'
 import { ComposerActionsMenu } from './ComposerActionsMenu'
 import { useEmergencyStop } from '../../hooks/useEmergencyStop'
-import { CapabilityPopover } from '../CapabilityPopover'
+import { CapabilitiesModal } from '../CapabilitiesModal'
 import type { ComposerMarkdownViewMode } from '../../store/types'
 import { RichTextComposerInput, type RichTextComposerHandle } from './RichTextComposerInput'
 import { resolveVisionSupported } from '../../../shared/models'
@@ -373,7 +373,7 @@ export function ChatComposer({
                   Cancel edit
                 </button>
               )}
-              <CapabilityPopover
+              <CapabilitiesModal
                 conversationId={conversationId}
                 modelId={effectiveModel}
                 skills={capabilitySkills}
