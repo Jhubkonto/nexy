@@ -1,3 +1,5 @@
+import { parseProviderHistory } from './provider-history'
+import { parseContinuation } from '../shared/conversation-continuity'
 import { createHash, randomUUID } from 'crypto'
 import type Database from 'better-sqlite3'
 import { getDatabase } from './database'
@@ -551,7 +553,7 @@ function buildSnapshot(
   // stay fully rendered; only the bulk per-conversation history is deferred.
   const messagesStmt = db.prepare(`
     SELECT id, conversation_id, role, content, model, provider, finish_reason, attachments, thinking_blocks, text_segments,
-           input_tokens, output_tokens, timestamp
+           input_tokens, output_tokens, timestamp, timeline_order, continuation_json, provider_history
     FROM messages
     WHERE conversation_id = ?
     ORDER BY timestamp DESC, id DESC
@@ -791,6 +793,12 @@ function applyOperation(
         numberValue(payload.outputTokens, 0),
         numberValue(payload.timestamp, Date.now()),
       )
+      if ('continuation' in payload) db.prepare('UPDATE messages SET continuation_json = ? WHERE id = ?').run(
+        parseContinuation(jsonString(payload.continuation)) ? jsonString(payload.continuation) : null, operation.entityId,
+      )
+      if ('providerHistory' in payload) db.prepare('UPDATE messages SET provider_history = ? WHERE id = ?').run(
+        parseProviderHistory(nullableString(payload.providerHistory)) ? nullableString(payload.providerHistory) : null, operation.entityId,
+      )
       break
     }
     case 'wiki': {
@@ -995,6 +1003,8 @@ function readEntityPayload(db: Database.Database, type: string, id: string): Rec
         model: row.model,
         attachments: parseJsonValue(row.attachments, []),
         thinkingBlocks: parseJsonValue(row.thinking_blocks, []),
+        continuation: parseContinuation(row.continuation_json as string | null),
+        providerHistory: row.provider_history ?? null,
         textSegments: parseJsonValue(row.text_segments, []),
         inputTokens: row.input_tokens,
         outputTokens: row.output_tokens,

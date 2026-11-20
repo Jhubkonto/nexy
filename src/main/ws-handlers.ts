@@ -1355,12 +1355,12 @@ export function registerWsHandlers(): void {
         const beforeId = typeof data.beforeId === 'string' ? data.beforeId : null
         const descendingRows = beforeTimestamp != null && beforeId != null
           ? db.prepare(
-`SELECT id, role, content, model, attachments, timestamp, timeline_order, thinking_blocks, text_segments, user_inputs, citations FROM messages
+`SELECT id, role, content, model, attachments, timestamp, timeline_order, thinking_blocks, text_segments, user_inputs, citations, continuation_json, provider_history FROM messages
                WHERE conversation_id = ? AND (timestamp < ? OR (timestamp = ? AND id < ?))
                ORDER BY timestamp DESC, id DESC LIMIT ?`
           ).all(conversationId, beforeTimestamp, beforeTimestamp, beforeId, limit + 1)
           : db.prepare(
-            `SELECT id, role, content, model, attachments, timestamp, timeline_order, thinking_blocks, text_segments, user_inputs, citations FROM messages
+            `SELECT id, role, content, model, attachments, timestamp, timeline_order, thinking_blocks, text_segments, user_inputs, citations, continuation_json, provider_history FROM messages
                WHERE conversation_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?`
           ).all(conversationId, limit + 1)
         const hasMore = descendingRows.length > limit
@@ -1441,7 +1441,7 @@ export function registerWsHandlers(): void {
         return
       }
       const rows = db.prepare(
-        `SELECT id, role, content, model, attachments, timestamp, timeline_order, thinking_blocks, text_segments, user_inputs, citations FROM messages
+        `SELECT id, role, content, model, attachments, timestamp, timeline_order, thinking_blocks, text_segments, user_inputs, citations, continuation_json, provider_history FROM messages
            WHERE conversation_id = ? ORDER BY timeline_order ASC, timestamp ASC, id ASC`
       ).all(conversationId)
       reply({ event: 'conversation:messages', data: { conversationId, messages: rows } })
